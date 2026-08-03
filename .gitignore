@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.json
+!maker/**/*.json
+figure/*.png
+!figure/teaser.png

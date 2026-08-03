@@ -1,0 +1,5 @@
+The files in this directory are vendored from RE-ARC by Michael Hodel
+(https://github.com/michaelhodel/re-arc), licensed under Apache-2.0.
+
+dsl.py, generators.py, utils.py, verifiers.py are used unmodified as the
+input-sampling and verification layer the makers in this repo build on.
