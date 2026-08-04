@@ -10,6 +10,14 @@ an object, paste, submit — not just an input/output pair.
 this repo. The trajectories they produce are published separately as a dataset
 (see *Data*).
 
+![one episode, action by action](figure/teaser.gif)
+
+Each action gets two frames: the grid with the cells it selects ringed, then the
+result with the cells it changed ringed. The strip along the bottom is the whole
+episode, so it is always clear how much is left. Markers are white outlines
+rather than a tint — every hue is already a cell colour, and a tinted selection
+is indistinguishable from grid content.
+
 ## What is actually being claimed
 
 Getting the right answer is easy to check and easy to fake — a maker can copy
@@ -32,7 +40,7 @@ maker/
 
 re-arc/                    vendored RE-ARC generators/verifiers/DSL (Apache-2.0)
 docs/arcle_reference_v2.md the operation space the makers are written against
-figure/teaser.png
+figure/teaser.png  figure/teaser.gif
 
 gen_rearc_makers_llm.py    generate makers with an LLM  (stage 2 lives inside)
 verify_grid_makers.py      stage 1 — do N fresh samples all reach the target
@@ -42,6 +50,7 @@ critique_to_feedback.py    turn findings into per-task feedback for the next rou
 gen_rearc_trajectories_v2.py  roll makers out into trajectories
 export_release.py          pack trajectories into parquet shards
 make_teaser.py             render one trajectory as a figure
+make_teaser_gif.py         animate one trajectory as a GIF
 viz_trajectories.py        Streamlit viewer
 utils.py                   recording format and selection helpers
 ```
@@ -61,7 +70,8 @@ python gen_rearc_trajectories_v2.py --subfolder arc-agi-1 --num_samples 10 \
     --rand_seed 0 --max_grid_dim 30 30 --data_folder /tmp/traj
 
 # look at one
-python make_teaser.py --root /tmp/traj/whole --task 6fa7a44f --out figure/mine.png
+python make_teaser.py     --root /tmp/traj/whole --task 05f2a901 --out figure/mine.png
+python make_teaser_gif.py --root /tmp/traj/whole --task 05f2a901 --out figure/mine.gif
 streamlit run viz_trajectories.py
 ```
 

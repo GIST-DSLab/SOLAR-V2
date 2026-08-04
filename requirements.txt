@@ -5,3 +5,4 @@ arcle == 0.2.5
 gymnasium >= 0.28.0
 pyarrow >= 14
 streamlit
+pillow
