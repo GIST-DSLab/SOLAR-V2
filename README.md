@@ -98,6 +98,7 @@ either way. The released dataset was rolled out without it.
 │   ├── base_grid_maker.py
 │   └── sel_helpers.py
 ├── pipeline/                         GENERATE / CHECK / REFINE, plus rollout and export
+│   ├── build_preview.py
 │   ├── critique_makers_llm.py
 │   ├── critique_to_feedback.py
 │   ├── export_release.py
@@ -264,7 +265,13 @@ makers or `pipeline/probe_originals.py`; all are in the tooling around them.
 ## Data
 
 The rolled-out trajectories are published as a separate dataset in parquet,
-with the loader and schema documented there: **TODO: link**.
+with the loader and schema documented there:
+**[dbsgh797210/SOLAR](https://huggingface.co/datasets/dbsgh797210/SOLAR)**.
+
+```python
+from datasets import load_dataset
+ds = load_dataset("dbsgh797210/SOLAR", "arc_agi1", split="train")
+```
 
 Nothing here depends on it. `pipeline/gen_rearc_trajectories_v2.py` regenerates
 trajectories from the makers on CPU in a few minutes.
