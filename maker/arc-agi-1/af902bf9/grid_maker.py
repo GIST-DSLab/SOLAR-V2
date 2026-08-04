@@ -33,20 +33,42 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+import numpy as np
+from collections import deque
+
+try:
+    from maker.sel_helpers import sel_of
+except Exception:
+    def sel_of(cells):
+        cells = list(cells)
+        rs = [r for r, _ in cells]
+        cs = [c for _, c in cells]
+        return [min(rs), min(cs), max(rs) - min(rs), max(cs) - min(cs)]
+
+
 def sample_colors(num_examples=None) -> dict:
-    # Rule is color-agnostic (any non-bg 4-corner square -> interior filled with 2).
-    # Only the background must be shared across the episode. 2 is never a square color.
     cols = [c for c in range(10) if c != 2]
     bgc = random.choice(cols)
     return {"bgc": bgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
+    from dsl import (canvas, asindices, backdrop, fill, sfilter, totuple,
+                     remove, interval)
+    from utils import unifint
+    from random import choice, sample, randint
+
     cols = remove(2, interval(0, 10, 1))
-    h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
-    w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
+    lo_h = min(10, max_h)
+    lo_w = min(10, max_w)
+    h = unifint(diff_lb, diff_ub, (lo_h, max_h))
+    w = unifint(diff_lb, diff_ub, (lo_w, max_w))
+    h = max(h, 5)
+    w = max(w, 5)
+
     remcols = remove(bgc, cols)
-    numcols = unifint(diff_lb, diff_ub, (1, min(8, len(remcols))))
+    numcols = unifint(diff_lb, diff_ub, (1, 8))
     ccols = sample(remcols, numcols)
     numsq = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 20)))
     succ = 0
@@ -57,8 +79,8 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -
     inds = asindices(gi)
     while tr < maxtr and succ < numsq:
         tr += 1
-        oh = randint(3, 5)
-        ow = randint(3, 5)
+        oh = randint(3, min(5, h))
+        ow = randint(3, min(5, w))
         cands = sfilter(inds, lambda ij: ij[0] <= h - oh and ij[1] <= w - ow)
         if len(cands) == 0:
             continue
@@ -69,81 +91,56 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -
             inds = inds - sq
             succ += 1
             col = choice(ccols)
-            crns = corners(sq)
+            crns = frozenset({(loci, locj), (loci, locj + ow - 1),
+                              (loci + oh - 1, locj), (loci + oh - 1, locj + ow - 1)})
             gi = fill(gi, col, crns)
             go = fill(go, col, crns)
-            ins = backdrop(inbox(crns))
+            ins = frozenset((r, c) for r in range(loci + 1, loci + oh - 1)
+                            for c in range(locj + 1, locj + ow - 1))
             go = fill(go, 2, ins)
     return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from collections import Counter
-
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
+    ops, sels = [], []
 
-    # Background: the canvas color the squares are drawn on.
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    # Every non-background cell in I is a corner of exactly one square.
-    nonbg = set()
+    # Each 4-corner marker box gets its interior filled with 2.
+    # Interiors are disjoint solid rectangles (boxes never overlap),
+    # so connected components of the I->O diff are exactly those interiors.
+    changed = np.zeros((hi, wi), dtype=bool)
     for r in range(hi):
         for c in range(wi):
-            if I[r, c] != bgc:
-                nonbg.add((r, c))
+            if I[r, c] != O[r, c]:
+                changed[r, c] = True
 
-    def backdrop_clean(r0, c0, r1, c1, quad):
-        # Squares never overlap: inside a square's bounding box the only
-        # non-background cells are its own 4 corners.
-        for r in range(r0, r1 + 1):
-            for c in range(c0, c1 + 1):
-                if (r, c) in nonbg and (r, c) not in quad:
-                    return False
-        return True
+    seen = np.zeros((hi, wi), dtype=bool)
+    comps = []
+    for r in range(hi):
+        for c in range(wi):
+            if changed[r, c] and not seen[r, c]:
+                q = deque([(r, c)])
+                seen[r, c] = True
+                cells = []
+                while q:
+                    rr, cc = q.popleft()
+                    cells.append((rr, cc))
+                    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nr, nc = rr + dr, cc + dc
+                        if 0 <= nr < hi and 0 <= nc < wi and changed[nr, nc] and not seen[nr, nc]:
+                            seen[nr, nc] = True
+                            q.append((nr, nc))
+                comps.append(cells)
 
-    def rec(rem, acc):
-        if not rem:
-            return acc
-        r0, c0 = min(rem)  # global raster-min unused cell = its square's top-left corner
-        for dr in (2, 3, 4):          # square heights 3..5
-            r1 = r0 + dr
-            if r1 >= hi:
-                break
-            for dc in (2, 3, 4):      # square widths 3..5
-                c1 = c0 + dc
-                if c1 >= wi:
-                    break
-                quad = {(r0, c0), (r0, c1), (r1, c0), (r1, c1)}
-                if not quad <= rem:
-                    continue
-                if not backdrop_clean(r0, c0, r1, c1, quad):
-                    continue
-                out = rec(rem - quad, acc + [(r0, c0, r1, c1)])
-                if out is not None:
-                    return out
-        return None
-
-    squares = []
-    for col in sorted({int(I[r, c]) for (r, c) in nonbg}):
-        pts = {p for p in nonbg if int(I[p]) == col}
-        found = rec(pts, [])
-        if found:
-            squares.extend(found)
-
-    squares.sort()
-
-    ops, sels = [], []
-    # Each square: paint its interior (the region enclosed by the 4 corners) with 2.
-    for (r0, c0, r1, c1) in squares:
-        ops.append(2)
-        sels.append([r0 + 1, c0 + 1, (r1 - 1) - (r0 + 1), (c1 - 1) - (c0 + 1)])
+    comps.sort(key=lambda cs: (min(r for r, _ in cs), min(c for _, c in cs)))
+    for cells in comps:
+        ops.append(2)              # Color2: fill this box interior
+        sels.append(sel_of(cells))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 

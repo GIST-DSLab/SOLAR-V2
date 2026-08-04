@@ -33,16 +33,25 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+import numpy as np
+from collections import Counter, deque
+
+from dsl import *
+from utils import *
+
+
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
-    bgc = random.choice(cols)
+    # Only the background matters as a shared role; the rule is size-based,
+    # so object colors may vary freely per instance.
+    bgc = random.choice(list(range(10)))
     return {"bgc": bgc}
 
 
 def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
     cols = interval(0, 10, 1)
-    h = unifint(diff_lb, diff_ub, (10, max_h))
-    w = unifint(diff_lb, diff_ub, (10, max_w))
+    h = unifint(diff_lb, diff_ub, (10, max(10, max_h)))
+    w = unifint(diff_lb, diff_ub, (10, max(10, max_w)))
     remcols = remove(bgc, cols)
     gi = canvas(bgc, (h, w))
     num = unifint(diff_lb, diff_ub, (1, 9))
@@ -57,6 +66,7 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -
         oh = randint(3, 7)
         ow = randint(3, 7)
         if oh * ow == area:
+            tr += 1
             continue
         subs = totuple(sfilter(indss, lambda ij: ij[0] < h - oh and ij[1] < w - ow))
         if len(subs) == 0:
@@ -79,19 +89,16 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from collections import deque
-
     I = np.asarray(I, dtype=int)
+    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+    ho, wo = O.shape
 
-    # Generator never places an object touching the last row/col -> corner is background.
-    bgc = int(I[hi - 1, wi - 1])
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # Find univalued 4-connected non-background objects; pick the one whose
-    # bounding box area (height*width) is largest -> its color is the answer.
+    # Find each connected (4-neighbour, single-colour) shape; score by bbox area.
     seen = np.zeros((hi, wi), dtype=bool)
-    best = None  # (area, r0, c0, color)
+    best_area, best_col = -1, int(O[0, 0])
     for r in range(hi):
         for c in range(wi):
             if seen[r, c] or I[r, c] == bgc:
@@ -99,46 +106,26 @@ def derive_operations(I, O):
             col = int(I[r, c])
             q = deque([(r, c)])
             seen[r, c] = True
-            r0 = r1 = r
-            c0 = c1 = c
+            rs, cs = [], []
             while q:
-                cr, cc = q.popleft()
-                if cr < r0: r0 = cr
-                if cr > r1: r1 = cr
-                if cc < c0: c0 = cc
-                if cc > c1: c1 = cc
-                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    nr, nc = cr + dr, cc + dc
-                    if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] and I[nr, nc] == col:
-                        seen[nr, nc] = True
-                        q.append((nr, nc))
-            a = (r1 - r0 + 1) * (c1 - c0 + 1)
-            if best is None or a > best[0]:
-                best = (a, r0, c0, col)
+                y, x = q.popleft()
+                rs.append(y)
+                cs.append(x)
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] and I[ny, nx] == col:
+                        seen[ny, nx] = True
+                        q.append((ny, nx))
+            a = (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1)
+            if a > best_area:
+                best_area, best_col = a, col
 
     ops, sels = [], []
-
-    if best is None:
-        # No objects at all -> answer is a 2x2 of color 0.
-        target = 0
-        br, bc = 0, 0
-    else:
-        _, br, bc, target = best
-
-    # 1. Shrink the canvas onto the winning object's top-left 2x2 corner block.
-    ops.append(33); sels.append([br, bc, 1, 1])
-
-    # 2. That block is [[c,c],[c,bg]] (box outline corner): recolor the cells
-    #    that are not yet the object color so the whole 2x2 is that color.
-    need = [(i, j) for i in range(2) for j in range(2)
-            if int(I[min(br + i, hi - 1), min(bc + j, wi - 1)]) != target]
-    if len(need) == 4:
-        ops.append(target); sels.append([0, 0, 1, 1])
-    else:
-        for (i, j) in need:
-            ops.append(target); sels.append([i, j, 0, 0])
-
-    ops.append(34); sels.append([0, 0, 1, 1])
+    # Shrink the canvas to the 2x2 answer size (full rectangle selection).
+    ops.append(33); sels.append([0, 0, ho - 1, wo - 1])
+    # Paint it with the winning colour.
+    ops.append(best_col); sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 

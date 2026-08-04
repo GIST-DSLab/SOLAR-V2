@@ -35,20 +35,25 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
+from collections import Counter
 
-
+# Discrete structural variants of this task:
+#   transpose=False -> grid is split LEFT/RIGHT  (one vertical half is blank) -> mirror is left<->right
+#   transpose=True  -> grid is split TOP/BOTTOM  (one horizontal half is blank) -> mirror is up<->down
+#   side            -> which half holds the pattern
 VARIANTS = [
-    {"vmir": True},    # content ends up on the right half
-    {"vmir": False},   # content stays on the left half
+    {"transpose": False, "side": 0},
+    {"transpose": False, "side": 1},
+    {"transpose": True,  "side": 0},
+    {"transpose": True,  "side": 1},
 ]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(1, 10))
     bgc = random.choice(cols)
-    rem = [c for c in cols if c != bgc]
-    numcols = random.randint(1, 8)
-    remcols = random.sample(rem, numcols)
+    palette = [c for c in cols if c != bgc]
+    random.shuffle(palette)
 
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
@@ -57,75 +62,166 @@ def sample_colors(num_examples=None) -> dict:
         random.shuffle(examples)
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "remcols": remcols, "instance_plan": plan}
+    plan = examples + [dict(random.choice(examples))]   # test variant was shown in examples
+    return {"bgc": bgc, "palette": palette, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, remcols, vmir=None) -> dict:
-    if vmir is None:
-        vmir = random.choice([True, False])
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, palette=None,
+             transpose=None, side=None) -> dict:
+    def _unifint(lb, ub, bounds):
+        a, b = bounds
+        if b < a:
+            b = a
+        lo = a + int((b - a) * lb)
+        hi = a + int((b - a) * ub)
+        if hi < lo:
+            hi = lo
+        if lo < a:
+            lo = a
+        if hi > b:
+            hi = b
+        return random.randint(lo, hi)
 
-    h_hi = max(1, min(14, (max_h - 1) // 2))
-    h = unifint(diff_lb, diff_ub, (1, h_hi))
-    h = h * 2 + 1
-    w_hi = max(3, min(15, max_w // 2))
-    w = unifint(diff_lb, diff_ub, (3, w_hi))
+    if bgc is None:
+        bgc = random.choice(range(1, 10))
+    if palette is None:
+        palette = [c for c in range(1, 10) if c != bgc]
+    if transpose is None:
+        transpose = random.choice([True, False])
+    if side is None:
+        side = random.choice([0, 1])
 
-    remcols = list(remcols)
-    canv = canvas(bgc, (h, w))
-    nc = unifint(diff_lb, diff_ub, (2, h * w - 2))
-    bx = asindices(canv)
-    obj = {(choice(remcols), choice(totuple(bx)))}
-    for kk in range(nc - 1):
-        dns = mapply(neighbors, toindices(obj))
-        cand = totuple(bx & dns)
-        if len(cand) == 0:
+    # pattern half is (hh, ww); full grid is (hh, 2*ww), transposed to (2*ww, hh)
+    if transpose:
+        lim_rows, lim_cols = max_w, max_h
+    else:
+        lim_rows, lim_cols = max_h, max_w
+
+    kmax = max(1, min(14, (lim_rows - 1) // 2))
+    hh = 2 * _unifint(diff_lb, diff_ub, (1, kmax)) + 1
+    wmax = max(3, min(15, lim_cols // 2))
+    ww = _unifint(diff_lb, diff_ub, (3, wmax))
+
+    numcols = _unifint(diff_lb, diff_ub, (1, min(8, len(palette))))
+    fgcols = random.sample(palette, numcols)
+
+    # ---- grow a connected (8-neighbour) blob of coloured cells ----
+    all_c = [(r, c) for r in range(hh) for c in range(ww)]
+
+    def nbrs(p):
+        r, c = p
+        out = []
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr or dc:
+                    rr, cc = r + dr, c + dc
+                    if 0 <= rr < hh and 0 <= cc < ww:
+                        out.append((rr, cc))
+        return out
+
+    start = random.choice(all_c)
+    avail = set(all_c)
+    avail.discard(start)
+    cells = {start: random.choice(fgcols)}
+    frontier = set(q for q in nbrs(start) if q in avail)
+
+    def grow():
+        if not frontier:
+            return False
+        p = random.choice(sorted(frontier))
+        frontier.discard(p)
+        avail.discard(p)
+        cells[p] = random.choice(fgcols)
+        for q in nbrs(p):
+            if q in avail:
+                frontier.add(q)
+        return True
+
+    nc = _unifint(diff_lb, diff_ub, (2, max(2, hh * ww - 2)))
+    for _ in range(nc - 1):
+        if not grow():
             break
-        ch = choice(cand)
-        obj.add((choice(remcols), ch))
-        bx = bx - {ch}
-    while uppermost(obj) > h // 2 - 1 or lowermost(obj) < h // 2 + 1:
-        dns = mapply(neighbors, toindices(obj))
-        cand = totuple(bx & dns)
-        if len(cand) == 0:
+    # object must straddle the middle rows (so neither half of the untransposed
+    # grid is monochrome -> the left/right mirror branch is the one that applies)
+    guard = 0
+    while True:
+        rs = [r for (r, _) in cells]
+        if min(rs) <= hh // 2 - 1 and max(rs) >= hh // 2 + 1:
             break
-        ch = choice(cand)
-        obj.add((choice(remcols), ch))
-        bx = bx - {ch}
+        if not grow() or guard > hh * ww:
+            break
+        guard += 1
 
-    gix = paint(canv, obj)
-    gix = apply(rbind(order, matcher(identity, bgc)), gix)
-    gi = hconcat(gix, canv)
-    go = hconcat(gix, vmirror(gix))
-    if vmir:
-        gi = vmirror(gi)
-        go = vmirror(go)
-    if choice((True, False)):
-        gi = hmirror(gi)
-        go = hmirror(go)
-    return {'input': gi, 'output': go}
+    # ---- left-pack every row (stable order: non-background cells first) ----
+    gix = np.full((hh, ww), bgc, dtype=int)
+    for r in range(hh):
+        vals = [cells[(r, c)] for c in range(ww) if (r, c) in cells]
+        for i, v in enumerate(vals):
+            gix[r, i] = v
+
+    canv = np.full((hh, ww), bgc, dtype=int)
+    gi = np.concatenate([gix, canv], axis=1)
+    go = np.concatenate([gix, np.fliplr(gix)], axis=1)
+
+    if side == 1:
+        gi, go = np.fliplr(gi), np.fliplr(go)
+    if random.random() < 0.5:
+        gi, go = np.flipud(gi), np.flipud(go)
+    if transpose:
+        gi, go = gi.T.copy(), go.T.copy()
+
+    return {"input": gi.tolist(), "output": go.tolist()}
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, W = I.shape
-    w = W // 2
-
-    # One half is uniform background, the other holds the pattern.
-    left_uniform = len(set(I[:, :w].flatten().tolist())) == 1
-    if left_uniform:
-        src_c, dst_c = w, 0
-    else:
-        src_c, dst_c = 0, w
+    h, w = I.shape
+    bg = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
     ops, sels = [], []
-    # bboxes below are FULL rectangles (whole half-grid, background included) -> bbox form is exact.
-    ops.append(28); sels.append([0, src_c, h - 1, w - 1])   # CopyI: pattern half (no 0s in this task)
-    ops.append(30); sels.append([0, dst_c, 0, 0])           # Paste into the blank half
-    ops.append(26); sels.append([0, dst_c, h - 1, w - 1])   # FlipH -> mirror across the vertical center
 
-    ops.append(34); sels.append([0, 0, h - 1, W - 1])
+    # Which mirror axis?  If one horizontal half of the grid is a single colour the
+    # grid is split top/bottom -> mirror up-down; otherwise it is split left/right.
+    top = I[:h // 2]
+    bot = I[h // 2 + h % 2:]
+    row_split = (top.size > 0 and len(np.unique(top)) == 1) or \
+                (bot.size > 0 and len(np.unique(bot)) == 1)
+
+    if row_split:
+        hh = h // 2                       # each half is hh rows tall
+        top_nb = int(np.count_nonzero(I[:hh] != bg))
+        bot_nb = int(np.count_nonzero(I[h - hh:] != bg))
+        if top_nb <= bot_nb:              # the emptier half is the destination
+            src_r, dst_r = h - hh, 0
+        else:
+            src_r, dst_r = 0, h - hh
+        src = I[src_r:src_r + hh, :]
+        if not np.all(src == bg):
+            # full rectangle: the whole patterned half, background included
+            ops.append(28); sels.append([src_r, 0, hh - 1, w - 1])   # CopyI source half
+            ops.append(30); sels.append([dst_r, 0, 0, 0])            # Paste at blank half's top-left
+            if not np.array_equal(src, np.flipud(src)):
+                # full rectangle: mirror the whole pasted half up<->down in place
+                ops.append(27); sels.append([dst_r, 0, hh - 1, w - 1])
+    else:
+        ww = w // 2                       # each half is ww columns wide
+        left_nb = int(np.count_nonzero(I[:, :ww] != bg))
+        right_nb = int(np.count_nonzero(I[:, w - ww:] != bg))
+        if left_nb <= right_nb:
+            src_c, dst_c = w - ww, 0
+        else:
+            src_c, dst_c = 0, w - ww
+        src = I[:, src_c:src_c + ww]
+        if not np.all(src == bg):
+            # full rectangle: the whole patterned half, background included
+            ops.append(28); sels.append([0, src_c, h - 1, ww - 1])   # CopyI source half
+            ops.append(30); sels.append([0, dst_c, 0, 0])            # Paste at blank half's top-left
+            if not np.array_equal(src, np.fliplr(src)):
+                # full rectangle: mirror the whole pasted half left<->right in place
+                ops.append(26); sels.append([0, dst_c, h - 1, ww - 1])
+
+    ops.append(34); sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 

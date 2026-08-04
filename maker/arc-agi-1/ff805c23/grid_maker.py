@@ -35,25 +35,32 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from collections import Counter
 
 
+# ---------------------------------------------------------------------------
+# 1) colors: canvas background + the palette the mosaic is drawn from.
+#    The rule (fill the punched-out rectangle by mirror symmetry, output the
+#    patch) does not depend on which colors are used, only on bgc being fixed
+#    and the hole color (0 here) never occurring as ordinary content.
+# ---------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(1, 10))
+    cols = list(range(1, 10))               # 0 is reserved for the punched hole
     bgc = random.choice(cols)
-    pool = [c for c in cols if c != bgc]
-    random.shuffle(pool)
-    return {"bgc": bgc, "cols_pool": pool}
+    rest = [c for c in cols if c != bgc]
+    random.shuffle(rest)
+    return {"bgc": bgc, "palette": rest}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, cols_pool=None) -> dict:
+# ---------------------------------------------------------------------------
+# 2) generator: 4/8-fold symmetric mosaic, a rectangle punched out with 0,
+#    output = the punched-out content. Whole thing randomly rotated.
+# ---------------------------------------------------------------------------
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, palette=None, **kwargs) -> dict:
     cols = interval(1, 10, 1)
     if bgc is None:
         bgc = choice(cols)
-    if cols_pool is None:
-        cols_pool = [c for c in cols if c != bgc]
-        random.shuffle(cols_pool)
+    if palette is None:
+        palette = list(remove(bgc, cols))
 
     hmax = min(15, max_h // 2, max_w // 2)
     if hmax < 3:
@@ -61,8 +68,9 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     h = unifint(diff_lb, diff_ub, (3, hmax))
     w = h
 
-    numcols = unifint(diff_lb, diff_ub, (1, min(8, len(cols_pool))))
-    remcols = list(cols_pool[:numcols])
+    remcols = list(palette)
+    numcols = unifint(diff_lb, diff_ub, (1, min(8, len(remcols))))
+    remcols = sample(remcols, numcols)
 
     canv = canvas(bgc, (h, w))
     nc = unifint(diff_lb, diff_ub, (1, h * w))
@@ -70,14 +78,15 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     obj = {(choice(remcols), choice(totuple(bx)))}
     for kk in range(nc - 1):
         dns = mapply(neighbors, toindices(obj))
-        cand = totuple(bx & dns)
-        if len(cand) == 0:
+        cands = totuple(bx & dns)
+        if len(cands) == 0:
             break
-        ch = choice(cand)
+        ch = choice(cands)
         obj.add((choice(remcols), ch))
         bx = bx - {ch}
     gi = paint(canv, obj)
 
+    # make the tile diagonally symmetric, then mirror it out to 2h x 2w
     tr = sfilter(asobject(dmirror(gi)), lambda cij: cij[1][1] >= cij[1][0])
     gi = paint(gi, tr)
     gi = hconcat(gi, vmirror(gi))
@@ -99,27 +108,70 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     return {'input': gi, 'output': go}
 
 
+# ---------------------------------------------------------------------------
+# 3) derive_operations
+#
+# Rule: the grid is a mirror-symmetric mosaic with ONE solid rectangle painted
+# over in a single "hole" color (0 in the RE-ARC instances, an arbitrary color
+# in the original ARC pairs -- detected dynamically, never assumed).
+# Mirroring the whole grid across an axis whose reflection of the hole lands on
+# intact mosaic brings the missing content INTO the hole's own position
+# (and pushes the hole away).  Then crop that rectangle: it is the answer.
+#
+# Copy/Paste is unusable here: the answer may legitimately contain 0 cells and
+# Paste treats 0 as transparent -- a geometric flip carries them correctly.
+# ---------------------------------------------------------------------------
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
+    H, W = I.shape
     ho, wo = O.shape
 
-    # the hole is the block of 0 cells; grid is mirror-symmetric both ways,
-    # so one whole-grid mirror brings the missing content into the hole bbox
-    holes = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == 0]
-    rs = [r for r, _ in holes]
-    cs = [c for _, c in holes]
-    r0, c0 = min(rs), min(cs)
+    def cands():
+        out = []
+        for col in np.unique(I).tolist():
+            cells = np.argwhere(I == col)
+            r0 = int(cells[:, 0].min()); r1 = int(cells[:, 0].max())
+            c0 = int(cells[:, 1].min()); c1 = int(cells[:, 1].max())
+            hh = r1 - r0 + 1
+            ww = c1 - c0 + 1
+            if cells.shape[0] != hh * ww:          # not a solid rectangle -> not the hole
+                continue
+            for op in (27, 26):                    # 27 = FlipV (up/down), 26 = FlipH (left/right)
+                if op == 27:
+                    mr0, mr1, mc0, mc1 = H - 1 - r1, H - 1 - r0, c0, c1
+                else:
+                    mr0, mr1, mc0, mc1 = r0, r1, W - 1 - c1, W - 1 - c0
+                # the mirror source must be intact mosaic, not the hole itself
+                if not (mr1 < r0 or mr0 > r1 or mc1 < c0 or mc0 > c1):
+                    continue
+                block = I[mr0:mr1 + 1, mc0:mc1 + 1]
+                patch = np.flipud(block) if op == 27 else np.fliplr(block)
+                real = 1 if not np.array_equal(patch, I[r0:r1 + 1, c0:c1 + 1]) else 0
+                out.append((op, r0, c0, hh, ww, patch, real))
+        return out
 
-    lr_ok = all(I[r, wi - 1 - c] != 0 for r, c in holes)
-    flip_op = 26 if lr_ok else 27   # 26 = left<->right, 27 = up<->down
+    all_c = cands()
+    exact = [x for x in all_c if x[5].shape == (ho, wo) and np.array_equal(x[5], O)]
+    pool = exact if exact else all_c
+    if pool:
+        # prefer a rectangle whose mirror really differs (a genuine hole), then the largest
+        pool.sort(key=lambda x: (-x[6], -(x[3] * x[4])))
+        flip_op, r0, c0, hh, ww = pool[0][0], pool[0][1], pool[0][2], pool[0][3], pool[0][4]
+    else:                                          # degenerate safety net
+        flip_op, r0, c0, hh, ww = 27, 0, 0, ho, wo
 
     ops, sels = [], []
-    # whole-grid selection: full rectangle intended, background included
-    ops.append(flip_op); sels.append([0, 0, hi - 1, wi - 1])
-    # crop to the (now restored) hole region
-    ops.append(33); sels.append([r0, c0, ho - 1, wo - 1])
+
+    # 1. mirror the whole mosaic: the symmetric counterpart of the missing
+    #    rectangle slides onto the hole's own position. Selection is the whole
+    #    grid rectangle (background included) -- exactly the intended cells.
+    ops.append(flip_op); sels.append([0, 0, H - 1, W - 1])
+
+    # 2. crop the rectangle that used to be the hole: it now holds the answer.
+    #    Selection is exactly that full rectangle.
+    ops.append(33); sels.append([r0, c0, hh - 1, ww - 1])
+
     ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 

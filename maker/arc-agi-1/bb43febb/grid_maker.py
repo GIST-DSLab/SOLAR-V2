@@ -33,117 +33,84 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
-import random
-from collections import Counter, deque
-
-
 def sample_colors(num_examples=None) -> dict:
-    # Rule depends only on object structure (interior filled with reserved color 2),
-    # not on object colors. Only background must be fixed. bgc must not be 2 (reserved).
-    cols = [c for c in range(10) if c != 2]
-    bgc = random.choice(cols)
+    cols = remove(2, interval(0, 10, 1))
+    bgc = choice(totuple(cols))
     return {"bgc": bgc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
-    def unifint(lb, ub, bounds):
-        a, b = bounds
-        lo = a + int((b - a) * lb)
-        hi = a + int((b - a) * ub)
-        if hi < lo:
-            hi = lo
-        return random.randint(lo, hi)
-
-    cols = [c for c in range(10) if c != 2]
+def generate(diff_lb: float, diff_ub: float, max_h: int = 30, max_w: int = 30, bgc: int = 0) -> dict:
+    cols = remove(2, interval(0, 10, 1))
     h = unifint(diff_lb, diff_ub, (10, max_h))
     w = unifint(diff_lb, diff_ub, (10, max_w))
-    h = max(h, 10)
-    w = max(w, 10)
-
-    remcols = [c for c in cols if c != bgc]
-    gi = np.full((h, w), bgc, dtype=int)
-    go = np.full((h, w), bgc, dtype=int)
+    remcols = remove(bgc, cols)
+    gi = canvas(bgc, (h, w))
+    go = canvas(bgc, (h, w))
     num = unifint(diff_lb, diff_ub, (1, 8))
-
-    occupied = np.zeros((h, w), dtype=bool)
+    indss = asindices(gi)
     maxtrials = 4 * num
     tr = 0
     succ = 0
     while succ < num and tr <= maxtrials:
-        if len(remcols) == 0:
+        if len(remcols) == 0 or len(indss) == 0:
             break
-        oh = random.randint(3, 7)
-        ow = random.randint(3, 7)
-        if h - oh <= 0 or w - ow <= 0:
+        oh = randint(3, 7)
+        ow = randint(3, 7)
+        subs = totuple(sfilter(indss, lambda ij: ij[0] < h - oh and ij[1] < w - ow))
+        if len(subs) == 0:
             tr += 1
             continue
-        loci = random.randint(0, h - oh - 1)
-        locj = random.randint(0, w - ow - 1)
-        region = occupied[loci:loci + oh, locj:locj + ow]
-        if region.any():
-            tr += 1
-            continue
-        col = random.choice(remcols)
-        remcols.remove(col)
-        # solid rectangle in input
-        gi[loci:loci + oh, locj:locj + ow] = col
-        # output: interior filled with 2, border keeps original color
-        go[loci:loci + oh, locj:locj + ow] = 2
-        go[loci, locj:locj + ow] = col
-        go[loci + oh - 1, locj:locj + ow] = col
-        go[loci:loci + oh, locj] = col
-        go[loci:loci + oh, locj + ow - 1] = col
-        occupied[loci:loci + oh, locj:locj + ow] = True
-        succ += 1
+        loci, locj = choice(subs)
+        obj = frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)})
+        bd = backdrop(obj)
+        col = choice(remcols)
+        if bd.issubset(indss):
+            remcols = remove(col, remcols)
+            gi = fill(gi, col, bd)
+            go = fill(go, 2, bd)
+            go = fill(go, col, box(obj))
+            succ += 1
+            indss = indss - bd
         tr += 1
-
-    return {"input": gi.tolist(), "output": go.tolist()}
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    import numpy as np
+    from collections import deque
+    from maker.sel_helpers import sel_of
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+    ops, sels = [], []
 
-    # background = canvas fill color (dominant)
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # Cells that became 2: the interiors (inbox) of each solid rectangle.
+    diff = (O == 2) & (I != 2)
 
-    ops = []
-    sels = []
-    seen = np.zeros((hi, wi), dtype=bool)
-
-    # Rule (measured from I): each non-background connected component is a solid
-    # rectangle; fill its interior (one cell inset from its bbox) with color 2,
-    # leaving the border intact.
+    seen = np.zeros_like(diff, dtype=bool)
     for r in range(hi):
         for c in range(wi):
-            if I[r, c] != bgc and not seen[r, c]:
-                col = I[r, c]
-                q = deque([(r, c)])
-                seen[r, c] = True
-                cells = []
-                while q:
-                    y, x = q.popleft()
-                    cells.append((y, x))
-                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        ny, nx = y + dy, x + dx
-                        if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] and I[ny, nx] == col:
-                            seen[ny, nx] = True
-                            q.append((ny, nx))
-                ys = [p[0] for p in cells]
-                xs = [p[1] for p in cells]
-                r0, r1 = min(ys), max(ys)
-                c0, c1 = min(xs), max(xs)
-                oh = r1 - r0 + 1
-                ow = c1 - c0 + 1
-                # interior exists only when both dims > 1 (min-dim > 1)
-                if oh >= 3 and ow >= 3:
-                    ops.append(2)
-                    sels.append([r0 + 1, c0 + 1, oh - 3, ow - 3])
+            if not diff[r, c] or seen[r, c]:
+                continue
+            # BFS one interior region (interiors of distinct rects are never adjacent,
+            # they are separated by their own border ring)
+            cells = []
+            q = deque([(r, c)])
+            seen[r, c] = True
+            while q:
+                y, x = q.popleft()
+                cells.append((y, x))
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < hi and 0 <= nx < wi and diff[ny, nx] and not seen[ny, nx]:
+                        seen[ny, nx] = True
+                        q.append((ny, nx))
+            ops.append(2)              # Color2: paint this interior
+            sels.append(sel_of(cells))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
     return ops, sels
 
 

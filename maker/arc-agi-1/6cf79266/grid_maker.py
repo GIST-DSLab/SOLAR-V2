@@ -33,133 +33,70 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
-from collections import Counter
-from maker.sel_helpers import sel_of
-
-
 def sample_colors(num_examples=None) -> dict:
-    # background is hardcoded 0 in this generator -> not sampled here.
-    # foreground colors are irrelevant to the rule (only zero-patches matter),
-    # but keep one palette per episode for visual consistency.
-    pal = [c for c in range(2, 10)]
-    random.shuffle(pal)
-    return {"palette": pal}
+    # Rule depends only on where 3x3 all-zero blocks sit; background 0 is hardcoded
+    # in the generator and foreground colors are irrelevant to the transformation.
+    return {}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, palette=None) -> dict:
-    if palette is None:
-        palette = [c for c in range(2, 10)]
-        random.shuffle(palette)
-    palette = list(palette)
-
-    hub = max(6, min(30, max_h))
-    wub = max(6, min(30, max_w))
-    h = unifint(diff_lb, diff_ub, (6, hub))
-    w = unifint(diff_lb, diff_ub, (6, wub))
-
-    nfgcs = unifint(diff_lb, diff_ub, (1, min(8, len(palette))))
-    ccols = palette[:nfgcs]
-
+def generate(diff_lb: float, diff_ub: float, max_h: int = 30, max_w: int = 30) -> dict:
+    cols = difference(interval(0, 10, 1), (0, 1))
+    h = unifint(diff_lb, diff_ub, (6, max_h))
+    w = unifint(diff_lb, diff_ub, (6, max_w))
+    nfgcs = unifint(diff_lb, diff_ub, (1, 8))
+    ccols = sample(cols, nfgcs)
     gi = canvas(-1, (h, w))
     fgcobj = {(choice(ccols), ij) for ij in asindices(gi)}
     gi = paint(gi, fgcobj)
-
     num = unifint(diff_lb, diff_ub, (int(0.25 * h * w), int(0.6 * h * w)))
     inds = asindices(gi)
     locs = sample(totuple(inds), num)
     gi = fill(gi, 0, locs)
-
     noccs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 16)))
     cands = asindices(canvas(-1, (h - 2, w - 2)))
-    locs = sample(totuple(cands), min(noccs, len(cands)))
+    locs = sample(totuple(cands), noccs)
     mini = asindices(canvas(-1, (3, 3)))
     for ij in locs:
         gi = fill(gi, 0, shift(mini, ij))
-
     trg = recolor(0, mini)
     occs = occurrences(gi, trg)
     go = tuple(e for e in gi)
     for occ in occs:
         go = fill(go, 1, shift(mini, occ))
-
     return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    import numpy as np
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
-
     ops, sels = [], []
 
-    # --- rule measured from I: every 3x3 window that is entirely background(0) ---
-    occs = []
-    for r in range(hi - 2):
-        for c in range(wi - 2):
-            if not I[r:r + 3, c:c + 3].any():
-                occs.append((r, c))
+    # Every cell belonging to some all-background 3x3 block becomes 1.
+    target = (O == 1) & (I != 1)
 
-    def cells_of(o):
-        r, c = o
-        return [(r + dr, c + dc) for dr in range(3) for dc in range(3)]
-
-    # --- drop occurrences whose 3x3 unit is fully covered by the other units ---
-    cnt = Counter()
-    for o in occs:
-        for p in cells_of(o):
-            cnt[p] += 1
-
-    kept = list(occs)
-    changed = True
-    while changed:
-        changed = False
-        for o in list(kept):
-            cs = cells_of(o)
-            if all(cnt[p] >= 2 for p in cs):
-                kept.remove(o)
-                for p in cs:
-                    cnt[p] -= 1
-                changed = True
-
-    # --- group the surviving units into clusters of overlapping units ---
-    idx = {o: i for i, o in enumerate(kept)}
-    parent = list(range(len(kept)))
-
-    def find(a):
-        while parent[a] != a:
-            parent[a] = parent[parent[a]]
-            a = parent[a]
-        return a
-
-    def union(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    for i, (r1, c1) in enumerate(kept):
-        for j in range(i + 1, len(kept)):
-            r2, c2 = kept[j]
-            if abs(r1 - r2) < 3 and abs(c1 - c2) < 3:
-                union(i, j)
-
-    clusters = {}
-    for o in kept:
-        root = find(idx[o])
-        clusters.setdefault(root, []).append(o)
-
-    order = sorted(clusters.values(), key=lambda g: min(g))
-
-    # --- stamp the 3x3 unit at each occurrence, one cluster at a time ---
-    for group in order:
-        group = sorted(group)
-        for o in group:
-            ops.append(1)
-            sels.append(sel_of(cells_of(o)))
+    covered = np.zeros_like(target, dtype=bool)
+    # Greedy maximal-rectangle cover of the target cells -> few Color1 ops,
+    # each rectangle painted exactly once (no overlapping repaints).
+    for r in range(hi):
+        for c in range(wi):
+            if not target[r, c] or covered[r, c]:
+                continue
+            w = 0
+            while c + w < wi and target[r, c + w] and not covered[r, c + w]:
+                w += 1
+            h = 1
+            while r + h < hi and all(
+                target[r + h, cc] and not covered[r + h, cc] for cc in range(c, c + w)
+            ):
+                h += 1
+            covered[r:r + h, c:c + w] = True
+            ops.append(1)                      # Color1: rectangle is entirely target cells
+            sels.append([r, c, h - 1, w - 1])
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 

@@ -36,92 +36,82 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter
-from maker.sel_helpers import sel_of
-
-MODES = ["box", "hline", "vline"]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc = random.choice(cols)
     fgc = random.choice([c for c in cols if c != bgc])
-    n_ex = num_examples if num_examples else 3
-    if n_ex >= len(MODES):
-        examples = [{"mode": m} for m in MODES]
-        examples += [{"mode": random.choice(MODES)} for _ in range(n_ex - len(MODES))]
-        random.shuffle(examples)
-    else:
-        examples = [{"mode": m} for m in random.sample(MODES, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "fgc": fgc, "instance_plan": plan}
+    return {"bgc": bgc, "fgc": fgc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc, mode=None) -> dict:
-    if mode is None:
-        mode = random.choice(MODES)
-
-    def odd_in(lo, hi):
-        if hi < lo:
-            hi = lo
-        n = (hi - lo) // 2
-        k = unifint(diff_lb, diff_ub, (0, n))
-        return lo + 2 * k
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc) -> dict:
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
 
     h = unifint(diff_lb, diff_ub, (5, max_h))
     w = unifint(diff_lb, diff_ub, (5, max_w))
-    hodd = h if h % 2 == 1 else h - 1
-    wodd = w if w % 2 == 1 else w - 1
 
-    if mode == "hline":
-        boxh, boxw = 1, odd_in(3, wodd)
-    elif mode == "vline":
-        boxh, boxw = odd_in(3, hodd), 1
-    else:
-        boxh, boxw = odd_in(3, hodd), odd_in(3, wodd)
+    while True:
+        boxhd = unifint(diff_lb, diff_ub, (0, h // 2))
+        boxwd = unifint(diff_lb, diff_ub, (0, w // 2))
+        boxh = random.choice((boxhd, h - boxhd))
+        boxw = random.choice((boxwd, w - boxwd))
+        if boxh % 2 == 0:
+            boxh = random.choice((boxh - 1, boxh + 1))
+        if boxw % 2 == 0:
+            boxw = random.choice((boxw - 1, boxw + 1))
+        boxh = min(max(1, boxh), h if h % 2 == 1 else h - 1)
+        boxw = min(max(1, boxw), w if w % 2 == 1 else w - 1)
+        if not (boxh == 1 and boxw == 1):   # avoid the degenerate output == input case
+            break
 
     loci = random.randint(0, h - boxh)
     locj = random.randint(0, w - boxw)
+    cpi = loci + boxh // 2
+    cpj = locj + boxw // 2
+    f1 = boxh // 2
+    f2 = boxw // 2
 
     gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * w for _ in range(h)]
-    A = (loci, locj)
-    B = (loci + boxh - 1, locj + boxw - 1)
-    cpi, cpj = loci + boxh // 2, locj + boxw // 2
-    for (r, c) in {A, B, (cpi, cpj)}:
-        gi[r][c] = fgc
-        go[r][c] = fgc
+    for (i, j) in {(loci, locj), (loci + boxh - 1, locj + boxw - 1), (cpi, cpj)}:
+        gi[i][j] = fgc
+    go = [row[:] for row in gi]
 
-    f1, f2 = boxh // 2, boxw // 2
-    if f1 == 0:
-        for c in range(w):
-            go[cpi][c] = fgc
+    if f1 == 0 and f2 == 0:
+        pass
+    elif f1 == 0:
+        for j in range(w):
+            go[cpi][j] = fgc
     elif f2 == 0:
-        for r in range(h):
-            go[r][cpj] = fgc
+        for i in range(h):
+            go[i][cpj] = fgc
     else:
         k = 1
         while True:
-            r0, r1 = cpi - k * f1, cpi + k * f1
-            c0, c1 = cpj - k * f2, cpj + k * f2
-            if r0 < 0 and r1 >= h and c0 < 0 and c1 >= w:
+            t, b = cpi - k * f1, cpi + k * f1
+            l, r = cpj - k * f2, cpj + k * f2
+            cells = []
+            for j in range(max(0, l), min(w - 1, r) + 1):
+                if 0 <= t < h:
+                    cells.append((t, j))
+                if 0 <= b < h:
+                    cells.append((b, j))
+            for i in range(max(0, t), min(h - 1, b) + 1):
+                if 0 <= l < w:
+                    cells.append((i, l))
+                if 0 <= r < w:
+                    cells.append((i, r))
+            if not cells:
                 break
-            for c in range(max(c0, 0), min(c1, w - 1) + 1):
-                if 0 <= r0 < h:
-                    go[r0][c] = fgc
-                if 0 <= r1 < h:
-                    go[r1][c] = fgc
-            for r in range(max(r0, 0), min(r1, h - 1) + 1):
-                if 0 <= c0 < w:
-                    go[r][c0] = fgc
-                if 0 <= c1 < w:
-                    go[r][c1] = fgc
+            for (i, j) in cells:
+                go[i][j] = fgc
             k += 1
-            if k > 2 * (h + w) + 5:
-                break
 
-    if mode == "box" and random.choice((True, False)):
-        gi = [list(x) for x in zip(*gi)]
-        go = [list(x) for x in zip(*go)]
+    if random.choice((True, False)):   # dmirror (transpose) both grids
+        gi = [list(row) for row in zip(*gi)]
+        go = [list(row) for row in zip(*go)]
 
     return {"input": gi, "output": go}
 
@@ -129,56 +119,73 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc, mode=None) -> dict:
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    ho, wo = O.shape
+    h, w = I.shape
     ops, sels = [], []
 
-    # the three marker cells are the rare color; background fills the rest
+    # The marker colour is the rare one; background fills everything else.
     cnt = Counter(I.flatten().tolist())
-    fgc = min(cnt, key=lambda c: cnt[c])
-    pts = sorted(tuple(p) for p in np.argwhere(I == fgc).tolist())
+    fgc = min(cnt.keys(), key=lambda c: (cnt[c], c))
 
-    if len(pts) >= 3:
-        A, B = pts[0], pts[-1]
-        cpr, cpc = (A[0] + B[0]) // 2, (A[1] + B[1]) // 2
-        f1, f2 = (B[0] - A[0]) // 2, (B[1] - A[1]) // 2
+    pts = list(zip(*np.where(I == fgc)))
+    pts = [(int(r), int(c)) for r, c in pts]
 
-        targets = []
-        if f1 == 0:                      # markers collinear in a row -> whole row
-            targets.append([(cpr, c) for c in range(wi)])
-        elif f2 == 0:                    # collinear in a column -> whole column
-            targets.append([(r, cpc) for r in range(hi)])
-        else:                            # concentric box rings, innermost outward
+    if len(pts) >= 2:
+        ul_i = min(p[0] for p in pts)
+        ul_j = min(p[1] for p in pts)
+        lr_i = max(p[0] for p in pts)
+        lr_j = max(p[1] for p in pts)
+        cpi = (ul_i + lr_i) // 2          # centre marker
+        cpj = (ul_j + lr_j) // 2
+        f1 = (lr_i - ul_i) // 2           # half-height step of the marked box
+        f2 = (lr_j - ul_j) // 2           # half-width step
+
+        G = I.copy()
+
+        def paint(r0, c0, r1, c1):
+            if r0 > r1 or c0 > c1:
+                return
+            if np.all(G[r0:r1 + 1, c0:c1 + 1] == fgc):
+                return
+            G[r0:r1 + 1, c0:c1 + 1] = fgc
+            ops.append(int(fgc))
+            sels.append([r0, c0, r1 - r0, c1 - c0])
+
+        if f1 == 0 and f2 == 0:
+            pass
+        elif f1 == 0:
+            # markers lie on one row -> the box degenerates to that whole row
+            paint(cpi, 0, cpi, w - 1)
+        elif f2 == 0:
+            # markers lie on one column -> whole column
+            paint(0, cpj, h - 1, cpj)
+        else:
+            # concentric box outlines around the centre, growing by (f1, f2) each step,
+            # drawn as four edges per box until a box falls completely off the grid
             k = 1
             while True:
-                r0, r1 = cpr - k * f1, cpr + k * f1
-                c0, c1 = cpc - k * f2, cpc + k * f2
-                if r0 < 0 and r1 >= hi and c0 < 0 and c1 >= wi:
+                t, b = cpi - k * f1, cpi + k * f1
+                l, r = cpj - k * f2, cpj + k * f2
+                cl, cr = max(0, l), min(w - 1, r)
+                rt, rb = max(0, t + 1), min(h - 1, b - 1)
+                inside = False
+                if 0 <= t < h and cl <= cr:
+                    inside = True
+                    paint(t, cl, t, cr)
+                if 0 <= b < h and cl <= cr:
+                    inside = True
+                    paint(b, cl, b, cr)
+                if 0 <= l < w and rt <= rb:
+                    inside = True
+                    paint(rt, l, rb, l)
+                if 0 <= r < w and rt <= rb:
+                    inside = True
+                    paint(rt, r, rb, r)
+                if not inside:
                     break
-                cells = set()
-                for c in range(max(c0, 0), min(c1, wi - 1) + 1):
-                    if 0 <= r0 < hi:
-                        cells.add((r0, c))
-                    if 0 <= r1 < hi:
-                        cells.add((r1, c))
-                for r in range(max(r0, 0), min(r1, hi - 1) + 1):
-                    if 0 <= c0 < wi:
-                        cells.add((r, c0))
-                    if 0 <= c1 < wi:
-                        cells.add((r, c1))
-                targets.append(sorted(cells))
                 k += 1
-                if k > 2 * (hi + wi) + 5:
-                    break
-
-        for cells in targets:
-            paint = [(r, c) for (r, c) in cells if I[r, c] != O[r, c]]
-            if paint:
-                ops.append(int(fgc))
-                sels.append(sel_of(paint))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 

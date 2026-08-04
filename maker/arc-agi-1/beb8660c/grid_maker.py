@@ -33,253 +33,161 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+import numpy as np
+from collections import Counter
+
+
 def sample_colors(num_examples=None) -> dict:
-    import random
+    # Rule depends only on 8-line position + line lengths (color-independent),
+    # so only bgc must be fixed. The DISCRETE structural variant is the final
+    # rotation (which edge the 8-line lands on) -> cover all 4 in examples.
     cols = [c for c in range(10) if c != 8]
     bgc = random.choice(cols)
-    # discrete structural variant: which edge carries the 8-line (rotation of the whole scene)
-    variants = [{"rot": r} for r in range(4)]
-    n_ex = num_examples if num_examples else 3
+    variants = ['identity', 'rot90', 'rot180', 'rot270']
+    n_ex = num_examples if num_examples else 4
     if n_ex >= len(variants):
-        examples = [dict(v) for v in variants]
-        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
+        examples = [{'rotf': v} for v in variants]
+        examples += [{'rotf': random.choice(variants)} for _ in range(n_ex - len(variants))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(variants, n_ex)]
+        examples = [{'rotf': v} for v in random.sample(variants, n_ex)]
     plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "instance_plan": plan}
+    return {'bgc': bgc, 'instance_plan': plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, rot=None) -> dict:
-    import random
-
-    if rot is None:
-        rot = random.choice([0, 1, 2, 3])
-    rot = rot % 4
-
-    def ui(lo, hi):
-        if hi < lo:
-            hi = lo
-        a = lo + int((hi - lo) * diff_lb)
-        b = lo + int((hi - lo) * diff_ub)
-        if b < a:
-            a, b = b, a
-        return random.randint(a, b)
-
-    # base grid is h x w with h >= w; a rot of 90/270 swaps the final dims
-    if rot % 2 == 0:
-        wcap = min(min(max_w, max_h), 30)
-        hcap = min(max_h, 30)
-    else:
-        wcap = min(min(max_h, max_w), 30)
-        hcap = min(max_w, 30)
-    if wcap < 3:
-        wcap = 3
-    w = ui(3, wcap)
-    if hcap < w:
-        hcap = w
-    h = ui(w, hcap)
-
-    remcols = [c for c in range(10) if c != 8 and c != bgc]
-    kmax = min(8, w - 1)
-    k = ui(1, kmax)
-    co = random.sample(remcols, k)
-    wds = sorted(random.sample(list(range(1, w)), k))
-
-    gi = [[bgc] * w for _ in range(h)]
-    for j in range(k):
-        rr = h - k - 1 + j
-        for cc in range(wds[j]):
-            gi[rr][cc] = co[j]
-    gi[h - 1] = [8] * w
-
-    go = [row[::-1] for row in gi]          # vmirror -> right anchored, sorted, 8-line at bottom
-
-    body = [list(r) for r in gi[:-1]]
-    random.shuffle(body)
-    body.append([8] * w)
-    gif = []
-    for r in body:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, rotf=None) -> dict:
+    if rotf is None:
+        rotf = random.choice(['identity', 'rot90', 'rot180', 'rot270'])
+    cols = remove(8, interval(0, 10, 1))
+    wmax = min(max_w, max_h)
+    if wmax < 3:
+        wmax = 3
+    w = unifint(diff_lb, diff_ub, (3, wmax))
+    h = unifint(diff_lb, diff_ub, (w, max_h))
+    remcols = remove(bgc, cols)
+    gi = canvas(bgc, (h, w))
+    k = min(8, w - 1)
+    k = unifint(diff_lb, diff_ub, (1, k))
+    co = sample(remcols, k)
+    wds = sorted(sample(interval(1, w, 1), k))
+    for j, (c, l) in enumerate(zip(co, wds)):
+        jj = h - k - 1 + j
+        gi = fill(gi, c, connect((jj, 0), (jj, l - 1)))
+    gi = fill(gi, 8, connect((h - 1, 0), (h - 1, w - 1)))
+    go = vmirror(gi)
+    gi = list(list(r) for r in gi[:-1])
+    shuffle(gi)
+    gi = tuple(tuple(r) for r in gi)
+    gi = gi + go[-1:]
+    gif = tuple()
+    for r in gi:
         nbc = r.count(bgc)
-        ofs = random.randint(0, nbc)
-        if ofs == 0:
-            gif.append(list(r))
-        else:
-            gif.append(r[-ofs:] + r[:-ofs])
-    gi = [row[::-1] for row in gif]
-
-    for _ in range(rot):                    # clockwise quarter turns
-        gi = [list(x) for x in zip(*gi[::-1])]
-        go = [list(x) for x in zip(*go[::-1])]
-
-    return {"input": tuple(tuple(r) for r in gi),
-            "output": tuple(tuple(r) for r in go)}
+        ofs = randint(0, nbc)
+        gif = gif + (r[-ofs:] + r[:-ofs],)
+    gi = vmirror(gif)
+    rotmap = {'identity': identity, 'rot90': rot90, 'rot180': rot180, 'rot270': rot270}
+    rf = rotmap[rotf]
+    gi = rf(gi)
+    go = rf(go)
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from maker.sel_helpers import sel_of
-
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
     ops, sels = [], []
 
-    # ---- normalise so the full 8-line is the TOP row -------------------------
-    if np.all(I[0, :] == 8):
-        nk = 0
-    elif np.all(I[hi - 1, :] == 8):
-        nk = 2
-    elif np.all(I[:, 0] == 8):
-        nk = 3
-    else:
-        nk = 1
-    N = np.rot90(I, nk)
-    RR = np.rot90(np.repeat(np.arange(hi).reshape(-1, 1), wi, axis=1), nk)
-    CC = np.rot90(np.repeat(np.arange(wi).reshape(1, -1), hi, axis=0), nk)
-    hn, wn = N.shape
+    # background = dominant color (fills most of grid)
+    cnt = Counter(I.flatten().tolist())
+    bgc = cnt.most_common(1)[0][0]
 
-    def to_orig(cells):
-        return [(int(RR[r, c]), int(CC[r, c])) for (r, c) in cells]
-
-    # ---- background = the colour present in the most rows --------------------
-    bgc, bgn = 0, -1
-    for c in np.unique(N).tolist():
-        c = int(c)
-        nrows = len(set(np.where(N == c)[0].tolist()))
-        if nrows > bgn:
-            bgn, bgc = nrows, c
-
-    # ---- the bars (one straight segment per colour) --------------------------
-    bars = []
-    for c in np.unique(N).tolist():
-        c = int(c)
-        if c == bgc or c == 8:
-            continue
-        rs, cs = np.where(N == c)
-        r = int(rs[0])
-        c0 = int(cs.min())
-        ln = int(cs.size)
-        bars.append({"color": c, "len": ln,
-                     "cells": [(r, c0 + t) for t in range(ln)]})
-    bars.sort(key=lambda b: (-b["len"], b["color"]))
-    for i, b in enumerate(bars):
-        b["dst"] = [(i + 1, t) for t in range(b["len"])]   # stacked under the 8-line
-        b["cur"] = list(b["cells"])
-        b["seen"] = set(b["cells"])
-
-    # ---- order the relocations: never land on a bar that has not moved yet ---
-    steps = []
-    pending = list(bars)
-    guard = 0
-    while pending and guard < 400:
-        guard += 1
-        pick = None
-        for b in pending:
-            blocked = False
-            for o in pending:
-                if o is not b and (set(b["dst"]) & set(o["cur"])):
-                    blocked = True
-                    break
-            if not blocked:
-                pick = b
-                break
-        if pick is not None:
-            steps.append((pick, list(pick["cur"]), list(pick["dst"]), True))
-            pick["cur"] = list(pick["dst"])
-            pick["seen"] |= set(pick["dst"])
-            pending.remove(pick)
-            continue
-        # deadlock (cyclic blocking): park one bar somewhere that blocks nothing
-        parked = False
-        for b in pending:
-            if b["color"] == 0:
-                continue
-            busy, dests = set(), set()
-            for o in pending:
-                if o is not b:
-                    busy |= set(o["cur"])
-                    dests |= set(o["dst"])
-            for r in range(1, hn):
-                for c0 in range(0, wn - b["len"] + 1):
-                    cand = [(r, c0 + t) for t in range(b["len"])]
-                    if cand == b["cur"]:
-                        continue
-                    s = set(cand)
-                    if (s & busy) or (s & dests):
-                        continue
-                    steps.append((b, list(b["cur"]), cand, True))
-                    b["cur"] = cand
-                    b["seen"] |= s
-                    parked = True
-                    break
-                if parked:
-                    break
-            if parked:
-                break
-        if not parked:                      # last resort: place the rest directly
-            for b in list(pending):
-                steps.append((b, list(b["cur"]), list(b["dst"]), False))
-                b["cur"] = list(b["dst"])
-                b["seen"] |= set(b["dst"])
-                pending.remove(b)
+    # locate 8-line (a full edge row/col) -> anchor edge
+    edge = None
+    for r in range(hi):
+        if np.all(I[r, :] == 8):
+            edge = 'top' if r == 0 else 'bottom'
             break
+    if edge is None:
+        for c in range(wi):
+            if np.all(I[:, c] == 8):
+                edge = 'left' if c == 0 else 'right'
+                break
 
-    # ---- emit the relocations ------------------------------------------------
-    sim = I.copy()
-    order_ids, ordered = [], []
-    for (b, src, dst, mv) in steps:
-        if id(b) not in order_ids:
-            order_ids.append(id(b))
-            ordered.append(b)
-        if src == dst:
-            continue
-        src_o = to_orig(src)
-        dst_o = to_orig(dst)
-        if mv and b["color"] != 0:
-            dr = dst_o[0][0] - src_o[0][0]
-            dc = dst_o[0][1] - src_o[0][1]
-            first = True
-            for _ in range(abs(dr)):
-                ops.append(20 if dr < 0 else 21)
-                sels.append(sel_of(src_o) if first else sel_of([]))
-                first = False
-            for _ in range(abs(dc)):
-                ops.append(22 if dc > 0 else 23)
-                sels.append(sel_of(src_o) if first else sel_of([]))
-                first = False
-            for (r, c) in src_o:
-                sim[r, c] = 0               # ARCLE leaves the vacated footprint at 0
-            for (r, c) in dst_o:
-                sim[r, c] = b["color"]
-        else:
-            # colour-0 segments are invisible to the object ops -> paint them
-            ops.append(b["color"])
-            sels.append(sel_of(dst_o))
-            for (r, c) in dst_o:
-                sim[r, c] = b["color"]
+    horizontal = edge in ('top', 'bottom')
 
-    # ---- repair what each bar left behind and nothing else refilled ----------
-    all_dst = set()
-    for b in bars:
-        all_dst |= set(b["dst"])
-    for b in ordered:
-        cells = []
-        for cell in sorted(b["seen"] - set(b["dst"])):
-            if cell in all_dst:
-                continue
-            r, c = to_orig([cell])[0]
-            if sim[r, c] != bgc:
-                cells.append((r, c))
-        if cells:
-            ops.append(bgc)
-            sels.append(sel_of(cells))
-            for (r, c) in cells:
-                sim[r, c] = bgc
+    # measure each line's LENGTH from I (count of its color), sort longest-first
+    lengths = {c: n for c, n in cnt.items() if c != bgc and c != 8}
+    order = sorted(lengths.keys(), key=lambda c: (-lengths[c], c))
 
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])      # full-grid rectangle for Submit
+    # build target: bgc canvas + 8-line + sorted lines stacked outward from 8-line,
+    # aligned to the corner CCW-adjacent to the 8-edge.
+    T = np.full((hi, wi), bgc, dtype=int)
+    if edge == 'top':
+        T[0, :] = 8
+    elif edge == 'bottom':
+        T[hi - 1, :] = 8
+    elif edge == 'left':
+        T[:, 0] = 8
+    else:
+        T[:, wi - 1] = 8
+
+    new_regions = []  # (color, r, c, h, w)
+    for i, color in enumerate(order):
+        L = lengths[color]
+        if edge == 'top':          # stack down, align left
+            rr = 1 + i
+            c0, c1 = 0, L - 1
+            T[rr, c0:c1 + 1] = color
+            new_regions.append((color, rr, c0, 0, c1 - c0))
+        elif edge == 'bottom':     # stack up, align right
+            rr = hi - 2 - i
+            c0, c1 = wi - L, wi - 1
+            T[rr, c0:c1 + 1] = color
+            new_regions.append((color, rr, c0, 0, c1 - c0))
+        elif edge == 'left':       # stack right, align bottom
+            cc = 1 + i
+            r0, r1 = hi - L, hi - 1
+            T[r0:r1 + 1, cc] = color
+            new_regions.append((color, r0, cc, r1 - r0, 0))
+        else:                      # right: stack left, align top
+            cc = wi - 2 - i
+            r0, r1 = 0, L - 1
+            T[r0:r1 + 1, cc] = color
+            new_regions.append((color, r0, cc, r1 - r0, 0))
+
+    # erase leftover old-line cells (old color in I, bgc in target), region by region
+    erase = (I != bgc) & (I != 8) & (T == bgc)
+    if horizontal:
+        for r in range(hi):
+            c = 0
+            while c < wi:
+                if erase[r, c]:
+                    c0 = c
+                    while c < wi and erase[r, c]:
+                        c += 1
+                    ops.append(int(bgc)); sels.append([r, c0, 0, c - 1 - c0])
+                else:
+                    c += 1
+    else:
+        for c in range(wi):
+            r = 0
+            while r < hi:
+                if erase[r, c]:
+                    r0 = r
+                    while r < hi and erase[r, c]:
+                        r += 1
+                    ops.append(int(bgc)); sels.append([r0, c, r - 1 - r0, 0])
+                else:
+                    r += 1
+
+    # paint each sorted line as one region
+    for (color, r, c, h, w) in new_regions:
+        ops.append(int(color)); sels.append([r, c, h, w])
+
+    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 

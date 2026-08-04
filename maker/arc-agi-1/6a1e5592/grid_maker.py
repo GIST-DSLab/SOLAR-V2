@@ -34,451 +34,295 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-import numpy as np
-from collections import deque
 
-from maker.sel_helpers import sel_of
-
-# the bar sits on one of the four sides (the generator's final rot90/180/270)
-VARIANTS = [{"rot": 0}, {"rot": 1}, {"rot": 2}, {"rot": 3}]
+ROTS = ['identity', 'rot90', 'rot180', 'rot270']
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = [c for c in range(10) if c != 1]      # 1 is the answer colour
+    cols = [c for c in range(10) if c != 1]
     barc, bgc, objc = random.sample(cols, 3)
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
+    if n_ex >= len(ROTS):
+        ex = list(ROTS) + [random.choice(ROTS) for _ in range(n_ex - len(ROTS))]
+        random.shuffle(ex)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
+        ex = random.sample(ROTS, n_ex)
+    plan = [{"rot": r} for r in ex]
+    plan.append({"rot": random.choice(ex)})
     return {"barc": barc, "bgc": bgc, "objc": objc, "instance_plan": plan}
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, barc, bgc, objc, rot=None) -> dict:
     if rot is None:
-        rot = random.choice([0, 1, 2, 3])
-    max_h = max(5, min(30, int(max_h)))
-    max_w = max(5, min(30, int(max_w)))
-    hlim, wlim = (max_h, max_w) if rot % 2 == 0 else (max_w, max_h)
-    if hlim < 9 or wlim < 5:
-        rot = 0
-        hlim, wlim = max_h, max_w
-    hlim = max(9, hlim)
-    wlim = max(5, wlim)
-
-    rotf = (identity, rot90, rot180, rot270)[rot % 4]
-    best = None
-    for _attempt in range(400):
-        h = unifint(diff_lb, diff_ub, (9, hlim))
-        w = unifint(diff_lb, diff_ub, (5, wlim))
-        barh = randint(3, h // 3)
-        maxobjh = h - barh - 1
-        nobjs = unifint(diff_lb, diff_ub, (1, max(1, w // 3)))
-        c1 = canvas(barc, (barh, w))
-        c2 = canvas(bgc, (h - barh, w))
-        gi = vconcat(c1, c2)
-        go = tuple(e for e in gi)
-        tr = 0
-        succ = 0
-        maxtr = 10 * nobjs
-        placopts = interval(1, w - 1, 1)
-        iinds = ofcolor(gi, bgc)
-        oinds = asindices(go)
-        barinds = ofcolor(gi, barc)
-        forbmarkers = set()
-        while tr < maxtr and succ < nobjs:
-            tr += 1
-            oh = randint(1, maxobjh)
-            ow = randint(1, min(4, w // 2))
-            bounds = asindices(canvas(-1, (oh, ow)))
-            ncells = randint(1, oh * ow)
-            sp = choice(totuple(connect((0, 0), (0, ow - 1))))
-            obj = {sp}
-            for k in range(ncells - 1):
-                obj.add(choice(totuple((bounds - obj) & mapply(dneighbors, obj))))
-            obj = normalize(obj)
-            oh, ow = shape(obj)
-            markerh = randint(1, min(oh, barh - 1))
-            markpart = sfilter(obj, lambda ij: ij[0] < markerh)
-            markpartn = normalize(markpart)
-            isinvalid = False
-            for k in range(1, markerh + 1):
-                if normalize(sfilter(markpartn, lambda ij: ij[0] < k)) in forbmarkers:
-                    isinvalid = True
-            if isinvalid:
-                continue
-            placoptcands = sfilter(
-                placopts, lambda jj: set(interval(jj, jj + ow + 1, 1)).issubset(set(placopts)))
-            if len(placoptcands) == 0:
-                continue
-            jloc = choice(placoptcands)
-            iloc = barh - markerh
-            oplcd = shift(obj, (iloc, jloc))
-            if not oplcd.issubset(oinds):
-                continue
+        rot = choice(ROTS)
+    rotf = {'identity': identity, 'rot90': rot90, 'rot180': rot180, 'rot270': rot270}[rot]
+    swaps = rot in ('rot90', 'rot270')
+    hub = max_w if swaps else max_h
+    wub = max_h if swaps else max_w
+    h = unifint(diff_lb, diff_ub, (9, max(9, hub)))
+    w = unifint(diff_lb, diff_ub, (5, max(5, wub)))
+    barh = randint(3, h // 3)
+    maxobjh = h - barh - 1
+    nobjs = unifint(diff_lb, diff_ub, (1, max(1, w // 3)))
+    c1 = canvas(barc, (barh, w))
+    c2 = canvas(bgc, (h - barh, w))
+    gi = vconcat(c1, c2)
+    go = tuple(e for e in gi)
+    tr = 0
+    succ = 0
+    maxtr = 10 * nobjs
+    placopts = interval(1, w - 1, 1)
+    iinds = ofcolor(gi, bgc)
+    oinds = asindices(go)
+    barinds = ofcolor(gi, barc)
+    forbmarkers = set()
+    while tr < maxtr and succ < nobjs:
+        tr += 1
+        oh = randint(1, maxobjh)
+        ow = randint(1, min(4, w // 2))
+        bounds = asindices(canvas(-1, (oh, ow)))
+        ncells = randint(1, oh * ow)
+        sp = choice(totuple(connect((0, 0), (0, ow - 1))))
+        obj = {sp}
+        for k in range(ncells - 1):
+            cands = totuple((bounds - obj) & mapply(dneighbors, obj))
+            if len(cands) == 0:
+                break
+            obj.add(choice(cands))
+        obj = normalize(obj)
+        oh, ow = shape(obj)
+        markerh = randint(1, min(oh, barh - 1))
+        markpart = sfilter(obj, lambda ij: ij[0] < markerh)
+        markpartn = normalize(markpart)
+        isinvalid = False
+        for k in range(1, markerh + 1):
+            if normalize(sfilter(markpartn, lambda ij: ij[0] < k)) in forbmarkers:
+                isinvalid = True
+        if isinvalid:
+            continue
+        for k in range(1, markerh + 1):
+            forbmarkers.add(normalize(sfilter(markpartn, lambda ij: ij[0] < k)))
+        placoptcands = sfilter(placopts, lambda jj: set(interval(jj, jj + ow + 1, 1)).issubset(set(placopts)))
+        if len(placoptcands) == 0:
+            continue
+        jloc = choice(placoptcands)
+        iloc = barh - markerh
+        oplcd = shift(obj, (iloc, jloc))
+        if oplcd.issubset(oinds):
             icands = sfilter(iinds, lambda ij: ij[0] <= h - oh and ij[1] <= w - ow)
             if len(icands) == 0:
                 continue
             loc = choice(totuple(icands))
             iplcd = shift(obj, loc)
-            if not iplcd.issubset(iinds):
-                continue
-            for k in range(1, markerh + 1):
-                forbmarkers.add(normalize(sfilter(markpartn, lambda ij: ij[0] < k)))
-            succ += 1
-            iinds = (iinds - iplcd) - mapply(neighbors, iplcd)
-            oinds = (oinds - oplcd)
-            gi = fill(gi, objc, iplcd)
-            gi = fill(gi, bgc, oplcd & barinds)
-            go = fill(go, 1, oplcd)
-            jm = apply(last, ofcolor(go, 1))
-            placopts = sorted(difference(placopts, jm | apply(decrement, jm) | apply(increment, jm)))
-            if len(placopts) == 0:
-                break
-        if succ >= 1:
-            best = (rotf(gi), rotf(go))
-            # keep only instances whose marker->object reading is unambiguous and
-            # whose slides stay visible the whole way
-            if _trajectory_is_clean(np.array(best[0]), np.array(best[1])):
-                break
-    if best is None:                       # no object ever fitted: empty scene
-        best = (rotf(gi), rotf(go))
-    return {'input': best[0], 'output': best[1]}
-
-
-# ── derive_operations ────────────────────────────────────────────────────────
-
-_MOVE_OP = {(-1, 0): 20, (1, 0): 21, (0, 1): 22, (0, -1): 23}
-
-
-def _canon_vec(dr, dc, ru, cu):
-    """Canonical-frame translation -> original-frame (row, col) translation."""
-    return (ru[0] * dr + cu[0] * dc, ru[1] * dr + cu[1] * dc)
-
-
-def _canonicalize(I):
-    """Find the rotation that puts the solid bar band on top; return
-    (canonical grid, index map, band thickness, barc, bgc) or None."""
-    h, w = I.shape
-    idx = np.arange(h * w).reshape(h, w)
-    for k in range(4):
-        G = np.rot90(I, k)
-        Gi = np.rot90(idx, k)
-        gh, gw = G.shape
-        if gh < 9 or gw < 5:
-            continue
-        X = int(G[0, 0])
-        if not np.all(G[0] == X):
-            continue
-        rws = np.where((G == X).any(axis=1))[0]
-        band = int(rws.max()) + 1
-        if band < 3 or band > gh // 3:
-            continue
-        bandcols = set(int(v) for v in np.unique(G[:band]))
-        if len(bandcols) != 2:                 # bar colour + the carved notches
-            continue
-        bgc = [c for c in bandcols if c != X][0]
-        rest = set(int(v) for v in np.unique(G[band:]))
-        if X in rest or bgc not in rest or len(rest) > 2:
-            continue
-        return G, Gi, band, X, bgc
-    return None
-
-
-def _components(cells):
-    cells = set(cells)
-    out = []
-    while cells:
-        seed = next(iter(cells))
-        comp = set()
-        dq = deque([seed])
-        cells.discard(seed)
-        while dq:
-            r, c = dq.popleft()
-            comp.add((r, c))
-            for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-                if (nr, nc) in cells:
-                    cells.discard((nr, nc))
-                    dq.append((nr, nc))
-        out.append(comp)
-    out.sort(key=lambda s: min(s))
-    return out
-
-
-class _Sim:
-    """Replay of the ARCLE ops used here (Color / Move) so the derivation can
-    check that every op it emits actually changes the visible grid."""
-
-    def __init__(self, grid):
-        self.g = np.asarray(grid, dtype=int).copy()
-        self.obj = None
-        self.bg = None
-        self.active = False
-
-    def clone(self):
-        s = _Sim(self.g)
-        s.obj = None if self.obj is None else list(self.obj)
-        s.bg = None if self.bg is None else self.bg.copy()
-        s.active = self.active
-        return s
-
-    def color(self, n, cells):
-        before = self.g.copy()
-        for (r, c) in cells:
-            self.g[r, c] = n
-        self.active = False
-        return not np.array_equal(before, self.g)
-
-    def move(self, op, cells):
-        before = self.g.copy()
-        H, W = self.g.shape
-        if cells:                       # non-empty selection grabs a new object
-            self.obj = [(r, c, int(self.g[r, c])) for (r, c) in cells if self.g[r, c] != 0]
-            self.bg = self.g.copy()
-            for (r, c) in cells:
-                self.bg[r, c] = 0
-            self.active = True
-        if not self.active:
-            return False
-        dr, dc = {20: (-1, 0), 21: (1, 0), 22: (0, 1), 23: (0, -1)}[op]
-        self.obj = [(r + dr, c + dc, v) for (r, c, v) in self.obj]
-        self.g = self.bg.copy()
-        for (r, c, v) in self.obj:
-            if 0 <= r < H and 0 <= c < W:
-                self.g[r, c] = v
-        return not np.array_equal(before, self.g)
-
-
-def _trajectory_is_clean(I, O):
-    """Replay derive_operations on a candidate instance: every op must change the
-    visible grid, no state may repeat, and the last state must be O. Instances
-    that fail (e.g. two objects whose markers would each fit the other's notch,
-    so the episode itself is ambiguous) are re-rolled by generate()."""
-    I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    try:
-        ops, sels = derive_operations(I, O)
-    except Exception:
-        return False
-    sim = _Sim(I)
-    seen = {sim.g.tobytes()}
-    for op, sel in zip(ops, sels):
-        if op == 34:
+            if iplcd.issubset(iinds):
+                succ += 1
+                iinds = (iinds - iplcd) - mapply(neighbors, iplcd)
+                oinds = (oinds - oplcd)
+                gi = fill(gi, objc, iplcd)
+                gi = fill(gi, bgc, oplcd & barinds)
+                go = fill(go, 1, oplcd)
+                jm = apply(last, ofcolor(go, 1))
+                placopts = sorted(difference(placopts, jm | apply(decrement, jm) | apply(increment, jm)))
+        if len(placopts) == 0:
             break
-        if not isinstance(sel, dict):
-            return False
-        cells = [tuple(c) for c in sel["cells"]]
-        changed = sim.move(op, cells) if 20 <= op <= 23 else sim.color(op, cells)
-        if not changed:
-            return False
-        key = sim.g.tobytes()
-        if key in seen:
-            return False
-        seen.add(key)
-    return sim.g.shape == O.shape and np.array_equal(sim.g, O)
+    gi = rotf(gi)
+    go = rotf(go)
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    """Each object in the field belongs to the notch whose shape is the object's
-    own top rows; the object slides up into that notch wearing colour 1."""
+    import numpy as np
+    from collections import deque
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    ho, wo = O.shape
-    submit = [0, 0, ho - 1, wo - 1]          # whole grid: bbox == intended cells
+    n, m = I.shape
+    full = [0, 0, n - 1, m - 1]
 
-    info = _canonicalize(I)
-    if info is None:                         # no bar/notches: nothing happens
-        return [34], [submit]
-    G, Gi, band, barc, bgc = info
-    gh, gw = G.shape
-    w = I.shape[1]
+    pal_i = set(int(v) for v in I.flatten().tolist())
+    pal_o = set(int(v) for v in O.flatten().tolist())
+    extra = pal_i - pal_o
+    if not extra:
+        return [34], [full]
+    objc = sorted(extra)[0]
 
-    def orig(rc):                            # canonical cell -> original cell
-        r, c = rc
-        v = int(Gi[r, c])
-        return (v // w, v % w)
+    # --- locate the bar: the only band whose outer edge line is one solid colour ---
+    edges = []
+    if len(set(O[0, :].tolist())) == 1:
+        c = int(O[0, 0])
+        edges.append((sum(1 for r in range(n) if (O[r, :] == c).any()), 0, c))
+    if len(set(O[n - 1, :].tolist())) == 1:
+        c = int(O[n - 1, 0])
+        edges.append((sum(1 for r in range(n) if (O[r, :] == c).any()), 2, c))
+    if len(set(O[:, 0].tolist())) == 1:
+        c = int(O[0, 0])
+        edges.append((sum(1 for j in range(m) if (O[:, j] == c).any()), 3, c))
+    if len(set(O[:, m - 1].tolist())) == 1:
+        c = int(O[0, m - 1])
+        edges.append((sum(1 for j in range(m) if (O[:, j] == c).any()), 1, c))
+    edges.sort()
+    barh, k, barc = edges[0]            # bar band is always the thinner band
+    rest = pal_i - {objc, barc}
+    bgc = sorted(rest)[0]
 
-    p00 = orig((0, 0))
-    ru = (orig((1, 0))[0] - p00[0], orig((1, 0))[1] - p00[1])
-    cu = (orig((0, 1))[0] - p00[0], orig((0, 1))[1] - p00[1])
+    In = np.rot90(I, k)                 # normalised frame: bar on top
+    hn, wn = In.shape
 
-    palette = set(int(v) for v in np.unique(G[band:]))
-    objcs = [c for c in palette if c != bgc]
-    if not objcs:
-        return [34], [submit]
-    objc = objcs[0]
+    def inv(i, j):                      # normalised -> original coords
+        if k == 0:
+            return (i, j)
+        if k == 1:
+            return (j, m - 1 - i)
+        if k == 2:
+            return (n - 1 - i, m - 1 - j)
+        return (n - 1 - j, i)
 
-    notch = {(int(r), int(c)) for r, c in zip(*np.where(G[:band] == bgc))}
-    objcells = {(int(r), int(c)) for r, c in zip(*np.where(G == objc))}
+    # --- objects (loose pieces in the body) ---
+    seen = np.zeros((hn, wn), dtype=bool)
+    comps = []
+    for r in range(hn):
+        for c in range(wn):
+            if In[r, c] == objc and not seen[r, c]:
+                q = deque([(r, c)])
+                seen[r, c] = True
+                cells = []
+                while q:
+                    a, b = q.popleft()
+                    cells.append((a, b))
+                    for da, db in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        x, y = a + da, b + db
+                        if 0 <= x < hn and 0 <= y < wn and not seen[x, y] and In[x, y] == objc:
+                            seen[x, y] = True
+                            q.append((x, y))
+                comps.append(cells)
+    if not comps:
+        return [34], [full]
 
-    # every object's top k rows must land exactly on notch cells, and together the
-    # objects have to account for every notch cell — that exact cover is what
-    # pins each object to its own notch
-    comps = _components(objcells)
+    # --- notches: holes bitten out of the bar ---
+    N = frozenset((r, c) for r in range(barh) for c in range(wn) if In[r, c] == bgc)
+
+    # --- match each piece's leading rows to a notch -> its slot ---
     cand_lists = []
-    for comp in comps:
-        rs = [r for r, _ in comp]
-        cs = [c for _, c in comp]
-        r0, c0 = min(rs), min(cs)
-        oh = max(rs) - r0 + 1
-        ow = max(cs) - c0 + 1
-        norm = {(r - r0, c - c0) for r, c in comp}
-        cands = []
-        for k in range(1, min(oh, band - 1) + 1):
-            pref = {(r, c) for (r, c) in norm if r < k}
-            if not pref or band - k + oh > gh:
+    for cells in comps:
+        r0 = min(a for a, _ in cells)
+        c0 = min(b for _, b in cells)
+        norm = frozenset((a - r0, b - c0) for a, b in cells)
+        oh = max(a for a, _ in norm) + 1
+        ow = max(b for _, b in norm) + 1
+        cl = []
+        for jloc in range(0, wn - ow + 1):
+            nw = frozenset(p for p in N if jloc <= p[1] <= jloc + ow - 1)
+            if not nw:
                 continue
-            for jloc in range(1, gw - 1 - ow):   # cols jloc..jloc+ow stay interior
-                mark = {(r + band - k, c + jloc) for (r, c) in pref}
-                if not mark <= notch:
-                    continue
-                dest = {(r + band - k, c + jloc) for (r, c) in norm}
-                cands.append((mark, dest, (band - k) - r0, jloc - c0))
-        cands.sort(key=lambda t: (not (1 <= min(c for _, c in t[1])
-                                       and max(c for _, c in t[1]) <= gw - 3),
-                                  -len(t[0])))
-        cand_lists.append(cands)
-
-    order_idx = sorted(range(len(comps)), key=lambda i: len(cand_lists[i]))
-    chosen = {}
-
-    def _cover(pos, covered, taken):
-        if pos == len(order_idx):
-            return covered == notch
-        i = order_idx[pos]
-        for mark, dest, dr, dc in cand_lists[i]:
-            if mark & covered or dest & taken:
+            mk = barh - min(p[0] for p in nw)
+            if mk < 1 or mk > barh - 1:
                 continue
-            chosen[i] = (dest, dr, dc)
-            if _cover(pos + 1, covered | mark, taken | dest):
+            iloc = barh - mk
+            if iloc + oh > hn:
+                continue
+            head = frozenset((iloc + a, jloc + b) for a, b in norm if iloc + a < barh)
+            if head == nw:
+                dest = frozenset((iloc + a, jloc + b) for a, b in norm)
+                cl.append((dest, nw))
+        cand_lists.append(cl)
+
+    nobj = len(comps)
+    assign = [None] * nobj
+    order = sorted(range(nobj), key=lambda i: len(cand_lists[i]))
+    used = set()
+
+    def bt(idx):
+        if idx == len(order):
+            return len(used) == len(N)
+        i = order[idx]
+        for dest, nw in cand_lists[i]:
+            if nw & used:
+                continue
+            if any(assign[j] is not None and (assign[j][0] & dest) for j in range(nobj)):
+                continue
+            assign[i] = (dest, nw)
+            used.update(nw)
+            if bt(idx + 1):
                 return True
-            del chosen[i]
+            used.difference_update(nw)
+            assign[i] = None
         return False
 
-    _cover(0, set(), set())
-    plans = [(comps[i], chosen[i][0], chosen[i][1], chosen[i][2])
-             for i in range(len(comps)) if i in chosen]
-    order = list(range(len(plans)))          # raster order of the field objects
+    if not bt(0):
+        for i in range(nobj):
+            if assign[i] is None and cand_lists[i]:
+                assign[i] = cand_lists[i][0]
 
-    def _paths(bg, cells, tr, tc, seen_before):
-        """Pick the slide from the object's place to (tr, tc): a straight one if
-        every step of it redraws the grid, otherwise the shortest detour that
-        does — an object gliding over ground of its own colour would be an
-        invisible, meaningless step."""
-        H, W = I.shape
+    live = [i for i in range(nobj) if assign[i] is not None]
+    srcs = {i: frozenset(comps[i]) for i in live}
+    dests = {i: assign[i][0] for i in live}
 
-        def comp(off):
-            g = bg.copy()
-            for (r, c) in cells:
-                rr, cc = r + off[0], c + off[1]
-                if 0 <= rr < H and 0 <= cc < W:
-                    g[rr, cc] = 1
-            return g
+    # --- order pieces: a piece must vanish before another piece is drawn over it ---
+    deps = {i: set(j for j in live if j != i and (dests[i] & srcs[j])) for i in live}
+    seq, ready = [], [i for i in live if not deps[i]]
+    done = set()
+    while ready:
+        i = ready.pop(0)
+        seq.append(i)
+        done.add(i)
+        for j in live:
+            if j not in done and j not in ready and deps[j] <= done:
+                ready.append(j)
+    cyclic = len(seq) != len(live)
+    if cyclic:
+        seq = live
 
-        def ok(seq):
-            off, seen = (0, 0), set(seen_before)
-            for (sr, sc) in seq:
-                off = (off[0] + sr, off[1] + sc)
-                key = comp(off).tobytes()
-                if key in seen:
-                    return False
-                seen.add(key)
-            return True
+    def rects(cells):
+        rem = set(cells)
+        out = []
+        while rem:
+            r0, c0 = min(rem)
+            wmax = 0
+            while (r0, c0 + wmax) in rem:
+                wmax += 1
+            best = (1, 1)
+            for ww in range(1, wmax + 1):
+                hh = 0
+                while all((r0 + hh, c0 + j) in rem for j in range(ww)):
+                    hh += 1
+                if ww * hh > best[0] * best[1]:
+                    best = (ww, hh)
+            ww, hh = best
+            for a in range(hh):
+                for b in range(ww):
+                    rem.discard((r0 + a, c0 + b))
+            out.append((r0, c0, hh, ww))
+        return out
 
-        vs = [((-1 if tr < 0 else 1), 0)] * abs(tr)
-        hs = [(0, (-1 if tc < 0 else 1))] * abs(tc)
-        for seq in (vs + hs, hs + vs):
-            if ok(seq):
-                return seq
-        rlo, rhi = min(0, tr) - 6, max(0, tr) + 6
-        clo, chi = min(0, tc) - 6, max(0, tc) + 6
-        rs = [r for r, _ in cells]
-        cs = [c for _, c in cells]
-        prev = {(0, 0): None}
-        seen = set(seen_before) | {comp((0, 0)).tobytes()}
-        dq = deque([(0, 0)])
-        while dq:
-            off = dq.popleft()
-            if off == (tr, tc):
-                break
-            for (sr, sc) in ((-1, 0), (1, 0), (0, 1), (0, -1)):
-                nxt = (off[0] + sr, off[1] + sc)
-                if nxt in prev or not (rlo <= nxt[0] <= rhi and clo <= nxt[1] <= chi):
-                    continue
-                if min(rs) + nxt[0] < 0 or max(rs) + nxt[0] >= H:
-                    continue
-                if min(cs) + nxt[1] < 0 or max(cs) + nxt[1] >= W:
-                    continue
-                key = comp(nxt).tobytes()
-                if key in seen:              # invisible step, or a grid seen before
-                    continue
-                seen.add(key)
-                prev[nxt] = (off, (sr, sc))
-                dq.append(nxt)
-        if (tr, tc) in prev:
-            seq, node = [], (tr, tc)
-            while prev[node] is not None:
-                node, step = prev[node]
-                seq.append(step)
-            seq.reverse()
-            return seq
-        return vs + hs
+    ops, sels = [], []
 
-    sim = _Sim(I)
-    ops, cellsels, states = [], [], [sim.g.copy()]
-    placed = set()
+    def erase(i):
+        sr, sc = min(srcs[i])
+        a, b = inv(sr, sc)
+        ops.append(10 + bgc)
+        sels.append([a, b, 0, 0])
 
-    def do(op, cells, mv=False):
-        (sim.move if mv else sim.color)(op, cells)
-        ops.append(op)
-        cellsels.append(cells)
-        states.append(sim.g.copy())
+    def paint(i):
+        for (r0, c0, hh, ww) in rects(dests[i]):
+            a = inv(r0, c0)
+            b = inv(r0 + hh - 1, c0 + ww - 1)
+            rmin, rmax = min(a[0], b[0]), max(a[0], b[0])
+            cmin, cmax = min(a[1], b[1]), max(a[1], b[1])
+            ops.append(1)
+            sels.append([rmin, cmin, rmax - rmin, cmax - cmin])
 
-    for pos, i in enumerate(order):
-        src, dest, dr, dc = plans[i]
-        later = set()
-        for j in order[pos + 1:]:
-            later |= plans[j][1]
-        # the object takes the answer colour where it stands, then slides up into
-        # the notch that spells out its own top rows (nothing to recolour if a
-        # body placed earlier already covers it completely)
-        src_o = [orig(x) for x in sorted(src)]
-        if any(sim.g[r, c] != 1 for (r, c) in src_o):
-            do(1, src_o)
-        bg = sim.g.copy()
-        for (r, c) in src_o:
-            bg[r, c] = 0
-        seq = _paths(bg, src_o, *_canon_vec(dr, dc, ru, cu),
-                     {g.tobytes() for g in states})
-        cur = set(src_o)
-        first = True
-        for (sr, sc) in seq:
-            # first step grabs the object; the rest carry an empty selection so
-            # ARCLE keeps it grabbed and restores everything it glides over
-            do(_MOVE_OP[(sr, sc)], sorted(cur) if first else [], mv=True)
-            first = False
-            cur = {(r + sr, c + sc) for (r, c) in cur}
-        hole = set(src_o) - cur
-        later_o = set(orig(x) for x in later)
-        # The grab left the vacated footprint at 0. Where this object had been
-        # standing on a body already placed, that body shows through again;
-        # everything else goes back to the background.
-        overlap = sorted(hole & placed)
-        if overlap:
-            do(1, overlap)
-        rest = sorted(hole - placed)
-        # skipped only when that whole footprint is where a still-to-be-placed
-        # object lands, so there is no background left to restore there
-        if bgc != 0 and rest and not set(rest) <= later_o:
-            do(bgc, rest)
-        placed |= cur
+    if cyclic:
+        for i in seq:
+            erase(i)
+        for i in seq:
+            paint(i)
+    else:
+        for i in seq:
+            erase(i)
+            paint(i)
 
     ops.append(34)
-    cellsels.append(None)
-    sels = [sel_of(cs) if cs is not None else submit for cs in cellsels[:-1]] + [submit]
+    sels.append(full)
     return ops, sels
 
 

@@ -3,6 +3,8 @@ ARC Task: 694f12f3 (RE-ARC) — LLM-generated grid_maker
 """
 from __future__ import annotations
 
+import inspect
+
 import sys
 import random
 from pathlib import Path
@@ -31,119 +33,103 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-def sample_colors() -> dict:
-    import random
+import random
+import numpy as np
+from collections import Counter
+
+try:
+    from maker.sel_helpers import sel_of
+except Exception:
+    def sel_of(cells):
+        cells = list(cells)
+        rs = [r for r, _ in cells]
+        cs = [c for _, c in cells]
+        return [min(rs), min(cs), max(rs) - min(rs), max(cs) - min(cs)]
+
+
+def sample_colors(num_examples=None) -> dict:
     cols = [c for c in range(10) if c not in (1, 2)]
     bgc, sqc = random.sample(cols, 2)
     return {"bgc": bgc, "sqc": sqc}
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc) -> dict:
-    import numpy as np
-    import random
+    def unifint(lb, ub, rng):
+        a, b = rng
+        return random.randint(int(round(a + (b - a) * lb)),
+                              int(round(a + (b - a) * ub)))
 
-    max_dim = min(max_h, max_w)
-    ub = min(30, max_dim)
-    if ub < 9:
-        ub = 9
-    lb = 9
-
-    h = random.randint(lb, ub)
-    w = random.randint(lb, ub)
+    lim = min(max_h, max_w)          # rotation may swap h/w
+    if lim < 9:
+        lim = 9
+    h = unifint(diff_lb, diff_ub, (9, lim))
+    w = unifint(diff_lb, diff_ub, (9, lim))
 
     seploc = random.randint(4, h - 5)
-    bigh = random.randint(4, seploc)
-    bigw = random.randint(3, w - 1)
+    bigh = unifint(diff_lb, diff_ub, (4, seploc))
+    bigw = unifint(diff_lb, diff_ub, (3, w - 1))
     bigloci = random.randint(0, seploc - bigh)
     biglocj = random.randint(0, w - bigw)
 
     smallmaxh = h - seploc - 1
     smallmaxw = w - 1
-
-    cands = []
     bigsize = bigh * bigw
+    cands = []
     for a in range(3, smallmaxh + 1):
         for b in range(3, smallmaxw + 1):
             if a * b < bigsize:
                 cands.append((a, b))
-
     if not cands:
-        smallh, smallw = 3, 3
-    else:
-        cands.sort(key=lambda ab: ab[0] * ab[1])
-        idx = random.randint(0, len(cands) - 1)
-        smallh, smallw = cands[idx]
-
+        raise ValueError("no small rect candidates")
+    cands.sort(key=lambda ab: ab[0] * ab[1])
+    idx = unifint(diff_lb, diff_ub, (0, len(cands) - 1))
+    smallh, smallw = cands[idx]
     smallloci = random.randint(seploc + 1, h - smallh)
     smalllocj = random.randint(0, w - smallw)
 
-    gi = np.full((h, w), bgc, dtype=int)
-    gi[bigloci:bigloci + bigh, biglocj:biglocj + bigw] = sqc
-    gi[smallloci:smallloci + smallh, smalllocj:smalllocj + smallw] = sqc
+    gi = [[bgc for _ in range(w)] for _ in range(h)]
+    for r in range(bigloci, bigloci + bigh):
+        for c in range(biglocj, biglocj + bigw):
+            gi[r][c] = sqc
+    for r in range(smallloci, smallloci + smallh):
+        for c in range(smalllocj, smalllocj + smallw):
+            gi[r][c] = sqc
 
-    go = gi.copy()
-    go[bigloci + 1:bigloci + bigh - 1, biglocj + 1:biglocj + bigw - 1] = 2
-    go[smallloci + 1:smallloci + smallh - 1, smalllocj + 1:smalllocj + smallw - 1] = 1
+    go = [row[:] for row in gi]
+    for r in range(bigloci + 1, bigloci + bigh - 1):
+        for c in range(biglocj + 1, biglocj + bigw - 1):
+            go[r][c] = 2
+    for r in range(smallloci + 1, smallloci + smallh - 1):
+        for c in range(smalllocj + 1, smalllocj + smallw - 1):
+            go[r][c] = 1
 
-    k = random.choice([0, 1, 2, 3])
-    gi = np.rot90(gi, k=k)
-    go = np.rot90(go, k=k)
+    k = random.choice((0, 1, 2, 3))
+    if k:
+        gi = np.rot90(np.array(gi, dtype=int), k).tolist()
+        go = np.rot90(np.array(go, dtype=int), k).tolist()
 
-    return {"input": gi.tolist(), "output": go.tolist()}
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
-    import numpy as np
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-
-    vals, counts = np.unique(I, return_counts=True)
-    bgc = int(vals[counts.argmax()])
-
-    visited = np.zeros_like(I, dtype=bool)
-    rects = []
-    for r in range(hi):
-        for c in range(wi):
-            if I[r, c] != bgc and not visited[r, c]:
-                color = int(I[r, c])
-                stack = [(r, c)]
-                cells = []
-                while stack:
-                    y, x = stack.pop()
-                    if y < 0 or y >= hi or x < 0 or x >= wi:
-                        continue
-                    if visited[y, x] or I[y, x] != color:
-                        continue
-                    visited[y, x] = True
-                    cells.append((y, x))
-                    stack.extend([(y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)])
-                ys = [p[0] for p in cells]
-                xs = [p[1] for p in cells]
-                rmin, rmax = min(ys), max(ys)
-                cmin, cmax = min(xs), max(xs)
-                oh = rmax - rmin + 1
-                ow = cmax - cmin + 1
-                if len(cells) == oh * ow:
-                    rects.append((len(cells), rmin, cmin, oh, ow))
-
-    rects.sort(key=lambda t: t[0])
+    ho, wo = O.shape
     ops, sels = [], []
 
-    if len(rects) >= 1:
-        smallest = rects[0]
-        largest = rects[-1]
-        _, srmin, scmin, sh, sw = smallest
-        if sh >= 3 and sw >= 3:
-            ops.append(1)
-            sels.append([srmin + 1, scmin + 1, sh - 3, sw - 3])
-        _, lrmin, lcmin, lh, lw = largest
-        if lh >= 3 and lw >= 3:
-            ops.append(2)
-            sels.append([lrmin + 1, lcmin + 1, lh - 3, lw - 3])
+    # Only change: each rectangle's interior gets painted (small->1, big->2).
+    # Interiors are solid rectangles, measured directly from the I/O diff.
+    for val in (1, 2):
+        cells = [(r, c) for r in range(ho) for c in range(wo)
+                 if O[r, c] == val and I[r, c] != val]
+        if not cells:
+            continue
+        ops.append(val)
+        sels.append(sel_of(cells))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -162,49 +148,108 @@ class GridMaker(BaseGridMaker):
         dataset = []
 
         for _sn in range(num_samples):
-            pr_in:  List[NDArray] = []
-            pr_out: List[NDArray] = []
-            ex_in:  List[NDArray] = []
-            ex_out: List[NDArray] = []
-            ops:  List[int]       = []
-            sels: List[List[int]] = []
+            # Episode-level retry: if 10 attempts at some instance all fail, that's
+            # transient (bad luck with the generator's randomness) — retry the WHOLE
+            # episode from scratch (fresh colors/instance plan) up to 5 times, rather
+            # than silently continuing with a partial episode (fewer examples than
+            # requested, or a missing test instance with operations=[]/selections=[]
+            # quietly appended as if it were a normal sample).
+            for _episode_attempt in range(5):
+                pr_in:  List[NDArray] = []
+                pr_out: List[NDArray] = []
+                ex_in:  List[NDArray] = []
+                ex_out: List[NDArray] = []
+                ops:  List[int]       = []
+                sels: List[List[int]] = []
 
-            # sample color roles once per episode → consistent across all instances
-            colors = sample_colors()
-
-            j = 0
-            while j < num_examples + 1:
-                ok = False
-                for _ in range(10):
-                    try:
-                        r = generate(
-                            random.uniform(0.2, 0.5),
-                            random.uniform(0.5, 0.8),
-                            max_h, max_w,
-                            **colors,
-                        )
-                        I = np.array(r["input"],  dtype=np.uint8)
-                        O = np.array(r["output"], dtype=np.uint8)
-                        # enforce max_grid_dim — skip oversized grids
-                        if I.shape[0] > max_h or I.shape[1] > max_w:
-                            continue
-                        if O.shape[0] > max_h or O.shape[1] > max_w:
-                            continue
-                        ok = True
-                        break
-                    except (IndexError, ValueError, KeyError):
-                        continue
-                if not ok:
-                    j += 1
-                    continue
-                if j == num_examples:
-                    pr_in.append(I)
-                    pr_out.append(O)
-                    ops, sels = derive_operations(I, O)
+                # sample color roles once per episode → consistent across all instances
+                # sample_colors() may optionally accept num_examples (to pre-plan
+                # per-instance categories) — call it either way for compatibility
+                # with grid_makers generated before this parameter existed.
+                if "num_examples" in inspect.signature(sample_colors).parameters:
+                    colors = sample_colors(num_examples=num_examples)
                 else:
-                    ex_in.append(I)
-                    ex_out.append(O)
-                j += 1
+                    colors = sample_colors()
+
+                # Plans are consumed by INDEX, not mutated: retries for instance j
+                # must receive the same variant. category_plan is retained as a
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
+                instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
+                if category_plan is not None and instance_plan is not None:
+                    raise ValueError(
+                        "sample_colors must return only one of category_plan/instance_plan"
+                    )
+                if category_plan is not None and len(category_plan) != num_examples + 1:
+                    # A wrong plan length is a deterministic bug in sample_colors(),
+                    # not bad luck — retrying the episode won't fix it. Fail loudly
+                    # instead of clamping the index and silently reusing an entry.
+                    raise ValueError(
+                        f"category_plan length {len(category_plan)} != "
+                        f"num_examples+1 ({num_examples + 1}) for task 694f12f3"
+                    )
+                if instance_plan is not None:
+                    if len(instance_plan) != num_examples + 1:
+                        raise ValueError(
+                            f"instance_plan length {len(instance_plan)} != "
+                            f"num_examples+1 ({num_examples + 1}) for task 694f12f3"
+                        )
+                    if any(not isinstance(entry, dict) for entry in instance_plan):
+                        raise ValueError("every instance_plan entry must be a kwargs dict")
+                    if instance_plan[-1] not in instance_plan[:-1]:
+                        raise ValueError(
+                            "instance_plan test variant must appear among the examples"
+                        )
+
+                try:
+                    j = 0
+                    while j < num_examples + 1:
+                        ok = False
+                        for _ in range(10):
+                            try:
+                                call_kwargs = dict(colors)
+                                if instance_plan is not None:
+                                    call_kwargs.update(instance_plan[j])
+                                elif category_plan is not None:
+                                    call_kwargs["category"] = category_plan[j]
+                                r = generate(
+                                    random.uniform(0.2, 0.5),
+                                    random.uniform(0.5, 0.8),
+                                    max_h, max_w,
+                                    **call_kwargs,
+                                )
+                                I = np.array(r["input"],  dtype=np.uint8)
+                                O = np.array(r["output"], dtype=np.uint8)
+                                # enforce max_grid_dim — skip oversized grids
+                                if I.shape[0] > max_h or I.shape[1] > max_w:
+                                    continue
+                                if O.shape[0] > max_h or O.shape[1] > max_w:
+                                    continue
+                                ok = True
+                                break
+                            except (IndexError, ValueError, KeyError):
+                                continue
+                        if not ok:
+                            raise RuntimeError(
+                                f"Failed to generate instance {j} after 10 attempts "
+                                f"for task 694f12f3"
+                            )
+                        if j == num_examples:
+                            pr_in.append(I)
+                            pr_out.append(O)
+                            ops, sels = derive_operations(I, O)
+                        else:
+                            ex_in.append(I)
+                            ex_out.append(O)
+                        j += 1
+                    break  # episode complete
+                except RuntimeError:
+                    continue
+            else:
+                raise RuntimeError(
+                    f"Failed to build a complete episode for task 694f12f3 "
+                    f"after 5 attempts"
+                )
 
             dataset.append((ex_in, ex_out, pr_in, pr_out, {
                 "id":         f"694f12f3-rearc-llm_{_sn + 1}",

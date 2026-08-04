@@ -33,42 +33,20 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
-from collections import Counter
-
-from maker.sel_helpers import sel_of
-
-
-# ----------------------------------------------------------------------------
-# 1. colors: generator samples bgc and objc from cols = [0..9] minus 2
-#    (2 is reserved for the completed quarter). Fix both per episode.
-# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    import random
     cols = [c for c in range(10) if c != 2]
-    bgc, objc = random.sample(cols, 2)
+    bgc, objc = sample(cols, 2)
     return {"bgc": bgc, "objc": objc}
 
 
-# ----------------------------------------------------------------------------
-# 2. generator: 4-fold (90 deg) rotationally symmetric object built from one
-#    random quadrant; one quadrant's exclusive part is missing in the input and
-#    is color 2 in the output.
-# ----------------------------------------------------------------------------
 def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
              bgc: int, objc: int) -> dict:
-    from random import randint, choice, sample
-
-    hcap = max(10, min(30, int(max_h)))
-    wcap = max(10, min(30, int(max_w)))
-
-    h = unifint(diff_lb, diff_ub, (10, hcap))
-    w = unifint(diff_lb, diff_ub, (10, wcap))
+    h = unifint(diff_lb, diff_ub, (10, max_h))
+    w = unifint(diff_lb, diff_ub, (10, max_w))
     odh = unifint(diff_lb, diff_ub, (2, min(h, w) // 2))
     loci = randint(0, h - 2 * odh)
     locj = randint(0, w - 2 * odh)
     loc = (loci, locj)
-
     quad = canvas(bgc, (odh, odh))
     ncellsd = unifint(diff_lb, diff_ub, (0, odh ** 2 // 2))
     ncells = choice((ncellsd, odh ** 2 - ncellsd))
@@ -100,85 +78,25 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     return {'input': gi, 'output': go}
 
 
-# ----------------------------------------------------------------------------
-# 3. derive_operations
-#
-# RULE (measured from I only):
-#   The full object F is invariant under a 90 degree CW rotation about the
-#   centre of its (even-sided, square) bounding box.  A CW rotation about a
-#   half-integer centre is exactly the integer map  (r, c) -> (c + p, q - r)
-#   with p + q odd.  The input holds F minus the exclusive part R of ONE
-#   quadrant, so  rot(X) \ X == R  for the correct (p, q).
-#   We therefore SEARCH I for the (p, q) whose rotation makes X completable:
-#   X u rot(X) must itself be rotation-invariant and lie inside the grid.
-#   Among valid centres take the one with maximal overlap |X n rot(X)|
-#   (= smallest added quarter), exactly as the task's argmax rule.
-#   R (the missing rotational quarter) is then painted with a single Color2
-#   op selecting that quarter's true cells.  O is never read to build R.
-# ----------------------------------------------------------------------------
-def _rot_cw(cells, p, q):
-    return {(c + p, q - r) for (r, c) in cells}
-
-
 def derive_operations(I, O):
+    import numpy as np
+    from maker.sel_helpers import sel_of
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
     ho, wo = O.shape
+
     ops, sels = [], []
 
-    # degenerate instance: nothing was missing
-    if I.shape == O.shape and np.array_equal(I, O):
-        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
-        return ops, sels
+    # The one missing rotationally-symmetric quarter of the object appears in
+    # color 2; every other cell is unchanged. Paint that whole added part once.
+    missing = [(r, c) for r in range(ho) for c in range(wo) if O[r, c] != I[r, c]]
+    if missing:
+        ops.append(2)
+        sels.append(sel_of(missing))
 
-    cnt = Counter(I.flatten().tolist())
-    # object colour = the non-background one; background is the bulk colour,
-    # so try the colours least-frequent-first and keep the first that admits
-    # a valid rotational completion.
-    color_order = [c for c, _ in sorted(cnt.items(), key=lambda kv: kv[1])]
-
-    found = None
-    for objc in color_order:
-        X = {(r, c) for r in range(hi) for c in range(wi) if I[r, c] == objc}
-        if len(X) < 2:
-            continue
-        rs = [r for r, _ in X]
-        cs = [c for _, c in X]
-        # rotated row  = c + p  must stay in [0, hi-1]
-        p_lo, p_hi = -min(cs), hi - 1 - max(cs)
-        # rotated col  = q - r  must stay in [0, wi-1]
-        q_lo, q_hi = max(rs), wi - 1 + min(rs)
-
-        best = None
-        for p in range(p_lo, p_hi + 1):
-            for q in range(q_lo, q_hi + 1):
-                if (p + q) % 2 == 0:      # centre must be half-integer
-                    continue
-                RX = _rot_cw(X, p, q)
-                R = RX - X
-                if not R:                 # nothing would be added
-                    continue
-                F = X | RX
-                if _rot_cw(F, p, q) != F:  # completed object not 4-fold symmetric
-                    continue
-                if any(not (0 <= r < hi and 0 <= c < wi) for r, c in F):
-                    continue
-                score = (len(R), len(X))
-                if best is None or score < best[0]:
-                    best = (score, R)
-        if best is not None:
-            found = best[1]
-            break
-
-    if found is None:
-        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
-        return ops, sels
-
-    # paint the missing rotational quarter (one semantic object) with color 2
-    ops.append(2); sels.append(sel_of(sorted(found)))
-
-    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34)
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 

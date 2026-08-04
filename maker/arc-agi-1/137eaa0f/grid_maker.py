@@ -33,6 +33,11 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import numpy as np
+from collections import Counter
+from maker.sel_helpers import sel_of
+
+
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc = random.choice(cols)
@@ -42,8 +47,10 @@ def sample_colors(num_examples=None) -> dict:
 
 def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, dotc: int) -> dict:
     cols = interval(0, 10, 1)
-    h = unifint(diff_lb, diff_ub, (2, 4))
-    w = unifint(diff_lb, diff_ub, (2, 4))
+    hcap = max(2, min(4, max_h // 2))
+    wcap = max(2, min(4, max_w // 2))
+    h = unifint(diff_lb, diff_ub, (2, hcap))
+    w = unifint(diff_lb, diff_ub, (2, wcap))
     remcols = remove(bgc, cols)
     remcols = remove(dotc, remcols)
     go = canvas(dotc, (h, w))
@@ -61,15 +68,17 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, d
         cd[choice(choscols)].add(ri)
     for c, idxes in cd.items():
         go = fill(go, c, idxes)
-    lob = min(min(h, w) * 2, max_h)
-    lobw = min(min(h, w) * 2, max_w)
-    gih = unifint(diff_lb, diff_ub, (lob, max_h))
-    giw = unifint(diff_lb, diff_ub, (lobw, max_w))
+
+    lo_h = min(min(h, w) * 2, max_h)
+    lo_w = min(min(h, w) * 2, max_w)
+    gih = unifint(diff_lb, diff_ub, (lo_h, max_h))
+    giw = unifint(diff_lb, diff_ub, (lo_w, max_w))
     objs = tuple(
         normalize(insert((dotc, loc), frozenset({(c, ij) for ij in cd[c]})))
         for c in choscols
     )
     maxtr = min(h, w) * 2
+    maxtrtot = 1000
     while True:
         succ = True
         gi = canvas(bgc, (gih, giw))
@@ -94,126 +103,82 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, d
                 break
         if succ:
             break
-        maxtr = int(maxtr * 1.5) + 1
-        gih = randint(gih, max_h)
-        giw = randint(giw, max_w)
+        maxtrtot += 1
+        if maxtrtot < 1000:
+            break
+        maxtr = int(maxtr * 1.5)
+        gih = randint(min(gih, max_h), max_h)
+        giw = randint(min(giw, max_w), max_w)
     return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from collections import Counter
-
+    """
+    I holds several scattered fragments; every fragment carries one copy of the
+    same marker colour (dotc).  Overlaying all fragments on that marker rebuilds
+    the small output grid.  So: crop the canvas onto the frame where one
+    fragment already sits correctly, then paint in the remaining fragments'
+    cells (one Color op per colour).
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
 
-    # background = the canvas colour the generator paints before scattering objects
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    cnt_I = Counter(I.flatten().tolist())
+    cnt_O = Counter(O.flatten().tolist())
+    bgc = cnt_I.most_common(1)[0][0]
 
-    # ---- count univalued 4-connected components per foreground colour ----
-    seen = np.zeros((hi, wi), dtype=bool)
-    comp_count = {}
-    for r in range(hi):
-        for c in range(wi):
-            if I[r, c] == bgc or seen[r, c]:
-                continue
-            col = int(I[r, c])
-            stack = [(r, c)]
-            seen[r, c] = True
-            while stack:
-                rr, cc = stack.pop()
-                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    nr, nc = rr + dr, cc + dc
-                    if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] and I[nr, nc] == col:
-                        seen[nr, nc] = True
-                        stack.append((nr, nc))
-            comp_count[col] = comp_count.get(col, 0) + 1
-    fg_colors = sorted(comp_count)
-    cellcount = {col: int((I == col).sum()) for col in fg_colors}
+    # marker colour: appears once per fragment in I but only once in O
+    diffs = {c: cnt_I.get(c, 0) - cnt_O[c] for c in cnt_O}
+    best = max(diffs.values()) if diffs else 0
+    if best > 0:
+        dotc = sorted([c for c in diffs if diffs[c] == best])[0]
+    else:
+        singles = sorted([c for c in cnt_O if cnt_O[c] == 1])
+        dotc = singles[0] if singles else sorted(cnt_O)[0]
 
-    # ---- rebuild the output by stacking every colour-object on its nearest dot ----
-    def reconstruct(dotc):
-        dots = [(int(r), int(c)) for r, c in zip(*np.where(I == dotc))]
-        if not dots:
-            return None
-        objs = []
-        for col in fg_colors:
-            if col == dotc:
-                continue
-            cells = [(int(r), int(c)) for r, c in zip(*np.where(I == col))]
-            dot = min(dots, key=lambda d: (min(abs(d[0] - p[0]) + abs(d[1] - p[1]) for p in cells), d))
-            objs.append((col, [(p[0] - dot[0], p[1] - dot[1]) for p in cells]))
-        rels = [(0, 0)] + [p for _, rel in objs for p in rel]
-        minr = min(p[0] for p in rels)
-        minc = min(p[1] for p in rels)
-        dpos = (0 - minr, 0 - minc)
-        cellmap = {dpos: dotc}
-        placed = []
-        for col, rel in objs:
-            pts = sorted((p[0] - minr, p[1] - minc) for p in rel)
-            for p in pts:
-                cellmap[p] = col
-            placed.append((col, pts))
-        H = max(p[0] for p in cellmap) + 1
-        W = max(p[1] for p in cellmap) + 1
-        if (H, W) != (ho, wo):
-            return None
-        g = np.full((H, W), -1, dtype=int)
-        for (r, c), v in cellmap.items():
-            g[r, c] = v
-        if not np.array_equal(g, O):
-            return None
-        return dotc, dpos, placed
+    # marker position inside O
+    dp = [(r, c) for r in range(ho) for c in range(wo) if O[r, c] == dotc]
+    pr, pc = dp[0] if dp else (0, 0)
 
-    # dot colour = colour present in every object (most components; ties -> fewest cells)
-    cands = sorted(fg_colors, key=lambda col: (-comp_count[col], cellcount[col], col))
-    res = None
-    for cand in cands:
-        res = reconstruct(cand)
-        if res is not None:
-            break
+    dot_cells = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == dotc]
+
+    # for each fragment colour, align its nearest marker cell onto (pr, pc)
+    frames = []
+    for c in sorted(cnt_O):
+        if c == dotc:
+            continue
+        cells = [(r, cc) for r in range(hi) for cc in range(wi) if I[r, cc] == c]
+        if not cells or not dot_cells:
+            continue
+        d = min(dot_cells,
+                key=lambda p: min(abs(p[0] - r) + abs(p[1] - cc) for r, cc in cells))
+        R, C = d[0] - pr, d[1] - pc
+        if 0 <= R and R + ho <= hi and 0 <= C and C + wo <= wi:
+            frames.append((len(cells), R, C))
+
+    if frames:
+        frames.sort(reverse=True)
+        R, C = frames[0][1], frames[0][2]
+    else:
+        R, C = 0, 0
+    R = max(0, min(R, hi - ho))
+    C = max(0, min(C, wi - wo))
 
     ops, sels = [], []
-    if res is None:
-        ops.append(34)
-        sels.append([0, 0, ho - 1, wo - 1])
-        return ops, sels
+    # 1. crop canvas onto the output frame (the anchor fragment is already right)
+    ops.append(33); sels.append([R, C, ho - 1, wo - 1])
 
-    dotc, dpos, placed = res
+    cropped = I[R:R + ho, C:C + wo]
+    # 2. paint the remaining fragments, one op per colour
+    for col in sorted(cnt_O):
+        cells = [(r, c) for r in range(ho) for c in range(wo)
+                 if O[r, c] == col and cropped[r, c] != col]
+        if cells:
+            ops.append(int(col)); sels.append(sel_of(cells))
 
-    # build the stacked picture in the top-left region, source (input) stays readable
-    # 1) the shared reference dot
-    if int(I[dpos[0], dpos[1]]) != dotc:
-        ops.append(int(dotc))
-        sels.append([dpos[0], dpos[1], 0, 0])
-
-    # 2) one colour-object at a time, laid down around that dot
-    placed.sort(key=lambda t: (-len(t[1]), t[0]))
-    for col, pts in placed:
-        pts = sorted(pts)
-        i = 0
-        while i < len(pts):
-            r, c = pts[i]
-            if int(I[r, c]) == col:
-                i += 1
-                continue
-            j = i
-            end = c
-            while (j + 1 < len(pts) and pts[j + 1][0] == r and pts[j + 1][1] == end + 1
-                   and int(I[pts[j + 1][0], pts[j + 1][1]]) != col):
-                j += 1
-                end = pts[j][1]
-            ops.append(int(col))
-            sels.append([r, c, 0, end - c])
-            i = j + 1
-
-    # 3) only now shrink the canvas onto the finished picture
-    ops.append(33)
-    sels.append([0, 0, ho - 1, wo - 1])
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 

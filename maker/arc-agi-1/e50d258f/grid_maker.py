@@ -37,22 +37,27 @@ import random
 import numpy as np
 from collections import Counter
 
+from maker.sel_helpers import sel_of
+
 
 def sample_colors(num_examples=None) -> dict:
-    # 2 is reserved (special counted color); bgc is any other color
-    bgc = random.choice([c for c in range(10) if c != 2])
-    return {"bgc": bgc}
+    cols = [c for c in range(10) if c != 2]
+    bgc = random.choice(cols)
+    padcol = random.choice([c for c in cols if c != bgc])
+    return {"bgc": bgc, "padcol": padcol}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, padcol) -> dict:
+    from dsl import (canvas, asindices, sfilter, totuple, backdrop, outbox,
+                     paint, shift, remove, interval)
+    from utils import unifint
+
     cols = remove(2, interval(0, 10, 1))
     lo_h = min(10, max_h)
     lo_w = min(10, max_w)
     h = unifint(diff_lb, diff_ub, (lo_h, max_h))
     w = unifint(diff_lb, diff_ub, (lo_w, max_w))
-    remcols = remove(bgc, cols)
-    padcol = choice(remcols)
-    remcols = remove(padcol, remcols)
+    remcols = remove(padcol, remove(bgc, cols))
     gi = canvas(bgc, (h, w))
     num = unifint(diff_lb, diff_ub, (1, 10))
     indss = asindices(gi)
@@ -64,28 +69,28 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
     while succ < num and tr <= maxtrials:
         if len(remcols) == 0 or len(indss) == 0:
             break
-        oh = randint(3, 8)
-        ow = randint(3, 8)
+        oh = random.randint(3, min(8, max(3, h - 2)))
+        ow = random.randint(3, min(8, max(3, w - 2)))
         subs = totuple(sfilter(indss, lambda ij: ij[0] < h - oh and ij[1] < w - ow))
         if len(subs) == 0:
             tr += 1
             continue
-        loci, locj = choice(subs)
+        loci, locj = random.choice(subs)
         obj = frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)})
         bd = backdrop(obj)
         if bd.issubset(indss):
             numcc = unifint(diff_lb, diff_ub, (1, min(7, len(remcols))))
-            ccols = sample(remcols, numcc)
+            ccols = random.sample(tuple(remcols), numcc)
             if succ == 0:
                 numred = unifint(diff_lb, diff_ub, (1, oh * ow))
                 bound = numred
             else:
                 numred = unifint(diff_lb, diff_ub, (0, min(oh * ow, bound - 1)))
-            cc = canvas(choice(ccols), (oh, ow))
+            cc = canvas(random.choice(ccols), (oh, ow))
             cci = asindices(cc)
-            subs = sample(totuple(cci), numred)
-            obj1 = {(choice(ccols), ij) for ij in cci - set(subs)}
-            obj2 = {(2, ij) for ij in subs}
+            subs2 = random.sample(totuple(cci), numred)
+            obj1 = {(random.choice(ccols), ij) for ij in cci - set(subs2)}
+            obj2 = {(2, ij) for ij in subs2}
             obj = obj1 | obj2
             gi = paint(gi, shift(obj, (loci, locj)))
             if go is None:
@@ -93,7 +98,9 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
             succ += 1
             indss = (indss - bd) - outbox(bd)
         tr += 1
-    return {'input': gi, 'output': go}
+    if go is None:
+        raise ValueError("no object placed")
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
@@ -102,49 +109,43 @@ def derive_operations(I, O):
     hi, wi = I.shape
     ho, wo = O.shape
 
-    # background = the dominant fill color the generator paints the canvas with
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # background = dominant color on the grid border (generator paints canvas with bgc)
+    border = (list(I[0, :]) + list(I[-1, :]) + list(I[:, 0]) + list(I[:, -1]))
+    bgc = Counter(border).most_common(1)[0][0]
 
-    # discover the rectangular objects = connected non-bgc components (4-conn;
-    # generator leaves an outbox gap between blocks, so they never merge)
-    seen = np.zeros_like(I, dtype=bool)
-    comps = []
-    for sr in range(hi):
-        for sc in range(wi):
-            if I[sr, sc] == bgc or seen[sr, sc]:
+    # blocks are solid rectangles of non-bgc cells, separated by >=1 bgc cell
+    seen = np.zeros((hi, wi), dtype=bool)
+    best = None
+    best_cnt = -1
+    for r0 in range(hi):
+        for c0 in range(wi):
+            if seen[r0, c0] or I[r0, c0] == bgc:
                 continue
-            stack = [(sr, sc)]
-            seen[sr, sc] = True
+            stack = [(r0, c0)]
+            seen[r0, c0] = True
             cells = []
             while stack:
                 r, c = stack.pop()
                 cells.append((r, c))
-                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] and I[nr, nc] != bgc:
-                        seen[nr, nc] = True
-                        stack.append((nr, nc))
-            comps.append(cells)
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        rr, cc = r + dr, c + dc
+                        if 0 <= rr < hi and 0 <= cc < wi and not seen[rr, cc] and I[rr, cc] != bgc:
+                            seen[rr, cc] = True
+                            stack.append((rr, cc))
+            cnt = sum(1 for (r, c) in cells if I[r, c] == 2)
+            if cnt > best_cnt:
+                rs = [r for r, _ in cells]
+                cs = [c for _, c in cells]
+                best_cnt = cnt
+                best = (min(rs), min(cs), max(rs) - min(rs) + 1, max(cs) - min(cs) + 1)
 
-    # rule: pick the object holding the most color-2 cells
-    best = None
-    best_twos = -1
-    for cells in comps:
-        twos = sum(1 for (r, c) in cells if I[r, c] == 2)
-        if twos > best_twos:
-            best_twos = twos
-            best = cells
-
-    rs = [r for (r, c) in best]
-    cs = [c for (r, c) in best]
-    r0, c0 = min(rs), min(cs)
-    bh = max(rs) - r0 + 1
-    bw = max(cs) - c0 + 1
+    br, bc, bh, bw = best
 
     ops, sels = [], []
-    # crop working canvas down to the chosen object's bounding box
-    ops.append(33); sels.append([r0, c0, bh - 1, bw - 1])
-    ops.append(34); sels.append([0, 0, bh - 1, bw - 1])
+    # crop canvas down to that block (selection is exactly the full rectangle)
+    ops.append(33); sels.append([br, bc, bh - 1, bw - 1])
+    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 

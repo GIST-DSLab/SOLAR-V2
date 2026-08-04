@@ -35,159 +35,128 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
+from maker.sel_helpers import sel_of
+
+SGN_VARIANTS = [(-1,), (1,), (-1, 1)]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = [c for c in range(10) if c != 3]
     bgc, noisec = random.sample(cols, 2)
-    return {"bgc": bgc, "noisec": noisec}
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(SGN_VARIANTS):
+        examples = [{"sgns_choice": list(v)} for v in SGN_VARIANTS]
+        examples += [{"sgns_choice": list(random.choice(SGN_VARIANTS))}
+                     for _ in range(n_ex - len(SGN_VARIANTS))]
+        random.shuffle(examples)
+    else:
+        examples = [{"sgns_choice": list(v)}
+                    for v in random.sample(SGN_VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
+    return {"bgc": bgc, "noisec": noisec, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec) -> dict:
-    def unifint(lb, ub, bounds):
-        a, b = bounds
-        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, sgns_choice=None) -> dict:
+    if sgns_choice is None:
+        sgns_choice = list(random.choice(SGN_VARIANTS))
+    sgns = tuple(sgns_choice)
 
-    h = unifint(diff_lb, diff_ub, (min(18, max_h), max_h))
-    w = unifint(diff_lb, diff_ub, (min(18, max_w), max_w))
+    h = unifint(diff_lb, diff_ub, (min(18, max_h), min(30, max_h)))
+    w = unifint(diff_lb, diff_ub, (min(18, max_w), min(30, max_w)))
 
-    # --- noise canvas -------------------------------------------------------
     lb = int(0.4 * h * w)
     ub = int(0.5 * h * w)
     nbgc = unifint(diff_lb, diff_ub, (lb, ub))
-    gi = [[noisec] * w for _ in range(h)]
-    inds = [(i, j) for i in range(h) for j in range(w)]
-    for i, j in random.sample(inds, nbgc):
-        gi[i][j] = bgc
-    addn, addb = set(), set()
-    for i in range(h - 2):
-        for j in range(w - 2):
-            blk = [gi[i + di][j + dj] for di in range(3) for dj in range(3)]
-            if all(v == bgc for v in blk):
-                addn.add((i + random.randint(0, 2), j + random.randint(0, 2)))
-            elif all(v == noisec for v in blk):
-                addb.add((i + random.randint(0, 2), j + random.randint(0, 2)))
-    for i, j in addn:
-        gi[i][j] = noisec
-    for i, j in addb:
-        gi[i][j] = bgc
-    go = [row[:] for row in gi]
+    gi = canvas(noisec, (h, w))
+    inds = totuple(asindices(gi))
+    bgcinds = sample(inds, nbgc)
+    gi = fill(gi, bgc, bgcinds)
+    sinds = asindices(canvas(-1, (3, 3)))
+    bgcf = recolor(bgc, sinds)
+    noisecf = recolor(noisec, sinds)
+    addn = set()
+    addb = set()
+    for occ in occurrences(gi, bgcf):
+        occi, occj = occ
+        addn.add((randint(0, 2) + occi, randint(0, 2) + occj))
+    for occ in occurrences(gi, noisecf):
+        occi, occj = occ
+        addb.add((randint(0, 2) + occi, randint(0, 2) + occj))
+    gi = fill(gi, noisec, addn)
+    gi = fill(gi, bgc, addb)
+    go = tuple(e for e in gi)
 
-    # --- vertical bar -------------------------------------------------------
-    m = min(h, w)
-    marg = 6                                   # keeps every arm long enough to be readable
-    dim_ub = max(3, min(8, m - 2 * marg - 1))
-    dim = random.randint(random.randint(3, dim_ub), dim_ub)
-    locj = random.randint(marg, max(marg, m - dim - marg - 1))
-    spi = random.choice((0, random.randint(3, h // 2)))
+    dim = randint(randint(3, 8), 8)
+    locj = randint(3, min(h, w) - dim - 4)
+    spi = choice((0, randint(3, h // 2)))
     for j in range(locj, locj + dim):
-        for r in range(spi, h):
-            gi[r][j] = bgc
-            go[r][j] = bgc
-    r0 = spi + 1 if spi > 0 else spi
+        ln = connect((spi, j), (h - 1, j))
+        gi = fill(gi, bgc, ln)
+        go = fill(go, bgc, ln)
     for j in range(locj + 1, locj + dim - 1):
-        for r in range(r0, h):
-            go[r][j] = 3
+        ln = connect((spi + 1 if spi > 0 else spi, j), (h - 1, j))
+        go = fill(go, 3, ln)
 
-    # --- horizontal arms ----------------------------------------------------
-    sgns = random.choice(((-1,), (1,), (-1, 1)))
-    blocks = []
-    sl = random.choice((spi, random.randint(spi + 3, h - 6)))
-    blocks.append((sgns, sl, random.randint(3, min(8, h - sl - 3))))
+    startloc = choice((spi, randint(spi + 3, h - 6)))
+    hh = randint(3, min(8, h - startloc - 3))
+    for sgn in sgns:
+        for ii in range(startloc, startloc + hh, 1):
+            ln = shoot((ii, locj), (0, sgn))
+            gi = fill(gi, bgc, ln)
+            go = fill(go, bgc, ln - ofcolor(go, 3))
+    for sgn in sgns:
+        for ii in range(startloc + 1 if startloc > 0 else startloc, startloc + hh - 1, 1):
+            ln = shoot((ii, locj + dim - 2 if sgn == -1 else locj + 1), (0, sgn))
+            go = fill(go, 3, ln)
+
     if len(sgns) == 1 and unifint(diff_lb, diff_ub, (0, 1)) == 1:
-        sl2 = random.choice((spi, random.randint(spi + 3, h - 6)))
-        blocks.append(((-sgns[0],), sl2, random.randint(3, min(8, h - sl2 - 3))))
-    for sgs, a, hh in blocks:
-        for sgn in sgs:
-            for r in range(a, a + hh):
-                cs = range(0, locj + 1) if sgn == -1 else range(locj, w)
-                for c in cs:
-                    gi[r][c] = bgc
-                    if go[r][c] != 3:
-                        go[r][c] = bgc
-        for sgn in sgs:
-            for r in range(a + 1 if a > 0 else a, a + hh - 1):
-                cs = range(0, locj + dim - 1) if sgn == -1 else range(locj + 1, w)
-                for c in cs:
-                    go[r][c] = 3
+        sgns2 = (-sgns[0],)
+        startloc = choice((spi, randint(spi + 3, h - 6)))
+        hh = randint(3, min(8, h - startloc - 3))
+        for sgn in sgns2:
+            for ii in range(startloc, startloc + hh, 1):
+                ln = shoot((ii, locj), (0, sgn))
+                gi = fill(gi, bgc, ln)
+                go = fill(go, bgc, ln - ofcolor(go, 3))
+        for sgn in sgns2:
+            for ii in range(startloc + 1 if startloc > 0 else startloc, startloc + hh - 1, 1):
+                ln = shoot((ii, locj + dim - 2 if sgn == -1 else locj + 1), (0, sgn))
+                go = fill(go, 3, ln)
 
-    # --- keep the bar/arm borders unambiguous against random noise ----------
-    def mark(r, c):
-        if 0 <= r < h and 0 <= c < w:
-            gi[r][c] = noisec
-            go[r][c] = noisec
-
-    if spi > 0:
-        mark(spi - 1, locj)
-    mark(h - 1, locj - 1)
-    mark(h - 1, locj + dim)
-    for sgs, a, hh in blocks:
-        for sgn in sgs:
-            c = 0 if sgn == -1 else w - 1
-            mark(a - 1, c)
-            mark(a + hh, c)
-
-    return {"input": gi, "output": go}
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
+    ho, wo = O.shape
 
-    def runs(seq):
-        out = []
-        for v in seq:
-            if out and out[-1][-1] == v - 1:
-                out[-1].append(v)
-            else:
-                out.append([v])
-        return out
-
-    # 1. the vertical bar: the only block of >=3 neighbouring columns that is one
-    #    solid colour from mid-grid down to the bottom edge.  Its colour is the
-    #    bar colour, its extent gives the bar's left edge and width.
-    bar = None
-    for c in np.unique(I):
-        solid = [j for j in range(w) if bool(np.all(I[h // 2:, j] == c))]
-        for run in runs(solid):
-            if len(run) >= 3 and (bar is None or len(run) > len(bar[1])):
-                bar = (int(c), run)
-    bgc, cols = bar
-    locj, dim = cols[0], len(cols)
-
-    # 2. the bar's top edge
-    top = h - 1
-    while top > 0 and bool(np.all(I[top - 1, locj:locj + dim] == bgc)):
-        top -= 1
-
-    # 3. the horizontal arms: rows that are bar-coloured from the bar out to a
-    #    side edge, grouped into contiguous arms
-    def arms(mask_of_row):
-        rows = [r for r in range(top, h) if bool(np.all(mask_of_row(r)))]
-        return [(rr[0], rr[-1]) for rr in runs(rows) if len(rr) >= 3]
-
-    left = arms(lambda r: I[r, :locj] == bgc)
-    right = arms(lambda r: I[r, locj + dim:] == bgc)
+    # The only change is: interiors of the cleared corridors become 3.
+    # Those 3-cells form a few solid rectangles (vertical trunk + horizontal arms).
+    target = (O == 3)
+    covered = np.zeros_like(target, dtype=bool)
 
     ops, sels = [], []
-
-    def paint(r0, c0, r1, c1):
-        ops.append(3)
-        sels.append([r0, c0, r1 - r0, c1 - c0])
-
-    # the interior of each bar gets colour 3: inset one cell from every wall the
-    # bar has, but not where the bar runs off the grid edge.
-    # vertical bar first (it is the anchor the arms grow out of)
-    paint(top + 1 if top > 0 else 0, locj + 1, h - 1, locj + dim - 2)
-    # then each arm, from the bar outward to its own edge
-    for a, b in left:
-        paint(a + 1 if a > 0 else a, 0, b - 1, locj)
-    for a, b in right:
-        paint(a + 1 if a > 0 else a, locj + dim - 1, b - 1, w - 1)
+    for r in range(ho):
+        for c in range(wo):
+            if not target[r, c] or covered[r, c]:
+                continue
+            # grow right along this row
+            c1 = c
+            while c1 + 1 < wo and target[r, c1 + 1] and not covered[r, c1 + 1]:
+                c1 += 1
+            # grow down while the whole column span stays 3 and uncovered
+            r1 = r
+            while r1 + 1 < ho and all(target[r1 + 1, cc] and not covered[r1 + 1, cc]
+                                      for cc in range(c, c1 + 1)):
+                r1 += 1
+            covered[r:r1 + 1, c:c1 + 1] = True
+            # selection is exactly this full rectangle -> bbox form is the true cell set
+            ops.append(3)
+            sels.append([r, c, r1 - r, c1 - c])
 
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 

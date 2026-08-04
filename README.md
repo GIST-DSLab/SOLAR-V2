@@ -19,7 +19,7 @@ could have produced without seeing the answer**: it reads the rule from the
 worked examples and executes it, rather than reconstructing a memorized output.
 
 That judgement used to take a human per task, which does not scale. Here it is
-made by a three-stage gate, and the makers in this repo are what survived it.
+made by a four-stage gate, and the makers in this repo are what survived it.
 
 ## Layout
 
@@ -37,6 +37,7 @@ figure/teaser.png
 gen_rearc_makers_llm.py    generate makers with an LLM  (stage 2 lives inside)
 verify_grid_makers.py      stage 1 — do N fresh samples all reach the target
 critique_makers_llm.py     stage 3 — LLM critic judges the trajectory, not the answer
+probe_originals.py         stage 4 — does the solution work on the ORIGINAL ARC pairs
 critique_to_feedback.py    turn findings into per-task feedback for the next round
 gen_rearc_trajectories_v2.py  roll makers out into trajectories
 export_release.py          pack trajectories into parquet shards
@@ -67,13 +68,13 @@ streamlit run viz_trajectories.py
 **`--force_grid_size` differs by maker set.** The `handcraft` makers read
 `max_grid_dim` from their kwargs and fail without it, so they need the flag; the
 LLM-written sets work with or without it, and the published dataset was rolled
-out **without** it. Concretely, at `--num_samples 2`:
+out **without** it. Yields of the released rollout:
 
 | set | command | result |
 |---|---|---|
-| `arc-agi-1` | as above | 794/800 samples reach the target (99.2%) |
-| `arc-1d` | as above | 36/36 (100%) |
-| `handcraft` | `+ --force_grid_size` | 30/30 (100%) |
+| `arc-agi-1` | as above | 3975/4000 samples reach the target (99.4%); every task yields at least 6 |
+| `arc-1d` | as above | 180/180 (100%) |
+| `handcraft` | `+ --force_grid_size` | 30/30 at `--num_samples 2` |
 
 A sample is written to disk only if its final grid matches the target, so the
 shortfall is dropped rather than repaired.
@@ -89,15 +90,31 @@ generate ─► stage 2  in-process validation
          ─► stage 1  verify_grid_makers.py — N fresh samples must all match
          ─► stage 3  LLM critic replays one episode in ARCLE and judges the
                      *trajectory* against the solver's concept, not the answer
+         ─► stage 4  probe_originals.py — the same solution is replayed on the
+                     task's ORIGINAL ARC pairs, which no earlier stage looks at
          ─► findings become per-task reviewer feedback for the next round
 ```
 
 Generation ran in rounds, each round's findings feeding the next; every task
 kept the maker that came out best.
 
+Stage 4 exists because stages 1-3 all judge a maker against grids its own
+`generate()` produced, which is circular: a maker whose `generate()` samples a
+narrower slice of the task than the authors' pairs passes all of them and still
+cannot solve the task. One task's generator only ever emitted the left-right
+mirror of a rule the original pairs state as an up-down mirror, and nothing
+upstream noticed. **All 400 tasks now reproduce all 1718 of their original
+pairs.**
+
+The feedback that closed those cases carried no diagnosis — just the failing
+original pair, what the trajectory produced instead, and a couple of instances
+the maker's own `generate()` makes. Naming the cause is the model's job; a human
+writing "handle the other mirror axis too" per task is the bottleneck this
+pipeline exists to remove.
+
 ## Data
 
-The rolled-out trajectories — 4,154 episodes in parquet, with the loader and the
+The rolled-out trajectories — 4,155 episodes in parquet, with the loader and the
 schema documented — are published as a separate dataset: **TODO: link**.
 
 Nothing here depends on that dataset; `gen_rearc_trajectories_v2.py` regenerates
@@ -112,7 +129,12 @@ any file under `maker/arc-agi-1/`, then:
 ```bash
 python verify_grid_makers.py --subfolder <your_set>       # do the samples reach the target
 python critique_makers_llm.py --subfolder <your_set>      # is the trajectory honest
+python probe_originals.py    --subfolder <your_set>       # does it solve the original pairs
 ```
+
+The last one is the cheap objective check — no LLM calls, seconds for 400 tasks —
+and it is the one that catches a maker whose `generate()` has quietly drifted away
+from the task. Feed its output to `critique_to_feedback.py` to close the loop.
 
 `docs/arcle_reference_v2.md` is the operation reference the makers are written
 against, and is also what the generator prompt is built from.

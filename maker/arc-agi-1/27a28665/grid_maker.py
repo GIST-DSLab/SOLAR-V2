@@ -37,50 +37,55 @@ import random
 import numpy as np
 from collections import Counter
 
-# structural variants: (output_color, 3x3 footprint of the mark)
-# output color is a FUNCTION of the footprint's largest 4-connected component size
-# (size 1->2, 4->3, 5->6, else->1). We keep the generator's 4 footprints to build data,
-# but derive_operations MEASURES that connectivity from I, never a table lookup.
+# (output color, 3x3 pattern cells) — the four possible stamps
 MAPPING = [
-    (1, {(0, 0), (0, 1), (1, 0), (1, 2), (2, 1)}),
-    (2, {(0, 0), (1, 1), (2, 0), (0, 2), (2, 2)}),
-    (3, {(2, 0), (0, 1), (0, 2), (1, 1), (1, 2)}),
-    (6, {(1, 1), (0, 1), (1, 0), (1, 2), (2, 1)}),
+    (1, [(0, 0), (0, 1), (1, 0), (1, 2), (2, 1)]),
+    (2, [(0, 0), (1, 1), (2, 0), (0, 2), (2, 2)]),
+    (3, [(2, 0), (0, 1), (0, 2), (1, 1), (1, 2)]),
+    (6, [(1, 1), (0, 1), (1, 0), (1, 2), (2, 1)]),
 ]
+
+PATTERN_SET = [frozenset(cells) for _, cells in MAPPING]
+
+
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc = random.choice(cols)
-    objc = random.choice([c for c in cols if c != bgc])
-    n_var = len(MAPPING)
-    n_ex = num_examples if num_examples else 5
-    idxs = list(range(n_var))
-    if n_ex >= n_var:
-        examples = list(idxs)
-        examples += [random.choice(idxs) for _ in range(n_ex - n_var)]
+    bgc, objc = random.sample(cols, 2)
+    variants = [{"shape_idx": i} for i in range(len(MAPPING))]
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(variants):
+        examples = [dict(v) for v in variants]
+        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
         random.shuffle(examples)
     else:
-        examples = random.sample(idxs, n_ex)
-    plan = [{"variant": v} for v in examples]
-    plan.append({"variant": random.choice(examples)})  # test drawn from shown variants
+        examples = [dict(v) for v in random.sample(variants, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "objc": objc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, variant=None) -> dict:
-    if variant is None:
-        variant = random.randrange(len(MAPPING))
-    col, obj = MAPPING[variant]
-    h = random.randint(3, max_h)
-    w = random.randint(3, max_w)
-    fac = random.randint(1, min(h, w) // 3)
-    gi = [[bgc] * w for _ in range(h)]
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, shape_idx=None) -> dict:
+    if shape_idx is None:
+        shape_idx = random.randrange(len(MAPPING))
+    col, cells = MAPPING[shape_idx]
+
+    h = _unifint(diff_lb, diff_ub, (3, max_h))
+    w = _unifint(diff_lb, diff_ub, (3, max_w))
+    fac = _unifint(diff_lb, diff_ub, (1, min(h, w) // 3))
+    fac = max(1, min(fac, min(h, w) // 3))
+
+    gi = [[bgc for _ in range(w)] for _ in range(h)]
     loci = random.randint(0, h - 3 * fac)
     locj = random.randint(0, w - 3 * fac)
-    for (i, j) in obj:
-        for dr in range(fac):
-            for dc in range(fac):
-                gi[loci + i * fac + dr][locj + j * fac + dc] = objc
+    for (i, j) in cells:
+        for di in range(fac):
+            for dj in range(fac):
+                gi[loci + i * fac + di][locj + j * fac + dj] = objc
+
     go = [[col]]
     return {"input": gi, "output": go}
 
@@ -88,64 +93,73 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, variant=None) -> dict:
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
+    ho, wo = O.shape
 
-    # background = dominant color the canvas was painted with
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # --- find the stamped object: which color forms an upscaled 3x3 stamp? ---
+    pattern = None
+    for cand in sorted(set(I.flatten().tolist())):
+        pos = np.argwhere(I == cand)
+        r0, c0 = pos.min(0).tolist()
+        r1, c1 = pos.max(0).tolist()
+        bh, bw = r1 - r0 + 1, c1 - c0 + 1
+        if bh != bw or bh % 3 != 0:
+            continue
+        f = bh // 3
+        blocks = np.zeros((3, 3), dtype=bool)
+        ok = True
+        for i in range(3):
+            for j in range(3):
+                blk = I[r0 + i * f:r0 + (i + 1) * f, c0 + j * f:c0 + (j + 1) * f]
+                vals = set(blk.flatten().tolist())
+                if vals == {cand}:
+                    blocks[i, j] = True
+                elif cand in vals:
+                    ok = False
+        if not ok:
+            continue
+        cellset = frozenset((i, j) for i in range(3) for j in range(3) if blocks[i, j])
+        if cellset in PATTERN_SET:
+            pattern = blocks
+            break
 
-    # foreground mark cells
-    fg = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != bgc]
-    rs = [r for r, c in fg]
-    cs = [c for r, c in fg]
-    r0, r1 = min(rs), max(rs)
-    c0, c1 = min(cs), max(cs)
-    bw = c1 - c0 + 1
-    fac = max(1, bw // 3)  # mark = 3x3 pattern upscaled by fac
+    if pattern is None:  # last-resort: background = majority color
+        bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+        pos = np.argwhere(I != bgc)
+        r0, c0 = pos.min(0).tolist()
+        r1, c1 = pos.max(0).tolist()
+        f = max(1, (r1 - r0 + 1) // 3)
+        pattern = np.array([[I[r0 + i * f, c0 + j * f] != bgc for j in range(3)]
+                            for i in range(3)], dtype=bool)
 
-    # reconstruct the 3x3 downscaled footprint
-    foot = set()
+    # --- rule: largest 4-connected component of the 3x3 stamp picks the answer color ---
+    best, seen = 0, set()
     for i in range(3):
         for j in range(3):
-            filled = False
-            for dr in range(fac):
-                for dc in range(fac):
-                    if I[r0 + i * fac + dr, c0 + j * fac + dc] != bgc:
-                        filled = True
-            if filled:
-                foot.add((i, j))
-
-    # largest 4-connected component size within the footprint
-    seen = set()
-    best = 0
-    for cell in foot:
-        if cell in seen:
-            continue
-        stack = [cell]
-        seen.add(cell)
-        sz = 0
-        while stack:
-            r, c = stack.pop()
-            sz += 1
-            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                nb = (r + dr, c + dc)
-                if nb in foot and nb not in seen:
-                    seen.add(nb)
-                    stack.append(nb)
-        best = max(best, sz)
+            if pattern[i, j] and (i, j) not in seen:
+                stack, sz = [(i, j)], 0
+                seen.add((i, j))
+                while stack:
+                    r, c = stack.pop()
+                    sz += 1
+                    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < 3 and 0 <= nc < 3 and pattern[nr, nc] and (nr, nc) not in seen:
+                            seen.add((nr, nc))
+                            stack.append((nr, nc))
+                best = max(best, sz)
 
     if best == 1:
-        target = 2
+        color = 2
     elif best == 4:
-        target = 3
+        color = 3
     elif best == 5:
-        target = 6
+        color = 6
     else:
-        target = 1
+        color = 1
 
-    ops, sels = [], []
-    ops.append(33); sels.append([0, 0, 0, 0])       # collapse canvas to a single 1x1 cell
-    ops.append(target); sels.append([0, 0, 0, 0])   # paint measured answer color
-    ops.append(34); sels.append([0, 0, 0, 0])       # submit
+    # write the verdict, then shrink the canvas down to that single cell
+    ops = [color, 33, 34]
+    sels = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, ho - 1, wo - 1]]
     return ops, sels
 
 

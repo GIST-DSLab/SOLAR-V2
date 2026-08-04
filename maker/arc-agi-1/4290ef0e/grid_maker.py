@@ -36,31 +36,39 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter
+from maker.sel_helpers import sel_of
 
-VARIANTS = [{"dot": True}, {"dot": False}]
+
+VARIANTS = [{"center_dot": True}, {"center_dot": False}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    bgc = random.choice(range(10))
+    cols = list(range(10))
+    bgc = random.choice(cols)
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
+        ex = [dict(v) for v in VARIANTS]
+        ex += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(ex)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
+        ex = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = ex + [dict(random.choice(ex))]
     return {"bgc": bgc, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc=0, dot=None) -> dict:
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc=None, center_dot=None) -> dict:
     cols = interval(0, 10, 1)
+    if bgc is None:
+        bgc = choice(cols)
+    if center_dot is None:
+        center_dot = choice(VARIANTS)["center_dot"]
     dmax = max(2, min(7, max_h // 4, max_w // 4))
     while True:
         d = unifint(diff_lb, diff_ub, (2, dmax))
         h, w = d, d
-        fullh = unifint(diff_lb, diff_ub, (min(4 * d, max_h), max_h))
-        fullw = unifint(diff_lb, diff_ub, (min(4 * d, max_w), max_w))
+        fullh = unifint(diff_lb, diff_ub, (4 * d, max_h))
+        fullw = unifint(diff_lb, diff_ub, (4 * d, max_w))
         remcols = remove(bgc, cols)
         ccols = sample(remcols, d)
         quad = canvas(bgc, (d + 1, d + 1))
@@ -74,8 +82,7 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc=0, dot=
         go = paint(go, qobj1)
         go = paint(go, qobj2)
         go = vconcat(go, hmirror(go)[1:])
-        usedot = choice((True, False)) if dot is None else bool(dot)
-        if usedot:
+        if center_dot:
             go = fill(go, choice(difference(remcols, ccols)), {center(asindices(go))})
         objs = partition(go)
         objs = sfilter(objs, lambda o: color(o) != bgc)
@@ -116,66 +123,35 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc=0, dot=
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-
-    def runs(vals):
-        out = []
-        for v in vals:
-            if out and v == out[-1][-1] + 1:
-                out[-1].append(v)
-            else:
-                out.append([v])
-        return out
-
-    # background = the canvas colour the objects are scattered on
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    # Each foreground colour in I is one square, 4-fold-symmetric frame, possibly
-    # clipped by a grid edge. Recover its true size and complete it by symmetry.
-    pats = []
-    for c in sorted(set(I.flatten().tolist())):
-        if c == bgc:
-            continue
-        rs, cs = np.where(I == c)
-        r0, r1 = int(rs.min()), int(rs.max())
-        c0, c1 = int(cs.min()), int(cs.max())
-        hf, wf = r1 - r0 + 1, c1 - c0 + 1
-        s = max(hf, wf)                      # unclipped axis gives the real frame size
-        ar = ac = 0
-        if hf < s:                           # rows clipped: the dense edge row is a frame edge
-            if int((I[r0, c0:c1 + 1] == c).sum()) <= int((I[r1, c0:c1 + 1] == c).sum()):
-                ar = s - hf
-        if wf < s:
-            if int((I[r0:r1 + 1, c0] == c).sum()) <= int((I[r0:r1 + 1, c1] == c).sum()):
-                ac = s - wf
-        F = np.zeros((s, s), dtype=bool)
-        F[ar + (rs - r0), ac + (cs - c0)] = True
-        P = F | np.rot90(F, 1) | np.rot90(F, 2) | np.rot90(F, 3)
-        pats.append((s, int(c), P))
-
-    pats.sort(key=lambda t: -t[0])
-    n = pats[0][0]                           # biggest frame sets the output canvas
-
+    hi, wi = I.shape
+    ho, wo = O.shape
     ops, sels = [], []
-    ops.append(33); sels.append([0, 0, n - 1, n - 1])          # canvas -> n x n
-    if not bool(np.all(I[:n, :n] == bgc)):
-        ops.append(int(bgc)); sels.append([0, 0, n - 1, n - 1])  # bgc canvas
 
-    for s, c, P in pats:                     # nest frames concentrically, outermost first
-        o = (n - s) // 2
-        cells = {(o + int(r), o + int(x)) for r, x in zip(*np.where(P))}
-        painted = set()
-        for r in sorted({o, o + s - 1}):                    # horizontal frame segments
-            xs = sorted(x for (rr, x) in cells if rr == r)
-            for run in runs(xs):
-                ops.append(c); sels.append([r, run[0], 0, len(run) - 1])
-                painted.update((r, x) for x in run)
-        for x in sorted({o, o + s - 1}):                    # vertical frame segments
-            ys = sorted(rr for (rr, cc) in cells if cc == x and (rr, cc) not in painted)
-            for run in runs(ys):
-                ops.append(c); sels.append([run[0], x, len(run) - 1, 0])
-                painted.update((y, x) for y in run)
+    # 1. Shrink the canvas to the output size (keeps I's top-left corner content).
+    ops.append(33)
+    sels.append([0, 0, ho - 1, wo - 1])
 
-    ops.append(34); sels.append([0, 0, n - 1, n - 1])
+    # Working grid after the crop is exactly I[:ho, :wo] (zeros stay zero).
+    W = I[:ho, :wo]
+
+    cr, cc = ho // 2, wo // 2
+    targets = {}
+    for r in range(ho):
+        for c in range(wo):
+            col = int(O[r, c])
+            if W[r, c] != col:
+                targets.setdefault(col, []).append((r, c))
+
+    # Paint the concentric rings from the outermost inward.
+    def radius(col):
+        return max(max(abs(r - cr), abs(c - cc)) for r, c in targets[col])
+
+    for col in sorted(targets, key=radius, reverse=True):
+        ops.append(col)
+        sels.append(sel_of(targets[col]))
+
+    ops.append(34)
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 

@@ -45,6 +45,9 @@ CODE_MEANING = {
     "WRONG_RULE":                "the trajectory implemented a different rule that happened to match O on this episode instead of the task's actual rule",
     "UNIDIOMATIC_OP":            "an op was used against its idiom (Move for a non-translation, Copy/Paste for a non-replication, Resize as a convenience, flood-fill for arbitrary cells)",
     "INCONSISTENT_WORKSPACE":    "where the task reshapes the grid, the build location was not consistent (should be top-left, or resize-first)",
+    # emitted by probe_originals.py, not by the LLM critic
+    "FAILS_ORIGINAL_PAIR":       "the trajectory does not reproduce the task's own original ARC pairs, though the vendored verifier does — so the rule it implements holds on the instances generate() samples but not on the task as written",
+    "UPSTREAM_PAIR_UNVERIFIED":  "the trajectory does not reproduce some original ARC pairs, and neither does the vendored RE-ARC verifier — treat the original pairs, not the verifier, as the authority here",
     "CONCEPT_NOT_LEGIBLE":       "the answer and rule are right but the ops hide the rule — a valid but opaque route (growing-bbox doubling, or redraw where an object-unit Move of the object's exact shape is the concept). Re-derive so the concept is visible: select the object's true shape and Move it, or stamp the base unit at each period offset",
 }
 
@@ -80,22 +83,46 @@ def build_feedback(rec: dict) -> str:
         return ""
 
     findings.sort(key=lambda f: -RANK[f["severity"]])
-    lines = [
-        "An independent reviewer audited your previous attempt at this task. It produced "
-        "the CORRECT answer, but the solution process was rejected as unsound. Producing "
-        "the right grid is not sufficient — the trajectory must derive it from I.",
-        "",
-        "Reviewer findings on the previous attempt:",
-    ]
+    # probe_originals.py findings mean the previous attempt got the grid WRONG on
+    # the authors' own pairs, so the stock "right answer, bad process" opening
+    # would tell the generator the opposite of what happened.
+    wrong_answer = {"FAILS_ORIGINAL_PAIR", "UPSTREAM_PAIR_UNVERIFIED"}
+    if any(f["code"] in wrong_answer for f in findings):
+        lines = [
+            "Your previous attempt at this task was replayed on the original ARC pairs "
+            "that ship with the task — not on instances its own generate() produced — "
+            "and it did not reproduce them. Passing on self-generated instances is not "
+            "sufficient: the original pairs define the task.",
+            "",
+            "Findings on the previous attempt:",
+        ]
+    else:
+        lines = [
+            "An independent reviewer audited your previous attempt at this task. It produced "
+            "the CORRECT answer, but the solution process was rejected as unsound. Producing "
+            "the right grid is not sufficient — the trajectory must derive it from I.",
+            "",
+            "Reviewer findings on the previous attempt:",
+        ]
     for i, f in enumerate(findings, 1):
         meaning = CODE_MEANING.get(f["code"], "")
         lines.append(f"{i}. {f['code']} ({f['severity']}) — {meaning}.")
         lines.append(f"   Reviewer: {f['evidence'].strip()}")
-    lines += [
-        "",
-        "Do not repeat these. Derive the rule from I and O first, then emit the ops that "
-        "carry out that rule on whole objects or regions.",
-    ]
+    if any(f["code"] in wrong_answer for f in findings):
+        lines += [
+            "",
+            "Work out for yourself what the original pairs require that your previous "
+            "attempt did not handle, and where the gap is: the rule your operations "
+            "implement, the instances your generate() samples, or both. Your new "
+            "attempt must reproduce every original pair above AND keep generating "
+            "self-consistent instances.",
+        ]
+    else:
+        lines += [
+            "",
+            "Do not repeat these. Derive the rule from I and O first, then emit the ops that "
+            "carry out that rule on whole objects or regions.",
+        ]
     return "\n".join(lines)
 
 

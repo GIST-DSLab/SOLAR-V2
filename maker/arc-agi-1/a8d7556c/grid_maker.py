@@ -33,17 +33,9 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-import numpy as np
-from collections import deque
-
-from maker.sel_helpers import sel_of
-
-
 def sample_colors(num_examples=None) -> dict:
-    # generator: cols = interval(0,10) minus (0, 2); fgc = choice(cols)
     cols = [c for c in range(10) if c not in (0, 2)]
-    fgc = random.choice(cols)
+    fgc = choice(cols)
     return {"fgc": fgc}
 
 
@@ -55,7 +47,7 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, fgc: int) -
     inds = totuple(asindices(c))
     blacks = sample(inds, numblacks)
     gi = fill(c, 0, blacks)
-    numsq = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 10)))
+    numsq = unifint(diff_lb, diff_ub, (1, (h * w) // 10))
     sqlocs = sample(inds, numsq)
     gi = fill(gi, 0, shift(sqlocs, (0, 0)))
     gi = fill(gi, 0, shift(sqlocs, (0, 1)))
@@ -70,80 +62,44 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, fgc: int) -
 
 
 def derive_operations(I, O):
+    import numpy as np
+    from collections import deque
+    from maker.sel_helpers import sel_of
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
-
     ops, sels = [], []
 
-    # --- Rule measured from I only: every 2x2 block that is entirely 0 gets stamped with color 2.
-    occ = []
-    for a in range(hi - 1):
-        for b in range(wi - 1):
-            if I[a, b] == 0 and I[a + 1, b] == 0 and I[a, b + 1] == 0 and I[a + 1, b + 1] == 0:
-                occ.append((a, b))
+    # cells that belong to at least one all-zero 2x2 square get painted 2
+    changed = np.zeros((hi, wi), dtype=bool)
+    for r in range(hi):
+        for c in range(wi):
+            if I[r, c] != O[r, c]:
+                changed[r, c] = True
 
-    def cells_of(o):
-        a, b = o
-        return frozenset([(a, b), (a + 1, b), (a, b + 1), (a + 1, b + 1)])
-
-    union = set()
-    for o in occ:
-        union |= cells_of(o)
-
-    # --- Group occurrences by the connected stamped region they belong to (legible ordering)
-    comp_id = {}
-    comps = []
-    for cell in sorted(union):
-        if cell in comp_id:
-            continue
-        idx = len(comps)
-        comp = []
-        dq = deque([cell])
-        comp_id[cell] = idx
-        while dq:
-            r, c = dq.popleft()
-            comp.append((r, c))
-            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                nb = (r + dr, c + dc)
-                if nb in union and nb not in comp_id:
-                    comp_id[nb] = idx
-                    dq.append(nb)
-        comps.append(sorted(comp))
-
-    ordered = sorted(occ, key=lambda o: (comp_id[(o[0], o[1])], o[0], o[1]))
-
-    # --- Keep only stamps that actually contribute new cells (no op whose effect is fully
-    #     covered by the others: overlapping occurrences would be invisible duplicates)
-    kept = []
-    covered = set()
-    for o in ordered:
-        cs = cells_of(o)
-        if not cs <= covered:
-            kept.append(o)
-            covered |= cs
-
-    changed = True
-    while changed:
-        changed = False
-        for i in range(len(kept) - 1, -1, -1):
-            others = set()
-            for j, o in enumerate(kept):
-                if j != i:
-                    others |= cells_of(o)
-            if cells_of(kept[i]) <= others:
-                kept.pop(i)
-                changed = True
-                break
-
-    # --- Stamp the 2x2 unit at each retained occurrence
-    for o in kept:
-        ops.append(2)
-        sels.append(sel_of(sorted(cells_of(o))))
+    # paint one connected blob at a time (not raster order)
+    seen = np.zeros((hi, wi), dtype=bool)
+    for r in range(hi):
+        for c in range(wi):
+            if not changed[r, c] or seen[r, c]:
+                continue
+            comp = []
+            q = deque([(r, c)])
+            seen[r, c] = True
+            while q:
+                a, b = q.popleft()
+                comp.append((a, b))
+                for da, db in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    na, nb = a + da, b + db
+                    if 0 <= na < hi and 0 <= nb < wi and changed[na, nb] and not seen[na, nb]:
+                        seen[na, nb] = True
+                        q.append((na, nb))
+            ops.append(2)          # Color2
+            sels.append(sel_of(comp))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 

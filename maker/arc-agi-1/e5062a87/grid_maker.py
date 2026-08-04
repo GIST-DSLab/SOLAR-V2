@@ -35,7 +35,8 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from collections import Counter
+from collections import deque
+
 from maker.sel_helpers import sel_of
 
 
@@ -45,10 +46,12 @@ def sample_colors(num_examples=None) -> dict:
     return {"eligcol": eligcol, "objc": objc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             eligcol: int, objc: int) -> dict:
-    h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
-    w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
+def generate(diff_lb: float, diff_ub: float, max_h: int = 30, max_w: int = 30,
+             eligcol: int = 4, objc: int = 6) -> dict:
+    hlo = min(10, max_h)
+    wlo = min(10, max_w)
+    h = unifint(diff_lb, diff_ub, (hlo, max_h))
+    w = unifint(diff_lb, diff_ub, (wlo, max_w))
     gi = canvas(eligcol, (h, w))
     inds = asindices(gi)
     sp = choice(totuple(inds))
@@ -61,10 +64,11 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
         obj.add(choice(cands))
     obj = normalize(obj)
     nnoise = unifint(diff_lb, diff_ub, (int(0.2 * h * w), int(0.5 * h * w)))
+    nnoise = max(1, min(nnoise, h * w))
     locs = sample(totuple(inds), nnoise)
     gi = fill(gi, 0, locs)
-    oh, ow = shape(obj)
     noccs = unifint(diff_lb, diff_ub, (2, max(2, (h * w) // (len(obj) * 3))))
+    oh, ow = shape(obj)
     for k in range(noccs):
         loci = randint(0, h - oh)
         locj = randint(0, w - ow)
@@ -79,35 +83,36 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
-
-    # --- rule, measured entirely from I ---
-    # 1. the template object is drawn in the LEAST frequent colour of I
-    cnt = Counter(I.flatten().tolist())
-    objc = min(cnt.keys(), key=lambda c: (cnt[c], c))
-
-    # 2. its cells, normalised to the origin -> the shape we look for
-    cells = [(r, c) for r in range(h) for c in range(w) if I[r, c] == objc]
-    r0 = min(r for r, _ in cells)
-    c0 = min(c for _, c in cells)
-    norm = [(r - r0, c - c0) for r, c in cells]
-    oh = max(r for r, _ in norm) + 1
-    ow = max(c for _, c in norm) + 1
-
+    hi, wi = I.shape
+    ho, wo = O.shape
     ops, sels = [], []
 
-    # 3. every placement where that exact shape is carved out of the noise
-    #    colour 0 is an occurrence -> stamp the template there (one Color op
-    #    per occurrence, selecting the object's true cells, not its bbox)
-    for i in range(h - oh + 1):
-        for j in range(w - ow + 1):
-            occ = [(i + dr, j + dc) for dr, dc in norm]
-            if all(I[r, c] == 0 for r, c in occ):
-                ops.append(int(objc))
-                sels.append(sel_of(occ))
+    changed = {(r, c) for r in range(hi) for c in range(wi) if I[r, c] != O[r, c]}
+
+    # group changed cells into 8-connected regions (one occurrence of the shape each,
+    # or a merged blob when occurrences touch) -> one Color op per region
+    seen = set()
+    for cell in sorted(changed):
+        if cell in seen:
+            continue
+        comp = []
+        dq = deque([cell])
+        seen.add(cell)
+        while dq:
+            r, c = dq.popleft()
+            comp.append((r, c))
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    nb = (r + dr, c + dc)
+                    if nb in changed and nb not in seen:
+                        seen.add(nb)
+                        dq.append(nb)
+        color = int(O[comp[0][0], comp[0][1]])
+        ops.append(color)
+        sels.append(sel_of(comp))
 
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
