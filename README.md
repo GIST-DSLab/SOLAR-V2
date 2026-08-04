@@ -262,6 +262,13 @@ makers or `pipeline/probe_originals.py`; all are in the tooling around them.
 
 - **No CI.** There is no `.github/` directory; the badges above are static.
 
+## Browse it
+
+[**qazyunho.github.io/SOLAR-V2**](https://qazyunho.github.io/SOLAR-V2/) steps
+through any of the 400 episodes: pick a task, walk the actions, watch the
+selection move. It is static — `viz/build_web.py` writes one small JSON per task
+under `docs/data/`, and the page fetches only the task you open.
+
 ## Data
 
 The rolled-out trajectories are published as a separate dataset in parquet,

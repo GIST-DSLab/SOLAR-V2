@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOLAR-V2 — ARCLE trajectory viewer</title>
+<style>
+:root{
+  --bg:#ffffff; --ink:#1c1c1c; --muted:#8a8a8a; --line:#e6e6e6;
+  --accent:#1f6f4a; --accent-soft:#dce8d6; --pending:#f4f4f4;
+  --predict:#b26b00;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#141414; --ink:#ececec; --muted:#8f8f8f; --line:#2c2c2c;
+         --accent:#3f9c6d; --accent-soft:#24352a; --pending:#232323; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
+  padding:14px 20px;border-bottom:1px solid var(--line)}
+header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.01em}
+header .sub{color:var(--muted);font-size:13px}
+header a{color:var(--accent);text-decoration:none}
+header a:hover{text-decoration:underline}
+main{display:grid;grid-template-columns:220px minmax(0,1fr);gap:0;
+  height:calc(100vh - 53px)}
+#list{border-right:1px solid var(--line);overflow-y:auto;padding:10px}
+#search{width:100%;padding:7px 9px;margin-bottom:8px;font:inherit;font-size:13px;
+  border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink)}
+.task{padding:6px 9px;border-radius:7px;cursor:pointer;font-size:13px;
+  display:flex;justify-content:space-between;gap:8px}
+.task:hover{background:var(--pending)}
+.task.on{background:var(--accent);color:#fff}
+.task .n{color:var(--muted);font-variant-numeric:tabular-nums}
+.task.on .n{color:#dfeee6}
+#stage{overflow-y:auto;padding:18px 22px 28px}
+.row{display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap}
+.panel h2{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);margin:0 0 7px;font-weight:600}
+#demos{display:flex;gap:18px;flex-wrap:wrap}
+.demo{display:flex;align-items:center;gap:7px}
+.demo .arrow{color:var(--muted)}
+#opname{font-size:22px;font-weight:700;margin:0 0 8px;min-height:30px}
+#opname.predict{color:var(--predict)}
+#opname.done{color:var(--accent)}
+#buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
+.btn{padding:6px 14px;border-radius:999px;font-size:13px;font-weight:600;
+  background:var(--pending);color:var(--muted);border:none}
+.btn.past{background:var(--accent-soft);color:var(--accent)}
+.btn.now{background:var(--accent);color:#fff}
+.btn.now.released{opacity:.62}
+#controls{display:flex;align-items:center;gap:10px;margin-top:18px;flex-wrap:wrap}
+#controls button{font:inherit;font-size:13px;padding:6px 13px;border-radius:8px;
+  border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer}
+#controls button:hover{border-color:var(--accent);color:var(--accent)}
+#slider{flex:1;min-width:180px;accent-color:var(--accent)}
+#step{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums;min-width:96px}
+canvas{image-rendering:pixelated;display:block}
+.hint{color:var(--muted);font-size:12px;margin-top:14px;max-width:62ch}
+</style>
+</head>
+<body>
+<header>
+  <h1>SOLAR-V2</h1>
+  <span class="sub">ARCLE trajectories, one action at a time</span>
+  <span class="sub">·</span>
+  <a href="https://github.com/QAZyunho/SOLAR-V2">code</a>
+  <a href="https://huggingface.co/datasets/dbsgh797210/SOLAR">dataset</a>
+</header>
+
+<main>
+  <nav id="list"><input id="search" placeholder="filter by task or operation…" autocomplete="off"></nav>
+  <section id="stage">
+    <div class="panel" style="margin-bottom:20px">
+      <h2>demonstrations</h2>
+      <div id="demos"></div>
+    </div>
+
+    <div class="row">
+      <div class="panel">
+        <div id="opname"></div>
+        <canvas id="main"></canvas>
+        <div id="buttons"></div>
+        <div id="controls">
+          <button id="play">▶ play</button>
+          <button id="prev">◀</button>
+          <button id="next">▶</button>
+          <input id="slider" type="range" min="0" value="0">
+          <span id="step"></span>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>target</h2>
+        <canvas id="target"></canvas>
+      </div>
+    </div>
+
+    <p class="hint">A white outline marks the cells the action applies to. Each
+    action is shown twice: once with its selection, then with the result. The
+    buttons are the actions this episode uses — repeats of the same action are
+    one button, pressed again.</p>
+  </section>
+</main>
+
+<script>
+const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
+                 "#F012BE","#FF851B","#7FDBFF","#870C25","#F0F0F0"];
+
+function draw(canvas, grid, cell, sel){
+  const h = grid.h, w = grid.w;
+  canvas.width = w * cell + 1; canvas.height = h * cell + 1;
+  const g = canvas.getContext("2d");
+  g.clearRect(0,0,canvas.width,canvas.height);
+  for(let r=0;r<h;r++){
+    for(let c=0;c<w;c++){
+      g.fillStyle = PALETTE[+grid.g[r][c]] || "#F0F0F0";
+      g.fillRect(c*cell, r*cell, cell, cell);
+    }
+  }
+  // cell separators
+  g.strokeStyle = "rgba(255,255,255,.55)"; g.lineWidth = 1;
+  g.beginPath();
+  for(let c=0;c<=w;c++){ g.moveTo(c*cell+.5,0); g.lineTo(c*cell+.5,h*cell); }
+  for(let r=0;r<=h;r++){ g.moveTo(0,r*cell+.5); g.lineTo(w*cell,r*cell+.5); }
+  g.stroke();
+
+  if(!sel) return;
+  // Only the border of the region. Outlining each selected cell turns any
+  // multi-cell selection into a hatch, and Submit selects the whole grid.
+  const on = (r,c) => r>=0 && c>=0 && r<h && c<w && sel[r][c] === "1";
+  const seg = [];
+  for(let r=0;r<h;r++) for(let c=0;c<w;c++){
+    if(!on(r,c)) continue;
+    if(!on(r-1,c)) seg.push([c*cell, r*cell, (c+1)*cell, r*cell]);
+    if(!on(r+1,c)) seg.push([c*cell, (r+1)*cell, (c+1)*cell, (r+1)*cell]);
+    if(!on(r,c-1)) seg.push([c*cell, r*cell, c*cell, (r+1)*cell]);
+    if(!on(r,c+1)) seg.push([(c+1)*cell, r*cell, (c+1)*cell, (r+1)*cell]);
+  }
+  for(const [color,width] of [["#101010",4.5],["#ffffff",2.4]]){
+    g.strokeStyle = color; g.lineWidth = width; g.lineCap = "round";
+    g.beginPath();
+    for(const [x0,y0,x1,y1] of seg){ g.moveTo(x0,y0); g.lineTo(x1,y1); }
+    g.stroke();
+  }
+}
+
+function fitCell(grid, budget){
+  return Math.max(6, Math.min(26, Math.floor(budget / Math.max(grid.w, grid.h))));
+}
+
+function runs(ops){
+  const out = [];
+  ops.forEach((name,i) => {
+    const last = out[out.length-1];
+    if(last && last.name === name) last.end = i;
+    else out.push({name, start:i, end:i});
+  });
+  return out;
+}
+
+let INDEX = [], EP = null, FRAME = 0, TIMER = null;
+
+async function load(task){
+  const r = await fetch(`data/${task}.json`);
+  EP = (await r.json())[0];
+  FRAME = 0;
+  document.querySelectorAll(".task").forEach(e =>
+    e.classList.toggle("on", e.dataset.task === task));
+  const demos = document.getElementById("demos");
+  demos.innerHTML = "";
+  EP.ex.slice(0,3).forEach(pair => {
+    const wrap = document.createElement("div"); wrap.className = "demo";
+    const a = document.createElement("canvas"), b = document.createElement("canvas");
+    draw(a, pair.in, fitCell(pair.in, 110));
+    draw(b, pair.out, fitCell(pair.out, 110));
+    const arrow = document.createElement("span");
+    arrow.className = "arrow"; arrow.textContent = "→";
+    wrap.append(a, arrow, b); demos.appendChild(wrap);
+  });
+  const tgt = EP.states[EP.states.length-1];
+  draw(document.getElementById("target"), tgt, fitCell(tgt, 210));
+  document.getElementById("slider").max = EP.ops.length*2 - 1;
+  render();
+}
+
+function render(){
+  if(!EP) return;
+  const step = Math.floor(FRAME/2), phase = FRAME % 2;   // 0 = selection, 1 = result
+  const state = EP.states[step + phase];
+  const sel = phase === 0 ? EP.sel[step] : EP.after[step];
+  draw(document.getElementById("main"), state, fitCell(state, 430), sel);
+
+  const name = document.getElementById("opname");
+  name.textContent = EP.ops[step];
+  name.className = phase ? "done" : "predict";
+
+  const box = document.getElementById("buttons");
+  box.innerHTML = "";
+  runs(EP.ops).forEach(run => {
+    const b = document.createElement("span");
+    b.className = "btn" + (step > run.end ? " past"
+                    : (step >= run.start ? " now" + (phase ? " released" : "") : ""));
+    b.textContent = run.name;
+    box.appendChild(b);
+  });
+
+  document.getElementById("slider").value = FRAME;
+  // Without the phase word, stepping from selection to result left every
+  // readout unchanged and the page looked frozen.
+  document.getElementById("step").textContent =
+    `action ${step+1} of ${EP.ops.length} · ${phase ? "result" : "selection"}`;
+}
+
+function go(delta){
+  if(!EP) return;
+  FRAME = (FRAME + delta + EP.ops.length*2) % (EP.ops.length*2);
+  render();
+}
+
+function stop(){ clearInterval(TIMER); TIMER = null;
+  document.getElementById("play").textContent = "▶ play"; }
+
+document.getElementById("play").onclick = () => {
+  if(TIMER) return stop();
+  document.getElementById("play").textContent = "❚❚ pause";
+  TIMER = setInterval(() => {
+    if(FRAME === EP.ops.length*2 - 1){ stop(); return; }
+    go(1);
+  }, 750);
+};
+document.getElementById("prev").onclick = () => { stop(); go(-1); };
+document.getElementById("next").onclick = () => { stop(); go(1); };
+document.getElementById("slider").oninput = e => { stop(); FRAME = +e.target.value; render(); };
+document.addEventListener("keydown", e => {
+  if(e.key === "ArrowRight"){ stop(); go(1); }
+  if(e.key === "ArrowLeft"){ stop(); go(-1); }
+  if(e.key === " "){ e.preventDefault(); document.getElementById("play").click(); }
+});
+
+function paintList(filter){
+  const nav = document.getElementById("list");
+  nav.querySelectorAll(".task").forEach(e => e.remove());
+  const q = (filter||"").toLowerCase();
+  INDEX.filter(t => !q || t.task.includes(q) ||
+                    t.ops.some(o => o.toLowerCase().includes(q)))
+       .forEach(t => {
+    const d = document.createElement("div");
+    d.className = "task"; d.dataset.task = t.task;
+    d.innerHTML = `<span>${t.task}</span><span class="n">${t.n}</span>`;
+    d.onclick = () => { stop(); load(t.task); };
+    nav.appendChild(d);
+  });
+}
+
+document.getElementById("search").oninput = e => paintList(e.target.value);
+
+fetch("data/index.json").then(r => r.json()).then(ix => {
+  INDEX = ix; paintList("");
+  load(new URLSearchParams(location.search).get("task") || "05f2a901");
+});
+</script>
+</body>
+</html>
