@@ -30,7 +30,7 @@ import pyarrow.parquet as pq
 
 SPEC_VERSION = "1.0"
 DATA_ROOT = Path("/hdd_data/yunho")
-SOLAR_ROOT = Path(__file__).parent.resolve()
+SOLAR_ROOT = Path(__file__).resolve().parents[1]
 
 # folder name: test.<task_id>.s30.<YY.MM.DD>
 FOLDER_RE = re.compile(r"^test\.(?P<task>[^.]+)\.s(?P<dim>\d+)\.(?P<date>[\d.]+)$")

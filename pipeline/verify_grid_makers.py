@@ -23,7 +23,7 @@ from collections import defaultdict
 import numpy as np
 import gymnasium as gym
 
-SOLAR_ROOT = Path(__file__).parent.resolve()
+SOLAR_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOLAR_ROOT))
 import utils as solar_utils
 

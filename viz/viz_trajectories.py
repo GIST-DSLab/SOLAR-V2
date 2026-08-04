@@ -62,7 +62,7 @@ CATEGORY_COLOR = {
     "Submit": "#FFFFFF",
 }
 
-_default_root = Path(__file__).parent / "ARC_Single_llm_v5_obj" / "whole"
+_default_root = Path(__file__).resolve().parents[1] / "ARC_Single_llm_v5_obj" / "whole"
 DATA_ROOT = Path(os.environ.get("VIZ_DATA_ROOT", _default_root))
 
 # Other trajectory sets worth flipping between without restarting the app.
@@ -96,7 +96,7 @@ KNOWN_ROOTS = [
     # solver-as-concept vs model-states-rule-first.
     Path("/hdd_data/yunho/ARC_Single_llm_v8solver_obj/whole"),
     Path("/hdd_data/yunho/ARC_Single_llm_v8rulefirst_obj/whole"),
-    Path(__file__).parent.parent / "ARC_Single" / "whole",
+    Path(__file__).resolve().parents[1] / "ARC_Single" / "whole",
 ]
 
 # Critic audit JSONs — verdict + findings per task, shown alongside the trajectory.

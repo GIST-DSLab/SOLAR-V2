@@ -33,7 +33,7 @@ from typing import Any
 import numpy as np
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-SOLAR_ROOT    = Path(__file__).parent.resolve()
+SOLAR_ROOT    = Path(__file__).resolve().parents[1]
 REARC_ROOT    = SOLAR_ROOT / "re-arc"
 LOG_DIR       = SOLAR_ROOT / "conv_logs"
 _ARCLE_REF_TEMPLATE    = (SOLAR_ROOT / "arcle_reference.md").read_text(encoding="utf-8")
