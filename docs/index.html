@@ -130,7 +130,8 @@ a.link:hover{text-decoration:underline}
 .card .thumb{display:flex;align-items:center;justify-content:center;gap:8px;
   margin-bottom:14px;height:76px;overflow:hidden}
 .card .thumb .arrow{color:var(--ink-48);font-size:14px}
-.card canvas{border-radius:8px}
+.card canvas,.card .thumb img{border-radius:8px;max-height:72px;width:auto;
+  image-rendering:pixelated}
 
 footer{background:var(--parchment);color:var(--ink-80);padding:64px 22px}
 footer .cols{max-width:1440px;margin:0 auto;display:flex;gap:64px;flex-wrap:wrap}
@@ -237,24 +238,11 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <script>
 const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
                  "#F012BE","#FF851B","#7FDBFF","#870C25","#F0F0F0"];
+const DS   = "dbsgh797210/SOLAR";
+const API  = "https://datasets-server.huggingface.co";
+const EPISODES_PER_TASK = 10;
 
-// States arrive as a full first grid then per-step changed cells; selections as
-// coordinate lists. Rebuild them once per episode rather than per frame.
-function materialize(ep){
-  const out = []; let prev = null;
-  for(const s of ep.states){
-    if(s.g){ prev = s.g.slice(); }
-    else {
-      const rows = prev.map(r => r.split(""));
-      for(const [r,c,v] of s.d) rows[r][c] = String(v);
-      prev = rows.map(a => a.join(""));
-    }
-    out.push({h:s.h, w:s.w, g:prev});
-  }
-  return out;
-}
-const cellSet = list => list ? new Set(list.map(([r,c]) => r*100 + c)) : null;
-
+/* ---------- drawing ---------- */
 function draw(canvas, grid, cell, sel){
   const h = grid.h, w = grid.w;
   canvas.width = w*cell + 1; canvas.height = h*cell + 1;
@@ -289,12 +277,116 @@ function draw(canvas, grid, cell, sel){
   }
 }
 const fit = (grid,budget) => Math.max(6, Math.min(30, Math.floor(budget/Math.max(grid.w,grid.h))));
-// Card thumbnails share one row, so size the pair against the width they have
-// between them. Using the general fit() clamped wide grids to a 6px floor and
-// pushed the second grid past the card edge.
-function pairFit(a, b, width, height){
-  const wide = a.w + b.w, tall = Math.max(a.h, b.h);
-  return Math.max(2, Math.min(9, Math.floor(Math.min(width/wide, height/tall))));
+
+/* ---------- the dataset's packed columns, unpacked ----------
+   Array columns arrive base64-encoded with a companion <col>__shape. Pixel
+   planes are uint8; everything else is little-endian int16. This is the same
+   contract the dataset card documents for Python readers. */
+function bytes(b64){
+  const s = atob(b64), u = new Uint8Array(s.length);
+  for(let i=0;i<s.length;i++) u[i] = s.charCodeAt(i);
+  return u;
+}
+function i16(b64){
+  const u = bytes(b64), dv = new DataView(u.buffer), out = new Int16Array(u.length/2);
+  for(let i=0;i<out.length;i++) out[i] = dv.getInt16(i*2, true);
+  return out;
+}
+const PAD = 30;                       // every plane is padded to 30x30
+function planeAt(u8, i, h, w){
+  const base = i*PAD*PAD, g = [];
+  for(let r=0;r<h;r++){
+    let row = "";
+    for(let c=0;c<w;c++) row += u8[base + r*PAD + c];
+    g.push(row);
+  }
+  return {h, w, g};
+}
+function maskAt(u8, i, h, w){
+  const base = i*PAD*PAD, set = new Set();
+  for(let r=0;r<h;r++) for(let c=0;c<w;c++) if(u8[base + r*PAD + c]) set.add(r*100 + c);
+  return set;
+}
+function decodeEpisode(row){
+  const ops  = row.operation_name;
+  const grid = bytes(row.grid), dims = i16(row.grid_dim);
+  const selM = bytes(row.selection_mask), aftM = bytes(row.selected);
+  const exIn = bytes(row.ex_in), exOut = bytes(row.ex_out);
+  const exInD = i16(row.ex_in_grid_dim), exOutD = i16(row.ex_out_grid_dim);
+  const n = ops.length;
+  const states = [], sel = [], after = [];
+  for(let i=0;i<=n;i++) states.push(planeAt(grid, i, dims[i*2], dims[i*2+1]));
+  for(let i=0;i<n;i++){
+    sel.push(maskAt(selM, i, dims[i*2], dims[i*2+1]));
+    const a = maskAt(aftM, i+1, dims[(i+1)*2], dims[(i+1)*2+1]);
+    after.push(a.size ? a : null);
+  }
+  const ex = [];
+  for(let i=0;i<row.ex_in__shape[0];i++)
+    ex.push({in: planeAt(exIn, i, exInD[i*2], exInD[i*2+1]),
+             out: planeAt(exOut, i, exOutD[i*2], exOutD[i*2+1])});
+  return {id: row.id, ops, states, sel, after, ex};
+}
+
+async function api(path){
+  const r = await fetch(API + path);
+  if(!r.ok) throw new Error(`${r.status} from the dataset server`);
+  return r.json();
+}
+
+/* ---------- state ---------- */
+let INDEX = [], EP = null, TASK = null, TIDX = 0, EPI = 0, FRAME = 0, TIMER = null;
+
+function note(msg){
+  document.getElementById("opname").textContent = msg;
+}
+
+// /filter answers this question directly but returned 500 repeatedly, so rows
+// are addressed by offset instead: the export wrote tasks in sorted order, ten
+// episodes each, which makes the offset a plain calculation.
+async function load(task, epi){
+  const idx = INDEX.findIndex(t => t.task === task);
+  if(idx < 0) return;
+  TASK = task; TIDX = idx; EPI = epi || 0; FRAME = 0;
+  note("Loading…");
+  let row;
+  try{
+    const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=arc_agi1&split=train`
+                      + `&offset=${idx*EPISODES_PER_TASK + EPI}&length=1`);
+    row = j.rows[0].row;
+  }catch(e){
+    note("Dataset server unavailable");
+    return;
+  }
+  EP = decodeEpisode(row);
+
+  document.querySelectorAll(".card").forEach(e => e.classList.toggle("on", e.dataset.task === task));
+  document.querySelector(".sub-nav .category").textContent = task;
+
+  const picker = document.getElementById("eps");
+  picker.innerHTML = "";
+  for(let i=0;i<EPISODES_PER_TASK;i++){
+    const b = document.createElement("button");
+    b.className = "ep" + (i === EPI ? " on" : "");
+    b.textContent = i + 1;
+    b.onclick = () => { stop(); load(task, i); };
+    picker.appendChild(b);
+  }
+  document.getElementById("ep-label").textContent = `Episode ${EPI+1} of ${EPISODES_PER_TASK}`;
+
+  const demos = document.getElementById("demos");
+  demos.innerHTML = "";
+  EP.ex.slice(0,3).forEach(pair => {
+    const wrap = document.createElement("div"); wrap.className = "demo";
+    const a = document.createElement("canvas"), b = document.createElement("canvas");
+    draw(a, pair.in, fit(pair.in,104)); draw(b, pair.out, fit(pair.out,104));
+    const arrow = document.createElement("span"); arrow.className = "arrow"; arrow.textContent = "→";
+    wrap.append(a, arrow, b); demos.appendChild(wrap);
+  });
+  const tgt = EP.states[EP.states.length-1];
+  draw(document.getElementById("target"), tgt, fit(tgt,150));
+  document.getElementById("slider").max = EP.ops.length*2 - 1;
+  render();
 }
 
 function runs(ops){
@@ -306,52 +398,11 @@ function runs(ops){
   return out;
 }
 
-let INDEX = [], THUMBS = {}, EPS = [], EP = null, GRIDS = [],
-    TASK = null, EPI = 0, FRAME = 0, TIMER = null;
-
-async function load(task, epi){
-  if(task !== TASK){
-    EPS = await (await fetch(`data/${task}.json`)).json();
-    TASK = task;
-  }
-  EPI = epi || 0;
-  EP = EPS[EPI];
-  GRIDS = materialize(EP);
-  FRAME = 0;
-  document.querySelectorAll(".card").forEach(e => e.classList.toggle("on", e.dataset.task === task));
-  document.querySelector(".sub-nav .category").textContent = task;
-  const picker = document.getElementById("eps");
-  picker.innerHTML = "";
-  EPS.forEach((_, i) => {
-    const b = document.createElement("button");
-    b.className = "ep" + (i === EPI ? " on" : "");
-    b.textContent = i + 1;
-    b.onclick = () => { stop(); load(task, i); };
-    picker.appendChild(b);
-  });
-  document.getElementById("ep-label").textContent =
-    `Episode ${EPI+1} of ${EPS.length}`;
-  const demos = document.getElementById("demos");
-  demos.innerHTML = "";
-  EP.ex.slice(0,3).forEach(pair => {
-    const wrap = document.createElement("div"); wrap.className = "demo";
-    const a = document.createElement("canvas"), b = document.createElement("canvas");
-    draw(a, pair.in, fit(pair.in,104)); draw(b, pair.out, fit(pair.out,104));
-    const arrow = document.createElement("span"); arrow.className = "arrow"; arrow.textContent = "→";
-    wrap.append(a, arrow, b); demos.appendChild(wrap);
-  });
-  const tgt = GRIDS[GRIDS.length-1];
-  draw(document.getElementById("target"), tgt, fit(tgt,150));
-  document.getElementById("slider").max = EP.ops.length*2 - 1;
-  render();
-}
-
 function render(){
   if(!EP) return;
   const step = Math.floor(FRAME/2), phase = FRAME % 2;
-  const state = GRIDS[step + phase];
-  draw(document.getElementById("main"), state, fit(state,480),
-       cellSet(phase === 0 ? EP.sel[step] : EP.after[step]));
+  draw(document.getElementById("main"), EP.states[step + phase],
+       fit(EP.states[step + phase], 480), phase === 0 ? EP.sel[step] : EP.after[step]);
   document.getElementById("opname").textContent = EP.ops[step];
 
   const box = document.getElementById("actions"); box.innerHTML = "";
@@ -386,51 +437,51 @@ document.addEventListener("keydown", e => {
   if(e.key === " "){ e.preventDefault(); document.getElementById("play").click(); }
 });
 
+/* ---------- task grid, from the preview config ----------
+   preview ships one rendered picture per task, so the cards are <img> tags
+   pointing at the dataset server rather than grids this page has to draw. */
 function paint(filter){
   const grid = document.getElementById("grid");
   grid.innerHTML = "";
   const q = (filter||"").toLowerCase();
-  const shown = INDEX.filter(t => !q || t.task.includes(q) ||
-                                  t.ops.some(o => o.toLowerCase().includes(q)));
+  const shown = INDEX.filter(t => !q || t.task.includes(q) || t.ops.toLowerCase().includes(q));
   shown.forEach(t => {
     const b = document.createElement("button");
     b.className = "card" + (t.task === TASK ? " on" : ""); b.dataset.task = t.task;
-    b.innerHTML = `<div class="thumb"></div>` +
+    b.innerHTML = `<div class="thumb">` +
+                    `<img src="${t.thumb_in}" alt="" loading="lazy">` +
+                    `<span class="arrow">→</span>` +
+                    `<img src="${t.thumb_out}" alt="" loading="lazy">` +
+                  `</div>` +
                   `<div class="name">${t.task}</div>` +
-                  `<div class="meta">${t.n} actions · ${t.eps} episodes</div>` +
-                  `<div class="ops">${t.ops.slice(0,4).join(" · ")}${t.ops.length>4?" …":""}</div>`;
+                  `<div class="meta">${t.n} actions · ${EPISODES_PER_TASK} episodes</div>` +
+                  `<div class="ops">${t.ops}</div>`;
     b.onclick = () => { stop(); load(t.task, 0); window.scrollTo({top:0,behavior:"smooth"}); };
     grid.appendChild(b);
   });
-  document.getElementById("count").textContent =
-    `${shown.length} of ${INDEX.length} tasks`;
-  paintThumbs();
-}
-
-// Thumbnails come from a separate file so the first paint is not held up by
-// 325 kB of grids; cards get theirs as soon as it lands.
-function paintThumbs(){
-  if(!Object.keys(THUMBS).length) return;
-  document.querySelectorAll(".card").forEach(card => {
-    const slot = card.querySelector(".thumb");
-    if(!slot || slot.childElementCount) return;
-    const pair = THUMBS[card.dataset.task];
-    if(!pair) return;
-    const a = document.createElement("canvas"), b = document.createElement("canvas");
-    const cell = pairFit(pair.in, pair.out, 168, 72);
-    draw(a, pair.in, cell); draw(b, pair.out, cell);
-    const arrow = document.createElement("span");
-    arrow.className = "arrow"; arrow.textContent = "→";
-    slot.append(a, arrow, b);
-  });
+  document.getElementById("count").textContent = `${shown.length} of ${INDEX.length} tasks`;
 }
 document.getElementById("search").oninput = e => paint(e.target.value);
 
-fetch("data/index.json").then(r => r.json()).then(ix => {
-  INDEX = ix; paint("");
+async function boot(){
+  try{
+    for(let off=0; off<400; off+=100){
+      const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=preview&split=train`
+                        + `&offset=${off}&length=100`);
+      j.rows.forEach(({row}) => INDEX.push({
+        task: row.task_id, n: row.n_actions, ops: row.operations,
+        thumb_in: row.input.src, thumb_out: row.target.src,
+      }));
+      paint(document.getElementById("search").value);
+    }
+  }catch(e){
+    note("Dataset server unavailable");
+    document.getElementById("count").textContent = "could not reach the dataset server";
+    return;
+  }
   load(new URLSearchParams(location.search).get("task") || "05f2a901", 0);
-  fetch("data/thumbs.json").then(r => r.json()).then(t => { THUMBS = t; paintThumbs(); });
-});
+}
+boot();
 </script>
 </body>
 </html>

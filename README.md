@@ -82,8 +82,10 @@ either way. The released dataset was rolled out without it.
 
 ```
 .
-├── docs/                             the operation space makers are written against
-│   └── arcle_reference_v2.md
+├── docs/                             the GitHub Pages viewer; reads the dataset from the Hub
+│   ├── .nojekyll
+│   ├── arcle_reference_v2.md
+│   └── index.html
 ├── figure/                           teaser.png and teaser.gif
 │   ├── teaser.gif
 │   └── teaser.png
@@ -265,9 +267,10 @@ makers or `pipeline/probe_originals.py`; all are in the tooling around them.
 ## Browse it
 
 [**qazyunho.github.io/SOLAR-V2**](https://qazyunho.github.io/SOLAR-V2/) steps
-through any of the 400 episodes: pick a task, walk the actions, watch the
-selection move. It is static — `viz/build_web.py` writes one small JSON per task
-under `docs/data/`, and the page fetches only the task you open.
+through the episodes: pick a task, walk the actions, watch the selection move.
+The page is one HTML file with no data of its own — it reads the published
+dataset through the Hub's dataset server, decoding the packed columns in the
+browser the same way the card's Python snippet does.
 
 ## Data
 
