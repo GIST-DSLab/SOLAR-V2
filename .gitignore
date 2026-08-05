@@ -3,5 +3,7 @@ __pycache__/
 .pytest_cache/
 *.json
 !maker/**/*.json
+# the web viewer's data is the site — it has to be committed
+!docs/data/**/*.json
 figure/*.png
 !figure/teaser.png
