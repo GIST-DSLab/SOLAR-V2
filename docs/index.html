@@ -106,6 +106,9 @@ a.link:hover{text-decoration:underline}
 
 /* store-utility-card grid for the task picker */
 .grid{display:grid;gap:24px;grid-template-columns:repeat(5,minmax(0,1fr))}
+@media (max-width:1100px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:700px){.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+  .card{padding:16px}.card.on{padding:15px}}
 .card{background:var(--canvas);border:1px solid var(--hairline);border-radius:18px;
   padding:24px;cursor:pointer;text-align:left;font:inherit;color:inherit}
 .card:active{transform:scale(.95)}
@@ -129,6 +132,16 @@ a.link:hover{text-decoration:underline}
 .qmark{display:flex;align-items:center;justify-content:center;
   border:2px dashed rgba(255,255,255,.32);border-radius:10px;color:var(--body-muted);
   font-family:var(--display);font-size:34px;font-weight:600;line-height:1}
+/* full trajectory — every state at once, each frame a jump back into the player */
+.strip{display:flex;flex-wrap:wrap;gap:22px;justify-content:center;margin-top:34px}
+.strip[hidden]{display:none}   /* display:flex outranks the UA rule for [hidden] */
+.frame{display:flex;flex-direction:column;align-items:center;gap:8px;cursor:pointer;
+  background:none;border:none;padding:10px;border-radius:14px;font:inherit;color:inherit}
+.frame:hover{background:rgba(255,255,255,.06)}
+.frame.on{background:rgba(255,255,255,.12)}
+.frame:active{transform:scale(.95)}
+.frame .lab{font-size:14px;letter-spacing:-.224px;color:var(--body-muted);max-width:132px}
+.frame.on .lab{color:var(--on-dark)}
 .eps{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:230px}
 .ep{width:38px;height:38px;border-radius:9999px;border:none;cursor:pointer;
   background:rgba(255,255,255,.10);color:var(--body-muted);font:inherit;font-size:17px;
@@ -138,8 +151,14 @@ a.link:hover{text-decoration:underline}
 .card .thumb{display:flex;align-items:center;justify-content:center;gap:8px;
   margin-bottom:14px;height:76px;overflow:hidden}
 .card .thumb .arrow{color:var(--ink-48);font-size:14px}
-.card canvas,.card .thumb img{border-radius:8px;max-height:72px;width:auto;
-  image-rendering:pixelated}
+/* Barely any radius: the picture is the grid, so a rounded corner eats real
+   cells — and on a tall or wide grid the thumbnail is only a few px across the
+   short side, where 8px rounded it into a blob or clamped flat. */
+/* max-width matters as much as max-height: a 1x30 grid is 30 cells wide and one
+   tall, so height-only sizing scaled it to ~2000px and .thumb's overflow:hidden
+   showed the left third of it. */
+.card .thumb img{border-radius:3px;max-height:72px;max-width:46%;width:auto;height:auto;
+  object-fit:contain;image-rendering:pixelated}
 
 footer{background:var(--parchment);color:var(--ink-80);padding:64px 22px}
 footer .cols{max-width:1440px;margin:0 auto;display:flex;gap:64px;flex-wrap:wrap}
@@ -218,6 +237,13 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
     <p class="caption" style="margin:28px auto 0;max-width:62ch">A white outline marks
       the cells the action applies to. Each action appears twice — once with its
       selection, then with the result.</p>
+
+    <!-- the same episode laid out flat, for reading rather than watching -->
+    <div class="controls" style="margin-top:34px">
+      <button class="pill ghost small" id="strip-toggle" aria-expanded="false"
+              aria-controls="strip">Show full trajectory</button>
+    </div>
+    <div class="strip" id="strip" hidden></div>
   </div>
 </section>
 
@@ -419,8 +445,49 @@ async function load(task, epi){
   const tgt = EP.states[EP.states.length-1];
   draw(document.getElementById("target"), tgt, sideFit(tgt,TARGET_PX));
   document.getElementById("slider").max = EP.ops.length*2 - 1;
+  if(STRIP_OPEN) buildStrip();
   render();
 }
+
+/* ---------- full trajectory ----------
+   The player answers "what happens next"; this answers "what happened", which
+   is the question you have when the episode is 24 actions long. Each frame is
+   the state the action was chosen from, with that action's selection outlined —
+   the same pairing the dataset stores — and clicking one seeks the player to it.
+   Built only while open: a 24-action episode is 25 canvases. */
+const STRIP_PX = 116;
+function frame(grid, sel, label, seek){
+  const b = document.createElement("button");
+  b.className = "frame";
+  const cv = document.createElement("canvas");
+  draw(cv, grid, sideFit(grid, STRIP_PX), sel);
+  const lab = document.createElement("div");
+  lab.className = "lab"; lab.textContent = label;
+  b.append(cv, lab);
+  b.onclick = () => { stop(); FRAME = seek; render(); };
+  return b;
+}
+function buildStrip(){
+  const strip = document.getElementById("strip");
+  strip.innerHTML = "";
+  if(!EP) return;
+  EP.ops.forEach((op,i) => {
+    const b = frame(EP.states[i], EP.sel[i], `${i+1}. ${op}`, i*2);
+    b.dataset.step = i; strip.appendChild(b);
+  });
+  const last = EP.states.length - 1;
+  const b = frame(EP.states[last], null, "Result", EP.ops.length*2 - 1);
+  b.dataset.step = "final"; strip.appendChild(b);
+}
+let STRIP_OPEN = false;
+const stripBtn = document.getElementById("strip-toggle");
+stripBtn.onclick = () => {
+  STRIP_OPEN = !STRIP_OPEN;
+  document.getElementById("strip").hidden = !STRIP_OPEN;
+  stripBtn.setAttribute("aria-expanded", String(STRIP_OPEN));
+  stripBtn.textContent = (STRIP_OPEN ? "Hide" : "Show") + " full trajectory";
+  if(STRIP_OPEN){ buildStrip(); render(); }
+};
 
 function runs(ops){
   const out = [];
@@ -450,6 +517,13 @@ function render(){
   // identically and stepping looks like nothing happened.
   document.getElementById("step").textContent =
     `Action ${step+1} of ${EP.ops.length} · ${phase ? "result" : "selection"}`;
+
+  // The player and the strip point at the same episode, so keep them agreed on
+  // where it is. The last action's result *is* the Result frame — mark one.
+  const onFinal = step === EP.ops.length - 1 && phase === 1;
+  document.querySelectorAll("#strip .frame").forEach(f =>
+    f.classList.toggle("on", f.dataset.step === "final"
+      ? onFinal : (!onFinal && +f.dataset.step === step)));
 }
 
 function go(d){ if(!EP) return; FRAME = (FRAME + d + EP.ops.length*2) % (EP.ops.length*2); render(); }
@@ -489,7 +563,7 @@ function paint(filter){
                     `<img src="${t.thumb_out}" alt="" loading="lazy">` +
                   `</div>` +
                   `<div class="name">${t.task}</div>` +
-                  `<div class="meta">${t.n} actions · ${EPISODES_PER_TASK} episodes</div>`;
+                  `<div class="meta">${EPISODES_PER_TASK} episodes</div>`;
     b.onclick = () => { stop(); load(t.task, 0); window.scrollTo({top:0,behavior:"smooth"}); };
     grid.appendChild(b);
   });
@@ -503,7 +577,7 @@ async function boot(){
       const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=preview&split=train`
                         + `&offset=${off}&length=100`);
       j.rows.forEach(({row}) => INDEX.push({
-        task: row.task_id, n: row.n_actions, ops: row.operations,
+        task: row.task_id, ops: row.operations,
         thumb_in: row.input.src, thumb_out: row.target.src,
       }));
       paint(document.getElementById("search").value);
