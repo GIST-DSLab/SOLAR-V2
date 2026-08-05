@@ -29,18 +29,22 @@ ARC_RGB = np.array([
 ], dtype=np.uint8)
 
 CELL = 14          # pixels per grid cell
-SEP = (255, 255, 255)
 PAD = (255, 255, 255)
 
 
 def render(grid, h, w, sel=None, cell=CELL) -> Image.Image:
-    """One grid as an RGB image, with an optional selection outlined in white."""
+    """One grid as an RGB image, with an optional selection outlined in white.
+
+    No cell separators. They read well at 1:1 and fall apart at every other
+    scale: a 1px line survives nearest-neighbour downsampling only where the
+    sampling grid happens to land on it, so a thumbnail comes out with a few
+    thick white bands, the rest of the lattice missing, and whole cell rows
+    dropped — the picture is no longer the grid. Flat colour blocks downscale
+    to the right shape at any factor.
+    """
     g = np.asarray(grid, dtype=int)[:h, :w]
     img = ARC_RGB[np.clip(g, 0, 10)]
     img = np.kron(img, np.ones((cell, cell, 1), dtype=np.uint8))
-    # 1px separators, so cells stay countable
-    img[::cell, :] = SEP
-    img[:, ::cell] = SEP
 
     if sel is not None:
         # Only the region's border. Outlining each selected cell turns any

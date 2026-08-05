@@ -112,8 +112,6 @@ a.link:hover{text-decoration:underline}
 .card:focus-visible{outline:2px solid var(--primary-focus);outline-offset:2px}
 .card .name{font-size:17px;font-weight:600;line-height:1.24;letter-spacing:-.374px}
 .card .meta{font-size:14px;letter-spacing:-.224px;color:var(--ink-48);margin-top:2px}
-.card .ops{font-size:14px;letter-spacing:-.224px;color:var(--primary);margin-top:10px;
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card.on{border-color:var(--primary-focus);border-width:2px;padding:23px}
 
 /* demonstrations — beside the episode, not a tile away from it */
@@ -444,6 +442,8 @@ function paint(filter){
   const grid = document.getElementById("grid");
   grid.innerHTML = "";
   const q = (filter||"").toLowerCase();
+  // ops is not printed on the card any more, but it stays a search key —
+  // "move", "floodfill" are the useful ways to find a task you can't name.
   const shown = INDEX.filter(t => !q || t.task.includes(q) || t.ops.toLowerCase().includes(q));
   shown.forEach(t => {
     const b = document.createElement("button");
@@ -454,8 +454,7 @@ function paint(filter){
                     `<img src="${t.thumb_out}" alt="" loading="lazy">` +
                   `</div>` +
                   `<div class="name">${t.task}</div>` +
-                  `<div class="meta">${t.n} actions · ${EPISODES_PER_TASK} episodes</div>` +
-                  `<div class="ops">${t.ops}</div>`;
+                  `<div class="meta">${t.n} actions · ${EPISODES_PER_TASK} episodes</div>`;
     b.onclick = () => { stop(); load(t.task, 0); window.scrollTo({top:0,behavior:"smooth"}); };
     grid.appendChild(b);
   });
