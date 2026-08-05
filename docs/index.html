@@ -72,6 +72,26 @@ body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
 .inner{max-width:1440px;margin:0 auto}
 .inner.narrow{max-width:980px}
 
+/* pages — one document, three routes, so the CSS and the decoder are shared */
+[data-page]{display:none}
+[data-page].on{display:block}
+
+/* subsets — what exists and what does not */
+.subsets{display:grid;gap:24px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.subset{background:var(--canvas);border:1px solid var(--hairline);border-radius:18px;
+  padding:28px;text-decoration:none;color:inherit;display:flex;flex-direction:column;gap:4px}
+.subset .tag{font-size:12px;font-weight:600;line-height:1;letter-spacing:-.12px;
+  color:var(--ink-48);text-transform:uppercase;margin-bottom:12px}
+.subset .name{font-family:var(--display);font-size:28px;font-weight:600;line-height:1.14;
+  letter-spacing:.196px}
+.subset .meta{font-size:14px;letter-spacing:-.224px;color:var(--ink-48)}
+.subset .go{margin-top:14px;font-size:17px;letter-spacing:-.374px;color:var(--primary)}
+.subset.live .tag{color:var(--primary)}
+.subset:not(.live){opacity:.55}
+.subset.live:active{transform:scale(.98)}
+@media (max-width:1068px){.subsets{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:640px){.subsets{grid-template-columns:1fr}}
+
 h1.hero{font-family:var(--display);font-size:56px;font-weight:600;line-height:1.07;
   letter-spacing:-.28px;margin:0 0 12px}
 h2.display{font-family:var(--display);font-size:40px;font-weight:600;line-height:1.10;
@@ -196,33 +216,67 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <body>
 
 <nav class="global-nav">
-  <span class="brand">SOLAR-V2</span>
+  <a class="brand" href="#/">SOLAR-V2</a>
+  <a href="#/tasks">Tasks</a>
   <a href="https://github.com/QAZyunho/SOLAR-V2">Code</a>
   <a href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Dataset</a>
-  <span class="spacer"></span>
-  <a href="#tasks">Tasks</a>
 </nav>
 
 <nav class="sub-nav">
-  <span class="category">Trajectories</span>
+  <span class="category" id="nav-title">Overview</span>
   <span class="count" id="count"></span>
   <span class="spacer"></span>
-  <input class="search" id="search" placeholder="Search tasks" autocomplete="off">
-  <a class="pill small" href="#tasks">Browse</a>
+  <input class="search" id="search" placeholder="Search tasks" autocomplete="off" hidden>
+  <a class="pill small" id="nav-cta" href="#/tasks">Browse tasks</a>
 </nav>
 
+<!-- ===== page: overview ===== -->
+<div data-page="home">
 <section class="tile light">
   <div class="inner narrow" style="text-align:center">
     <h1 class="hero">One action at a time.</h1>
     <p class="lead">Every ARC task here is solved as a sequence of grid operations,
       recorded so it can be replayed.</p>
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
-      <a class="pill" href="#tasks">Browse tasks</a>
+      <a class="pill" href="#/tasks">Browse tasks</a>
       <a class="pill ghost" href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Get the data</a>
     </div>
   </div>
 </section>
 
+<section class="tile parchment">
+  <div class="inner">
+    <h2 class="display">Subsets</h2>
+    <p class="caption" style="margin:0 0 32px">One released, the rest in progress.</p>
+    <div class="subsets">
+      <a class="subset live" href="#/tasks">
+        <div class="tag">Released</div>
+        <div class="name">ARC-AGI-1</div>
+        <div class="meta">400 tasks · 10 episodes each</div>
+        <div class="go">Browse tasks ›</div>
+      </a>
+      <div class="subset">
+        <div class="tag">Coming soon</div>
+        <div class="name">ARC-AGI-2</div>
+        <div class="meta">Evaluation-set trajectories</div>
+      </div>
+      <div class="subset">
+        <div class="tag">Coming soon</div>
+        <div class="name">1D-ARC</div>
+        <div class="meta">One-dimensional grids</div>
+      </div>
+      <div class="subset">
+        <div class="tag">Coming soon</div>
+        <div class="name">Handcraft</div>
+        <div class="meta">Hand-written generators</div>
+      </div>
+    </div>
+  </div>
+</section>
+</div>
+
+<!-- ===== page: task viewer ===== -->
+<div data-page="task">
 <section class="tile dark">
   <div class="inner" style="text-align:center">
     <div class="notice" id="notice"></div>
@@ -262,14 +316,19 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
     <div class="strip" id="strip" hidden></div>
   </div>
 </section>
+</div>
 
-<section class="tile light" id="tasks">
+<!-- ===== page: task browser ===== -->
+<div data-page="tasks">
+<section class="tile light">
   <div class="inner">
-    <h2 class="display">400 tasks</h2>
-    <p class="caption" style="margin:0 0 32px">ARC-AGI-1 training split, ten episodes each.</p>
+    <h2 class="display">ARC-AGI-1</h2>
+    <p class="caption" style="margin:0 0 32px">400 tasks from the training split,
+      ten episodes each.</p>
     <div class="grid" id="grid"></div>
   </div>
 </section>
+</div>
 
 <footer>
   <div class="cols">
@@ -407,10 +466,11 @@ function note(msg){
 // are addressed by offset instead: the export wrote tasks in sorted order, ten
 // episodes each, which makes the offset a plain calculation.
 async function load(task, epi){
-  const idx = INDEX.findIndex(t => t.task === task);
-  if(idx < 0) return;
-  TASK = task; TIDX = idx; EPI = epi || 0; FRAME = 0;
   note("Loading…");
+  // A deep link can arrive before the index does; route() calls back once it has.
+  const idx = INDEX.findIndex(t => t.task === task);
+  if(idx < 0){ if(INDEX.length) note(`No task ${task}`); return; }
+  TASK = task; TIDX = idx; EPI = epi || 0; FRAME = 0;
   let row;
   try{
     const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=arc_agi1&split=train`
@@ -424,7 +484,6 @@ async function load(task, epi){
   note("");   // render() used to clear this by overwriting it with the op name
 
   document.querySelectorAll(".card").forEach(e => e.classList.toggle("on", e.dataset.task === task));
-  document.querySelector(".sub-nav .category").textContent = task;
 
   const picker = document.getElementById("eps");
   picker.innerHTML = "";
@@ -587,14 +646,50 @@ function paint(filter){
                   `</div>` +
                   `<div class="name">${t.task}</div>` +
                   `<div class="meta">${EPISODES_PER_TASK} episodes</div>`;
-    b.onclick = () => { stop(); load(t.task, 0); window.scrollTo({top:0,behavior:"smooth"}); };
+    b.onclick = () => { location.hash = `#/task/${t.task}`; };
     grid.appendChild(b);
   });
   document.getElementById("count").textContent = `${shown.length} of ${INDEX.length} tasks`;
 }
 document.getElementById("search").oninput = e => paint(e.target.value);
 
+/* ---------- routes ----------
+   #/ overview · #/tasks the 400 cards · #/task/<id> one episode. Hash routing
+   rather than separate files: the three pages share the palette, the packed-
+   column decoder and the renderer, and none of that is worth duplicating. */
+function route(){
+  const h = location.hash.replace(/^#/, "");
+  const m = h.match(/^\/task\/([0-9a-f]{8})$/);
+  const page = m ? "task" : (h === "/tasks" ? "tasks" : "home");
+
+  document.querySelectorAll("[data-page]").forEach(
+    e => e.classList.toggle("on", e.dataset.page === page));
+
+  const search = document.getElementById("search");
+  const cta = document.getElementById("nav-cta");
+  const title = document.getElementById("nav-title");
+  const count = document.getElementById("count");
+  search.hidden = page !== "tasks";
+  count.hidden = page !== "tasks";
+  if(page === "home"){
+    title.textContent = "Overview"; cta.href = "#/tasks"; cta.textContent = "Browse tasks";
+  }else if(page === "tasks"){
+    title.textContent = "Tasks"; cta.href = "#/"; cta.textContent = "Overview";
+    paint(search.value);
+  }else{
+    title.textContent = m[1]; cta.href = "#/tasks"; cta.textContent = "All tasks";
+    stop();
+    if(m[1] !== TASK) load(m[1], 0); else render();
+  }
+  scrollTo(0, 0);
+}
+addEventListener("hashchange", route);
+
 async function boot(){
+  // ?task=<id> was the old deep link; keep it working
+  const legacy = new URLSearchParams(location.search).get("task");
+  if(legacy && !location.hash) location.hash = `#/task/${legacy}`;
+  route();
   try{
     for(let off=0; off<400; off+=100){
       const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=preview&split=train`
@@ -610,7 +705,9 @@ async function boot(){
     document.getElementById("count").textContent = "could not reach the dataset server";
     return;
   }
-  load(new URLSearchParams(location.search).get("task") || "05f2a901", 0);
+  // load() needs INDEX to resolve a task to its row offset, so a deep link into
+  // the viewer only becomes loadable now
+  route();
 }
 boot();
 </script>
