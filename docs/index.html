@@ -119,6 +119,10 @@ a.link:hover{text-decoration:underline}
 .demo{display:flex;align-items:center;gap:10px}
 .demo .arrow{color:var(--body-muted);font-size:17px}
 .side{display:flex;flex-direction:column;gap:10px;align-items:center}
+/* the unanswered half of the test pair — the thing the trajectory is for */
+.qmark{display:flex;align-items:center;justify-content:center;
+  border:2px dashed rgba(255,255,255,.32);border-radius:10px;color:var(--body-muted);
+  font-family:var(--display);font-size:34px;font-weight:600;line-height:1}
 .eps{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:210px}
 .ep{width:32px;height:32px;border-radius:9999px;border:none;cursor:pointer;
   background:rgba(255,255,255,.10);color:var(--body-muted);font:inherit;font-size:14px;
@@ -185,6 +189,8 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
       <div class="side">
         <div class="caption">Demonstrations</div>
         <div class="demos" id="demos"></div>
+        <div class="caption" style="margin-top:22px">Test</div>
+        <div class="demo" id="test"></div>
       </div>
       <canvas id="main"></canvas>
       <div class="side">
@@ -250,11 +256,15 @@ function draw(canvas, grid, cell, sel){
     g.fillStyle = PALETTE[+grid.g[r][c]] || "#F0F0F0";
     g.fillRect(c*cell, r*cell, cell, cell);
   }
-  g.strokeStyle = "rgba(255,255,255,.5)"; g.lineWidth = 1;
-  g.beginPath();
-  for(let c=0;c<=w;c++){ g.moveTo(c*cell+.5,0); g.lineTo(c*cell+.5,h*cell); }
-  for(let r=0;r<=h;r++){ g.moveTo(0,r*cell+.5); g.lineTo(w*cell,r*cell+.5); }
-  g.stroke();
+  // Below ~6px a cell is mostly its own gridlines, so a 30x30 grid drawn small
+  // reads as a white mesh rather than a picture. Fade them out instead.
+  if(cell >= 4){
+    g.strokeStyle = `rgba(255,255,255,${cell >= 8 ? .5 : .22})`; g.lineWidth = 1;
+    g.beginPath();
+    for(let c=0;c<=w;c++){ g.moveTo(c*cell+.5,0); g.lineTo(c*cell+.5,h*cell); }
+    for(let r=0;r<=h;r++){ g.moveTo(0,r*cell+.5); g.lineTo(w*cell,r*cell+.5); }
+    g.stroke();
+  }
   if(!sel || !sel.size) return;
   // Only the region border — outlining each cell turns a multi-cell selection
   // into a hatch, and Submit selects the whole grid.
@@ -275,6 +285,11 @@ function draw(canvas, grid, cell, sel){
   }
 }
 const fit = (grid,budget) => Math.max(6, Math.min(30, Math.floor(budget/Math.max(grid.w,grid.h))));
+/* Side panels get a real budget: the 6px floor above lets a 30x30 grid grow to
+   180px whatever you pass, which is what pushed the demonstrations off to the
+   edge of the stage. Here the budget wins, down to 3px a cell. */
+const sideFit = (grid,budget) => Math.max(3, Math.min(30, Math.floor(budget/Math.max(grid.w,grid.h))));
+const DEMO_PX = 138, TARGET_PX = 220;
 
 /* ---------- the dataset's packed columns, unpacked ----------
    Array columns arrive base64-encoded with a companion <col>__shape. Pixel
@@ -377,12 +392,24 @@ async function load(task, epi){
   EP.ex.slice(0,3).forEach(pair => {
     const wrap = document.createElement("div"); wrap.className = "demo";
     const a = document.createElement("canvas"), b = document.createElement("canvas");
-    draw(a, pair.in, fit(pair.in,104)); draw(b, pair.out, fit(pair.out,104));
+    draw(a, pair.in, sideFit(pair.in,DEMO_PX)); draw(b, pair.out, sideFit(pair.out,DEMO_PX));
     const arrow = document.createElement("span"); arrow.className = "arrow"; arrow.textContent = "→";
     wrap.append(a, arrow, b); demos.appendChild(wrap);
   });
+
+  // the test pair, posed the way the task poses it: input, and an open question
+  const test = document.getElementById("test");
+  test.innerHTML = "";
+  const ti = document.createElement("canvas");
+  draw(ti, EP.states[0], sideFit(EP.states[0],DEMO_PX));
+  const tarrow = document.createElement("span");
+  tarrow.className = "arrow"; tarrow.textContent = "→";
+  const q = document.createElement("div"); q.className = "qmark"; q.textContent = "?";
+  q.style.width = q.style.height = Math.max(56, Math.min(ti.height, DEMO_PX)) + "px";
+  test.append(ti, tarrow, q);
+
   const tgt = EP.states[EP.states.length-1];
-  draw(document.getElementById("target"), tgt, fit(tgt,150));
+  draw(document.getElementById("target"), tgt, sideFit(tgt,TARGET_PX));
   document.getElementById("slider").max = EP.ops.length*2 - 1;
   render();
 }
