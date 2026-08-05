@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SOLAR-V2 — ARCLE trajectory viewer</title>
+<title>SOLAR — ARCLE trajectory viewer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
@@ -216,7 +216,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <body>
 
 <nav class="global-nav">
-  <a class="brand" href="#/">SOLAR-V2</a>
+  <a class="brand" href="#/">SOLAR</a>
   <a href="#/tasks">Tasks</a>
   <a href="https://github.com/QAZyunho/SOLAR-V2">Code</a>
   <a href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Dataset</a>
@@ -234,9 +234,11 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <div data-page="home">
 <section class="tile light">
   <div class="inner narrow" style="text-align:center">
+    <div class="tagline">SOLAR</div>
     <h1 class="hero">One action at a time.</h1>
-    <p class="lead">Every ARC task here is solved as a sequence of grid operations,
-      recorded so it can be replayed.</p>
+    <p class="lead">Synthesized Offline Learning dataset for Abstraction and Reasoning.
+      Every ARC task here is solved as a sequence of grid operations, recorded so it
+      can be replayed.</p>
     <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
       <a class="pill" href="#/tasks">Browse tasks</a>
       <a class="pill ghost" href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Get the data</a>
@@ -316,6 +318,16 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
     <div class="strip" id="strip" hidden></div>
   </div>
 </section>
+
+<!-- The grid element itself is moved here by route(); one copy of 400 cards
+     serves both pages, so their images are never fetched twice. -->
+<section class="tile light">
+  <div class="inner">
+    <h2 class="display">More tasks</h2>
+    <p class="caption" style="margin:0 0 32px" id="more-sub"></p>
+    <div id="slot-more"></div>
+  </div>
+</section>
 </div>
 
 <!-- ===== page: task browser ===== -->
@@ -325,7 +337,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
     <h2 class="display">ARC-AGI-1</h2>
     <p class="caption" style="margin:0 0 32px">400 tasks from the training split,
       ten episodes each.</p>
-    <div class="grid" id="grid"></div>
+    <div id="slot-tasks"><div class="grid" id="grid"></div></div>
   </div>
 </section>
 </div>
@@ -353,6 +365,9 @@ const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
 const DS   = "dbsgh797210/SOLAR";
 const API  = "https://datasets-server.huggingface.co";
 const EPISODES_PER_TASK = 10;
+// Which release the trajectories come from. Named everywhere a task is, so a
+// task id is never presented as if it were the whole dataset.
+const SUBSET = "ARC-AGI-1";
 
 /* ---------- drawing ---------- */
 function draw(canvas, grid, cell, sel){
@@ -677,10 +692,21 @@ function route(){
     title.textContent = "Tasks"; cta.href = "#/"; cta.textContent = "Overview";
     paint(search.value);
   }else{
-    title.textContent = m[1]; cta.href = "#/tasks"; cta.textContent = "All tasks";
+    title.textContent = `${SUBSET} · ${m[1]}`;
+    cta.href = "#/tasks"; cta.textContent = "All tasks";
+    document.getElementById("more-sub").textContent =
+      `${SUBSET} · ${INDEX.length || 400} tasks, ${EPISODES_PER_TASK} episodes each.`;
+    // "More tasks" claims to be all of them, so clear a filter left from #/tasks.
+    // The input keeps its text, so going back restores the filtered view.
+    if(search.value) paint("");
     stop();
     if(m[1] !== TASK) load(m[1], 0); else render();
   }
+  // One grid element, moved between the two pages that show it — 400 cards are
+  // built and their thumbnails fetched once, not once per page.
+  if(page !== "home")
+    document.getElementById(page === "tasks" ? "slot-tasks" : "slot-more")
+            .appendChild(document.getElementById("grid"));
   scrollTo(0, 0);
 }
 addEventListener("hashchange", route);
