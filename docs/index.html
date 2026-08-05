@@ -140,7 +140,7 @@ a.link:hover{text-decoration:underline}
 .frame:hover{background:rgba(255,255,255,.06)}
 .frame.on{background:rgba(255,255,255,.12)}
 .frame:active{transform:scale(.95)}
-.frame .lab{font-size:14px;letter-spacing:-.224px;color:var(--body-muted);max-width:132px}
+.frame .lab{font-size:17px;letter-spacing:-.374px;color:var(--body-muted);max-width:184px}
 .frame.on .lab{color:var(--on-dark)}
 .eps{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:230px}
 .ep{width:38px;height:38px;border-radius:9999px;border:none;cursor:pointer;
@@ -455,7 +455,7 @@ async function load(task, epi){
    the state the action was chosen from, with that action's selection outlined —
    the same pairing the dataset stores — and clicking one seeks the player to it.
    Built only while open: a 24-action episode is 25 canvases. */
-const STRIP_PX = 116;
+const STRIP_PX = 168;
 function frame(grid, sel, label, seek){
   const b = document.createElement("button");
   b.className = "frame";
