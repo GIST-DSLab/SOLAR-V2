@@ -116,10 +116,21 @@ a.link:hover{text-decoration:underline}
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .card.on{border-color:var(--primary-focus);border-width:2px;padding:23px}
 
-/* demonstrations */
-.demos{display:flex;gap:32px;flex-wrap:wrap}
-.demo{display:flex;align-items:center;gap:12px}
-.demo .arrow{color:var(--ink-48);font-size:21px}
+/* demonstrations — beside the episode, not a tile away from it */
+.demos{display:flex;flex-direction:column;gap:14px}
+.demo{display:flex;align-items:center;gap:10px}
+.demo .arrow{color:var(--body-muted);font-size:17px}
+.side{display:flex;flex-direction:column;gap:10px;align-items:center}
+.eps{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:210px}
+.ep{width:32px;height:32px;border-radius:9999px;border:none;cursor:pointer;
+  background:rgba(255,255,255,.10);color:var(--body-muted);font:inherit;font-size:14px;
+  letter-spacing:-.224px;line-height:1}
+.ep:active{transform:scale(.95)}
+.ep.on{background:var(--primary);color:#fff}
+.card .thumb{display:flex;align-items:center;justify-content:center;gap:8px;
+  margin-bottom:14px;height:76px;overflow:hidden}
+.card .thumb .arrow{color:var(--ink-48);font-size:14px}
+.card canvas{border-radius:8px}
 
 footer{background:var(--parchment);color:var(--ink-80);padding:64px 22px}
 footer .cols{max-width:1440px;margin:0 auto;display:flex;gap:64px;flex-wrap:wrap}
@@ -168,23 +179,20 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
   </div>
 </section>
 
-<section class="tile parchment">
-  <div class="inner">
-    <h2 class="display" id="demo-title">Demonstrations</h2>
-    <p class="caption" style="margin:0 0 32px">The pairs that state the rule. The
-      episode below has to reach the same answer without being shown it.</p>
-    <div class="demos" id="demos"></div>
-  </div>
-</section>
-
 <section class="tile dark">
   <div class="inner" style="text-align:center">
     <div class="opname" id="opname"></div>
     <div class="stage">
+      <div class="side">
+        <div class="caption">Demonstrations</div>
+        <div class="demos" id="demos"></div>
+      </div>
       <canvas id="main"></canvas>
-      <div>
-        <div class="caption" style="margin-bottom:8px">Target</div>
+      <div class="side">
+        <div class="caption">Target</div>
         <canvas id="target"></canvas>
+        <div class="caption" style="margin-top:18px" id="ep-label">Episode</div>
+        <div class="eps" id="eps"></div>
       </div>
     </div>
     <div class="actions" id="actions"></div>
@@ -204,7 +212,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <section class="tile light" id="tasks">
   <div class="inner">
     <h2 class="display">400 tasks</h2>
-    <p class="caption" style="margin:0 0 32px">ARC-AGI-1 training split, one episode each.</p>
+    <p class="caption" style="margin:0 0 32px">ARC-AGI-1 training split, ten episodes each.</p>
     <div class="grid" id="grid"></div>
   </div>
 </section>
@@ -230,6 +238,23 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
                  "#F012BE","#FF851B","#7FDBFF","#870C25","#F0F0F0"];
 
+// States arrive as a full first grid then per-step changed cells; selections as
+// coordinate lists. Rebuild them once per episode rather than per frame.
+function materialize(ep){
+  const out = []; let prev = null;
+  for(const s of ep.states){
+    if(s.g){ prev = s.g.slice(); }
+    else {
+      const rows = prev.map(r => r.split(""));
+      for(const [r,c,v] of s.d) rows[r][c] = String(v);
+      prev = rows.map(a => a.join(""));
+    }
+    out.push({h:s.h, w:s.w, g:prev});
+  }
+  return out;
+}
+const cellSet = list => list ? new Set(list.map(([r,c]) => r*100 + c)) : null;
+
 function draw(canvas, grid, cell, sel){
   const h = grid.h, w = grid.w;
   canvas.width = w*cell + 1; canvas.height = h*cell + 1;
@@ -244,10 +269,10 @@ function draw(canvas, grid, cell, sel){
   for(let c=0;c<=w;c++){ g.moveTo(c*cell+.5,0); g.lineTo(c*cell+.5,h*cell); }
   for(let r=0;r<=h;r++){ g.moveTo(0,r*cell+.5); g.lineTo(w*cell,r*cell+.5); }
   g.stroke();
-  if(!sel) return;
+  if(!sel || !sel.size) return;
   // Only the region border — outlining each cell turns a multi-cell selection
   // into a hatch, and Submit selects the whole grid.
-  const on = (r,c) => r>=0 && c>=0 && r<h && c<w && sel[r][c] === "1";
+  const on = (r,c) => sel.has(r*100 + c);
   const seg = [];
   for(let r=0;r<h;r++) for(let c=0;c<w;c++){
     if(!on(r,c)) continue;
@@ -264,6 +289,13 @@ function draw(canvas, grid, cell, sel){
   }
 }
 const fit = (grid,budget) => Math.max(6, Math.min(30, Math.floor(budget/Math.max(grid.w,grid.h))));
+// Card thumbnails share one row, so size the pair against the width they have
+// between them. Using the general fit() clamped wide grids to a 6px floor and
+// pushed the second grid past the card edge.
+function pairFit(a, b, width, height){
+  const wide = a.w + b.w, tall = Math.max(a.h, b.h);
+  return Math.max(2, Math.min(9, Math.floor(Math.min(width/wide, height/tall))));
+}
 
 function runs(ops){
   const out = [];
@@ -274,24 +306,42 @@ function runs(ops){
   return out;
 }
 
-let INDEX = [], EP = null, TASK = null, FRAME = 0, TIMER = null;
+let INDEX = [], THUMBS = {}, EPS = [], EP = null, GRIDS = [],
+    TASK = null, EPI = 0, FRAME = 0, TIMER = null;
 
-async function load(task){
-  EP = (await (await fetch(`data/${task}.json`)).json())[0];
-  TASK = task; FRAME = 0;
+async function load(task, epi){
+  if(task !== TASK){
+    EPS = await (await fetch(`data/${task}.json`)).json();
+    TASK = task;
+  }
+  EPI = epi || 0;
+  EP = EPS[EPI];
+  GRIDS = materialize(EP);
+  FRAME = 0;
   document.querySelectorAll(".card").forEach(e => e.classList.toggle("on", e.dataset.task === task));
-  document.getElementById("demo-title").textContent = `Demonstrations · ${task}`;
+  document.querySelector(".sub-nav .category").textContent = task;
+  const picker = document.getElementById("eps");
+  picker.innerHTML = "";
+  EPS.forEach((_, i) => {
+    const b = document.createElement("button");
+    b.className = "ep" + (i === EPI ? " on" : "");
+    b.textContent = i + 1;
+    b.onclick = () => { stop(); load(task, i); };
+    picker.appendChild(b);
+  });
+  document.getElementById("ep-label").textContent =
+    `Episode ${EPI+1} of ${EPS.length}`;
   const demos = document.getElementById("demos");
   demos.innerHTML = "";
   EP.ex.slice(0,3).forEach(pair => {
     const wrap = document.createElement("div"); wrap.className = "demo";
     const a = document.createElement("canvas"), b = document.createElement("canvas");
-    draw(a, pair.in, fit(pair.in,150)); draw(b, pair.out, fit(pair.out,150));
+    draw(a, pair.in, fit(pair.in,104)); draw(b, pair.out, fit(pair.out,104));
     const arrow = document.createElement("span"); arrow.className = "arrow"; arrow.textContent = "→";
     wrap.append(a, arrow, b); demos.appendChild(wrap);
   });
-  const tgt = EP.states[EP.states.length-1];
-  draw(document.getElementById("target"), tgt, fit(tgt,190));
+  const tgt = GRIDS[GRIDS.length-1];
+  draw(document.getElementById("target"), tgt, fit(tgt,150));
   document.getElementById("slider").max = EP.ops.length*2 - 1;
   render();
 }
@@ -299,9 +349,9 @@ async function load(task){
 function render(){
   if(!EP) return;
   const step = Math.floor(FRAME/2), phase = FRAME % 2;
-  const state = EP.states[step + phase];
-  draw(document.getElementById("main"), state, fit(state,520),
-       phase === 0 ? EP.sel[step] : EP.after[step]);
+  const state = GRIDS[step + phase];
+  draw(document.getElementById("main"), state, fit(state,480),
+       cellSet(phase === 0 ? EP.sel[step] : EP.after[step]));
   document.getElementById("opname").textContent = EP.ops[step];
 
   const box = document.getElementById("actions"); box.innerHTML = "";
@@ -345,20 +395,41 @@ function paint(filter){
   shown.forEach(t => {
     const b = document.createElement("button");
     b.className = "card" + (t.task === TASK ? " on" : ""); b.dataset.task = t.task;
-    b.innerHTML = `<div class="name">${t.task}</div>` +
-                  `<div class="meta">${t.n} actions</div>` +
+    b.innerHTML = `<div class="thumb"></div>` +
+                  `<div class="name">${t.task}</div>` +
+                  `<div class="meta">${t.n} actions · ${t.eps} episodes</div>` +
                   `<div class="ops">${t.ops.slice(0,4).join(" · ")}${t.ops.length>4?" …":""}</div>`;
-    b.onclick = () => { stop(); load(t.task); window.scrollTo({top:0,behavior:"smooth"}); };
+    b.onclick = () => { stop(); load(t.task, 0); window.scrollTo({top:0,behavior:"smooth"}); };
     grid.appendChild(b);
   });
   document.getElementById("count").textContent =
     `${shown.length} of ${INDEX.length} tasks`;
+  paintThumbs();
+}
+
+// Thumbnails come from a separate file so the first paint is not held up by
+// 325 kB of grids; cards get theirs as soon as it lands.
+function paintThumbs(){
+  if(!Object.keys(THUMBS).length) return;
+  document.querySelectorAll(".card").forEach(card => {
+    const slot = card.querySelector(".thumb");
+    if(!slot || slot.childElementCount) return;
+    const pair = THUMBS[card.dataset.task];
+    if(!pair) return;
+    const a = document.createElement("canvas"), b = document.createElement("canvas");
+    const cell = pairFit(pair.in, pair.out, 168, 72);
+    draw(a, pair.in, cell); draw(b, pair.out, cell);
+    const arrow = document.createElement("span");
+    arrow.className = "arrow"; arrow.textContent = "→";
+    slot.append(a, arrow, b);
+  });
 }
 document.getElementById("search").oninput = e => paint(e.target.value);
 
 fetch("data/index.json").then(r => r.json()).then(ix => {
   INDEX = ix; paint("");
-  load(new URLSearchParams(location.search).get("task") || "05f2a901");
+  load(new URLSearchParams(location.search).get("task") || "05f2a901", 0);
+  fetch("data/thumbs.json").then(r => r.json()).then(t => { THUMBS = t; paintThumbs(); });
 });
 </script>
 </body>
