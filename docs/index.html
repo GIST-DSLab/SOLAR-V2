@@ -4,104 +4,227 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SOLAR-V2 — ARCLE trajectory viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
+/* Tokens transcribed from the Apple design reference. One accent, two type
+   faces collapsed into one stack, and the single product shadow. */
 :root{
-  --bg:#ffffff; --ink:#1c1c1c; --muted:#8a8a8a; --line:#e6e6e6;
-  --accent:#1f6f4a; --accent-soft:#dce8d6; --pending:#f4f4f4;
-  --predict:#b26b00;
-}
-@media (prefers-color-scheme: dark){
-  :root{ --bg:#141414; --ink:#ececec; --muted:#8f8f8f; --line:#2c2c2c;
-         --accent:#3f9c6d; --accent-soft:#24352a; --pending:#232323; }
+  --primary:#0066cc; --primary-focus:#0071e3; --primary-on-dark:#2997ff;
+  --canvas:#ffffff; --parchment:#f5f5f7; --pearl:#fafafc;
+  --tile-1:#272729; --tile-2:#2a2a2c; --tile-3:#252527; --black:#000000;
+  --ink:#1d1d1f; --on-dark:#ffffff; --body-muted:#cccccc;
+  --ink-80:#333333; --ink-48:#7a7a7a;
+  --hairline:#e0e0e0; --divider-soft:rgba(0,0,0,.04);
+  --product-shadow:rgba(0,0,0,.22) 3px 5px 30px 0;
+  --display:"SF Pro Display",system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif;
+  --text:"SF Pro Text",system-ui,-apple-system,BlinkMacSystemFont,Inter,sans-serif;
+  --section:80px;
 }
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--ink);
-  font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
-  padding:14px 20px;border-bottom:1px solid var(--line)}
-header h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.01em}
-header .sub{color:var(--muted);font-size:13px}
-header a{color:var(--accent);text-decoration:none}
-header a:hover{text-decoration:underline}
-main{display:grid;grid-template-columns:220px minmax(0,1fr);gap:0;
-  height:calc(100vh - 53px)}
-#list{border-right:1px solid var(--line);overflow-y:auto;padding:10px}
-#search{width:100%;padding:7px 9px;margin-bottom:8px;font:inherit;font-size:13px;
-  border:1px solid var(--line);border-radius:7px;background:var(--bg);color:var(--ink)}
-.task{padding:6px 9px;border-radius:7px;cursor:pointer;font-size:13px;
-  display:flex;justify-content:space-between;gap:8px}
-.task:hover{background:var(--pending)}
-.task.on{background:var(--accent);color:#fff}
-.task .n{color:var(--muted);font-variant-numeric:tabular-nums}
-.task.on .n{color:#dfeee6}
-#stage{overflow-y:auto;padding:18px 22px 28px}
-.row{display:flex;gap:26px;align-items:flex-start;flex-wrap:wrap}
-.panel h2{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
-  color:var(--muted);margin:0 0 7px;font-weight:600}
-#demos{display:flex;gap:18px;flex-wrap:wrap}
-.demo{display:flex;align-items:center;gap:7px}
-.demo .arrow{color:var(--muted)}
-#opname{font-size:22px;font-weight:700;margin:0 0 8px;min-height:30px}
-#opname.predict{color:var(--predict)}
-#opname.done{color:var(--accent)}
-#buttons{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
-.btn{padding:6px 14px;border-radius:999px;font-size:13px;font-weight:600;
-  background:var(--pending);color:var(--muted);border:none}
-.btn.past{background:var(--accent-soft);color:var(--accent)}
-.btn.now{background:var(--accent);color:#fff}
-.btn.now.released{opacity:.62}
-#controls{display:flex;align-items:center;gap:10px;margin-top:18px;flex-wrap:wrap}
-#controls button{font:inherit;font-size:13px;padding:6px 13px;border-radius:8px;
-  border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer}
-#controls button:hover{border-color:var(--accent);color:var(--accent)}
-#slider{flex:1;min-width:180px;accent-color:var(--accent)}
-#step{color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums;min-width:96px}
-canvas{image-rendering:pixelated;display:block}
-.hint{color:var(--muted);font-size:12px;margin-top:14px;max-width:62ch}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
+  font-size:17px;font-weight:400;line-height:1.47;letter-spacing:-.374px;
+  -webkit-font-smoothing:antialiased}
+
+/* global-nav — the only true black on the page */
+.global-nav{position:sticky;top:0;z-index:40;height:44px;background:var(--black);
+  display:flex;align-items:center;gap:20px;padding:0 22px}
+.global-nav a,.global-nav span{font-size:12px;line-height:1;letter-spacing:-.12px;
+  color:var(--on-dark);text-decoration:none;opacity:.88}
+.global-nav a:hover{opacity:1}
+.global-nav .brand{font-weight:600;opacity:1}
+.global-nav .spacer{flex:1}
+
+/* sub-nav-frosted */
+.sub-nav{position:sticky;top:44px;z-index:39;height:52px;display:flex;align-items:center;
+  gap:16px;padding:0 22px;background:rgba(245,245,247,.8);
+  backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid var(--divider-soft)}
+.sub-nav .category{font-family:var(--display);font-size:21px;font-weight:600;
+  line-height:1.19;letter-spacing:.231px}
+.sub-nav .count{font-size:14px;letter-spacing:-.224px;color:var(--ink-48)}
+.sub-nav .spacer{flex:1}
+
+/* search-input — pill, matching the CTA grammar */
+.search{height:44px;padding:12px 20px;border:1px solid rgba(0,0,0,.08);border-radius:9999px;
+  background:var(--canvas);color:var(--ink);font:inherit;font-size:17px;width:260px}
+.search:focus{outline:2px solid var(--primary-focus);outline-offset:1px}
+
+/* buttons */
+.pill{display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  padding:11px 22px;border-radius:9999px;border:none;background:var(--primary);
+  color:#fff;font-family:var(--text);font-size:17px;font-weight:400;letter-spacing:-.374px;
+  cursor:pointer;text-decoration:none;line-height:1}
+.pill:active{transform:scale(.95)}
+.pill:focus-visible{outline:2px solid var(--primary-focus);outline-offset:2px}
+.pill.ghost{background:transparent;color:var(--primary);border:1px solid var(--primary)}
+.pill.small{padding:8px 16px;font-size:14px;letter-spacing:-.224px}
+.pill[disabled]{background:var(--pearl);color:var(--ink-48);cursor:default}
+
+/* tiles — the colour change is the divider; no borders, no radius */
+.tile{padding:var(--section) 22px}
+.tile.light{background:var(--canvas)}
+.tile.parchment{background:var(--parchment)}
+.tile.dark{background:var(--tile-1);color:var(--on-dark)}
+.tile.dark-2{background:var(--tile-2);color:var(--on-dark)}
+.inner{max-width:1440px;margin:0 auto}
+.inner.narrow{max-width:980px}
+
+h1.hero{font-family:var(--display);font-size:56px;font-weight:600;line-height:1.07;
+  letter-spacing:-.28px;margin:0 0 12px}
+h2.display{font-family:var(--display);font-size:40px;font-weight:600;line-height:1.10;
+  letter-spacing:0;margin:0 0 8px}
+p.lead{font-size:28px;font-weight:400;line-height:1.14;letter-spacing:.196px;margin:0 0 32px;
+  color:var(--ink)}
+.tile.dark p.lead{color:var(--body-muted)}
+.tagline{font-family:var(--display);font-size:21px;font-weight:600;line-height:1.19;
+  letter-spacing:.231px;margin:0 0 24px}
+.caption{font-size:14px;line-height:1.43;letter-spacing:-.224px;color:var(--ink-48)}
+.tile.dark .caption{color:var(--body-muted)}
+a.link{color:var(--primary);text-decoration:none}
+.tile.dark a.link{color:var(--primary-on-dark)}
+a.link:hover{text-decoration:underline}
+
+/* the stage: the canvas is the product, so it carries the one shadow */
+.stage{display:flex;gap:48px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+#main{box-shadow:var(--product-shadow);display:block}
+#target{display:block}
+.opname{font-family:var(--display);font-size:40px;font-weight:600;line-height:1.10;
+  margin:0 0 24px;min-height:44px}
+.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:32px;justify-content:center}
+.act{padding:11px 22px;border-radius:9999px;font-size:17px;letter-spacing:-.374px;
+  background:rgba(255,255,255,.10);color:var(--body-muted);line-height:1}
+.act.past{background:rgba(255,255,255,.18);color:#fff}
+.act.now{background:var(--primary);color:#fff}
+.act.now.released{opacity:.55}
+.controls{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:36px;
+  justify-content:center}
+#slider{width:min(420px,60vw);accent-color:var(--primary)}
+.step{font-size:14px;letter-spacing:-.224px;color:var(--body-muted);min-width:190px}
+
+/* store-utility-card grid for the task picker */
+.grid{display:grid;gap:24px;grid-template-columns:repeat(5,minmax(0,1fr))}
+.card{background:var(--canvas);border:1px solid var(--hairline);border-radius:18px;
+  padding:24px;cursor:pointer;text-align:left;font:inherit;color:inherit}
+.card:active{transform:scale(.95)}
+.card:focus-visible{outline:2px solid var(--primary-focus);outline-offset:2px}
+.card .name{font-size:17px;font-weight:600;line-height:1.24;letter-spacing:-.374px}
+.card .meta{font-size:14px;letter-spacing:-.224px;color:var(--ink-48);margin-top:2px}
+.card .ops{font-size:14px;letter-spacing:-.224px;color:var(--primary);margin-top:10px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card.on{border-color:var(--primary-focus);border-width:2px;padding:23px}
+
+/* demonstrations */
+.demos{display:flex;gap:32px;flex-wrap:wrap}
+.demo{display:flex;align-items:center;gap:12px}
+.demo .arrow{color:var(--ink-48);font-size:21px}
+
+footer{background:var(--parchment);color:var(--ink-80);padding:64px 22px}
+footer .cols{max-width:1440px;margin:0 auto;display:flex;gap:64px;flex-wrap:wrap}
+footer h3{font-size:14px;font-weight:600;line-height:1.29;letter-spacing:-.224px;margin:0 0 4px}
+footer a{display:block;font-size:17px;line-height:2.41;letter-spacing:-.374px;
+  color:var(--ink-80);text-decoration:none}
+footer a:hover{text-decoration:underline}
+footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
+  letter-spacing:-.12px;color:var(--ink-48)}
+
+@media (max-width:1068px){ .grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  h1.hero{font-size:40px} }
+@media (max-width:833px){ .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .tile{padding:48px 20px} .sub-nav .count{display:none} }
+@media (max-width:640px){ .grid{grid-template-columns:1fr} h1.hero{font-size:34px}
+  .opname{font-size:28px} .search{width:150px} }
 </style>
 </head>
 <body>
-<header>
-  <h1>SOLAR-V2</h1>
-  <span class="sub">ARCLE trajectories, one action at a time</span>
-  <span class="sub">·</span>
-  <a href="https://github.com/QAZyunho/SOLAR-V2">code</a>
-  <a href="https://huggingface.co/datasets/dbsgh797210/SOLAR">dataset</a>
-</header>
 
-<main>
-  <nav id="list"><input id="search" placeholder="filter by task or operation…" autocomplete="off"></nav>
-  <section id="stage">
-    <div class="panel" style="margin-bottom:20px">
-      <h2>demonstrations</h2>
-      <div id="demos"></div>
+<nav class="global-nav">
+  <span class="brand">SOLAR-V2</span>
+  <a href="https://github.com/QAZyunho/SOLAR-V2">Code</a>
+  <a href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Dataset</a>
+  <span class="spacer"></span>
+  <a href="#tasks">Tasks</a>
+</nav>
+
+<nav class="sub-nav">
+  <span class="category">Trajectories</span>
+  <span class="count" id="count"></span>
+  <span class="spacer"></span>
+  <input class="search" id="search" placeholder="Search tasks" autocomplete="off">
+  <a class="pill small" href="#tasks">Browse</a>
+</nav>
+
+<section class="tile light">
+  <div class="inner narrow" style="text-align:center">
+    <h1 class="hero">One action at a time.</h1>
+    <p class="lead">Every ARC task here is solved as a sequence of grid operations,
+      recorded so it can be replayed.</p>
+    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+      <a class="pill" href="#tasks">Browse tasks</a>
+      <a class="pill ghost" href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Get the data</a>
     </div>
+  </div>
+</section>
 
-    <div class="row">
-      <div class="panel">
-        <div id="opname"></div>
-        <canvas id="main"></canvas>
-        <div id="buttons"></div>
-        <div id="controls">
-          <button id="play">▶ play</button>
-          <button id="prev">◀</button>
-          <button id="next">▶</button>
-          <input id="slider" type="range" min="0" value="0">
-          <span id="step"></span>
-        </div>
-      </div>
-      <div class="panel">
-        <h2>target</h2>
+<section class="tile parchment">
+  <div class="inner">
+    <h2 class="display" id="demo-title">Demonstrations</h2>
+    <p class="caption" style="margin:0 0 32px">The pairs that state the rule. The
+      episode below has to reach the same answer without being shown it.</p>
+    <div class="demos" id="demos"></div>
+  </div>
+</section>
+
+<section class="tile dark">
+  <div class="inner" style="text-align:center">
+    <div class="opname" id="opname"></div>
+    <div class="stage">
+      <canvas id="main"></canvas>
+      <div>
+        <div class="caption" style="margin-bottom:8px">Target</div>
         <canvas id="target"></canvas>
       </div>
     </div>
+    <div class="actions" id="actions"></div>
+    <div class="controls">
+      <button class="pill" id="play">Play</button>
+      <button class="pill ghost small" id="prev">Back</button>
+      <button class="pill ghost small" id="next">Next</button>
+      <input id="slider" type="range" min="0" value="0">
+      <span class="step" id="step"></span>
+    </div>
+    <p class="caption" style="margin:28px auto 0;max-width:62ch">A white outline marks
+      the cells the action applies to. Each action appears twice — once with its
+      selection, then with the result.</p>
+  </div>
+</section>
 
-    <p class="hint">A white outline marks the cells the action applies to. Each
-    action is shown twice: once with its selection, then with the result. The
-    buttons are the actions this episode uses — repeats of the same action are
-    one button, pressed again.</p>
-  </section>
-</main>
+<section class="tile light" id="tasks">
+  <div class="inner">
+    <h2 class="display">400 tasks</h2>
+    <p class="caption" style="margin:0 0 32px">ARC-AGI-1 training split, one episode each.</p>
+    <div class="grid" id="grid"></div>
+  </div>
+</section>
+
+<footer>
+  <div class="cols">
+    <div>
+      <h3>Project</h3>
+      <a href="https://github.com/QAZyunho/SOLAR-V2">Code on GitHub</a>
+      <a href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Dataset on Hugging Face</a>
+    </div>
+    <div>
+      <h3>Built on</h3>
+      <a href="https://github.com/ConfeitoHS/arcle">ARCLE</a>
+      <a href="https://github.com/michaelhodel/re-arc">RE-ARC</a>
+      <a href="https://github.com/fchollet/ARC-AGI">ARC-AGI-1</a>
+    </div>
+  </div>
+  <p class="legal">Apache-2.0. Trajectories generated with ARCLE; inputs resampled by RE-ARC.</p>
+</footer>
 
 <script>
 const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
@@ -109,154 +232,132 @@ const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
 
 function draw(canvas, grid, cell, sel){
   const h = grid.h, w = grid.w;
-  canvas.width = w * cell + 1; canvas.height = h * cell + 1;
+  canvas.width = w*cell + 1; canvas.height = h*cell + 1;
   const g = canvas.getContext("2d");
   g.clearRect(0,0,canvas.width,canvas.height);
-  for(let r=0;r<h;r++){
-    for(let c=0;c<w;c++){
-      g.fillStyle = PALETTE[+grid.g[r][c]] || "#F0F0F0";
-      g.fillRect(c*cell, r*cell, cell, cell);
-    }
+  for(let r=0;r<h;r++) for(let c=0;c<w;c++){
+    g.fillStyle = PALETTE[+grid.g[r][c]] || "#F0F0F0";
+    g.fillRect(c*cell, r*cell, cell, cell);
   }
-  // cell separators
-  g.strokeStyle = "rgba(255,255,255,.55)"; g.lineWidth = 1;
+  g.strokeStyle = "rgba(255,255,255,.5)"; g.lineWidth = 1;
   g.beginPath();
   for(let c=0;c<=w;c++){ g.moveTo(c*cell+.5,0); g.lineTo(c*cell+.5,h*cell); }
   for(let r=0;r<=h;r++){ g.moveTo(0,r*cell+.5); g.lineTo(w*cell,r*cell+.5); }
   g.stroke();
-
   if(!sel) return;
-  // Only the border of the region. Outlining each selected cell turns any
-  // multi-cell selection into a hatch, and Submit selects the whole grid.
+  // Only the region border — outlining each cell turns a multi-cell selection
+  // into a hatch, and Submit selects the whole grid.
   const on = (r,c) => r>=0 && c>=0 && r<h && c<w && sel[r][c] === "1";
   const seg = [];
   for(let r=0;r<h;r++) for(let c=0;c<w;c++){
     if(!on(r,c)) continue;
-    if(!on(r-1,c)) seg.push([c*cell, r*cell, (c+1)*cell, r*cell]);
-    if(!on(r+1,c)) seg.push([c*cell, (r+1)*cell, (c+1)*cell, (r+1)*cell]);
-    if(!on(r,c-1)) seg.push([c*cell, r*cell, c*cell, (r+1)*cell]);
-    if(!on(r,c+1)) seg.push([(c+1)*cell, r*cell, (c+1)*cell, (r+1)*cell]);
+    if(!on(r-1,c)) seg.push([c*cell,r*cell,(c+1)*cell,r*cell]);
+    if(!on(r+1,c)) seg.push([c*cell,(r+1)*cell,(c+1)*cell,(r+1)*cell]);
+    if(!on(r,c-1)) seg.push([c*cell,r*cell,c*cell,(r+1)*cell]);
+    if(!on(r,c+1)) seg.push([(c+1)*cell,r*cell,(c+1)*cell,(r+1)*cell]);
   }
-  for(const [color,width] of [["#101010",4.5],["#ffffff",2.4]]){
+  for(const [color,width] of [["#101010",5],["#ffffff",2.6]]){
     g.strokeStyle = color; g.lineWidth = width; g.lineCap = "round";
     g.beginPath();
     for(const [x0,y0,x1,y1] of seg){ g.moveTo(x0,y0); g.lineTo(x1,y1); }
     g.stroke();
   }
 }
-
-function fitCell(grid, budget){
-  return Math.max(6, Math.min(26, Math.floor(budget / Math.max(grid.w, grid.h))));
-}
+const fit = (grid,budget) => Math.max(6, Math.min(30, Math.floor(budget/Math.max(grid.w,grid.h))));
 
 function runs(ops){
   const out = [];
   ops.forEach((name,i) => {
     const last = out[out.length-1];
-    if(last && last.name === name) last.end = i;
-    else out.push({name, start:i, end:i});
+    if(last && last.name === name) last.end = i; else out.push({name,start:i,end:i});
   });
   return out;
 }
 
-let INDEX = [], EP = null, FRAME = 0, TIMER = null;
+let INDEX = [], EP = null, TASK = null, FRAME = 0, TIMER = null;
 
 async function load(task){
-  const r = await fetch(`data/${task}.json`);
-  EP = (await r.json())[0];
-  FRAME = 0;
-  document.querySelectorAll(".task").forEach(e =>
-    e.classList.toggle("on", e.dataset.task === task));
+  EP = (await (await fetch(`data/${task}.json`)).json())[0];
+  TASK = task; FRAME = 0;
+  document.querySelectorAll(".card").forEach(e => e.classList.toggle("on", e.dataset.task === task));
+  document.getElementById("demo-title").textContent = `Demonstrations · ${task}`;
   const demos = document.getElementById("demos");
   demos.innerHTML = "";
   EP.ex.slice(0,3).forEach(pair => {
     const wrap = document.createElement("div"); wrap.className = "demo";
     const a = document.createElement("canvas"), b = document.createElement("canvas");
-    draw(a, pair.in, fitCell(pair.in, 110));
-    draw(b, pair.out, fitCell(pair.out, 110));
-    const arrow = document.createElement("span");
-    arrow.className = "arrow"; arrow.textContent = "→";
+    draw(a, pair.in, fit(pair.in,150)); draw(b, pair.out, fit(pair.out,150));
+    const arrow = document.createElement("span"); arrow.className = "arrow"; arrow.textContent = "→";
     wrap.append(a, arrow, b); demos.appendChild(wrap);
   });
   const tgt = EP.states[EP.states.length-1];
-  draw(document.getElementById("target"), tgt, fitCell(tgt, 210));
+  draw(document.getElementById("target"), tgt, fit(tgt,190));
   document.getElementById("slider").max = EP.ops.length*2 - 1;
   render();
 }
 
 function render(){
   if(!EP) return;
-  const step = Math.floor(FRAME/2), phase = FRAME % 2;   // 0 = selection, 1 = result
+  const step = Math.floor(FRAME/2), phase = FRAME % 2;
   const state = EP.states[step + phase];
-  const sel = phase === 0 ? EP.sel[step] : EP.after[step];
-  draw(document.getElementById("main"), state, fitCell(state, 430), sel);
+  draw(document.getElementById("main"), state, fit(state,520),
+       phase === 0 ? EP.sel[step] : EP.after[step]);
+  document.getElementById("opname").textContent = EP.ops[step];
 
-  const name = document.getElementById("opname");
-  name.textContent = EP.ops[step];
-  name.className = phase ? "done" : "predict";
-
-  const box = document.getElementById("buttons");
-  box.innerHTML = "";
+  const box = document.getElementById("actions"); box.innerHTML = "";
   runs(EP.ops).forEach(run => {
     const b = document.createElement("span");
-    b.className = "btn" + (step > run.end ? " past"
-                    : (step >= run.start ? " now" + (phase ? " released" : "") : ""));
-    b.textContent = run.name;
-    box.appendChild(b);
+    b.className = "act" + (step > run.end ? " past"
+                  : (step >= run.start ? " now" + (phase ? " released" : "") : ""));
+    b.textContent = run.name; box.appendChild(b);
   });
-
   document.getElementById("slider").value = FRAME;
-  // Without the phase word, stepping from selection to result left every
-  // readout unchanged and the page looked frozen.
+  // Naming the phase matters: without it both frames of an action read
+  // identically and stepping looks like nothing happened.
   document.getElementById("step").textContent =
-    `action ${step+1} of ${EP.ops.length} · ${phase ? "result" : "selection"}`;
+    `Action ${step+1} of ${EP.ops.length} · ${phase ? "result" : "selection"}`;
 }
 
-function go(delta){
-  if(!EP) return;
-  FRAME = (FRAME + delta + EP.ops.length*2) % (EP.ops.length*2);
-  render();
-}
-
-function stop(){ clearInterval(TIMER); TIMER = null;
-  document.getElementById("play").textContent = "▶ play"; }
+function go(d){ if(!EP) return; FRAME = (FRAME + d + EP.ops.length*2) % (EP.ops.length*2); render(); }
+function stop(){ clearInterval(TIMER); TIMER = null; document.getElementById("play").textContent = "Play"; }
 
 document.getElementById("play").onclick = () => {
   if(TIMER) return stop();
-  document.getElementById("play").textContent = "❚❚ pause";
-  TIMER = setInterval(() => {
-    if(FRAME === EP.ops.length*2 - 1){ stop(); return; }
-    go(1);
-  }, 750);
+  document.getElementById("play").textContent = "Pause";
+  TIMER = setInterval(() => { if(FRAME === EP.ops.length*2 - 1){ stop(); return; } go(1); }, 750);
 };
 document.getElementById("prev").onclick = () => { stop(); go(-1); };
 document.getElementById("next").onclick = () => { stop(); go(1); };
 document.getElementById("slider").oninput = e => { stop(); FRAME = +e.target.value; render(); };
 document.addEventListener("keydown", e => {
+  if(e.target.tagName === "INPUT" && e.target.type !== "range") return;
   if(e.key === "ArrowRight"){ stop(); go(1); }
   if(e.key === "ArrowLeft"){ stop(); go(-1); }
   if(e.key === " "){ e.preventDefault(); document.getElementById("play").click(); }
 });
 
-function paintList(filter){
-  const nav = document.getElementById("list");
-  nav.querySelectorAll(".task").forEach(e => e.remove());
+function paint(filter){
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "";
   const q = (filter||"").toLowerCase();
-  INDEX.filter(t => !q || t.task.includes(q) ||
-                    t.ops.some(o => o.toLowerCase().includes(q)))
-       .forEach(t => {
-    const d = document.createElement("div");
-    d.className = "task"; d.dataset.task = t.task;
-    d.innerHTML = `<span>${t.task}</span><span class="n">${t.n}</span>`;
-    d.onclick = () => { stop(); load(t.task); };
-    nav.appendChild(d);
+  const shown = INDEX.filter(t => !q || t.task.includes(q) ||
+                                  t.ops.some(o => o.toLowerCase().includes(q)));
+  shown.forEach(t => {
+    const b = document.createElement("button");
+    b.className = "card" + (t.task === TASK ? " on" : ""); b.dataset.task = t.task;
+    b.innerHTML = `<div class="name">${t.task}</div>` +
+                  `<div class="meta">${t.n} actions</div>` +
+                  `<div class="ops">${t.ops.slice(0,4).join(" · ")}${t.ops.length>4?" …":""}</div>`;
+    b.onclick = () => { stop(); load(t.task); window.scrollTo({top:0,behavior:"smooth"}); };
+    grid.appendChild(b);
   });
+  document.getElementById("count").textContent =
+    `${shown.length} of ${INDEX.length} tasks`;
 }
-
-document.getElementById("search").oninput = e => paintList(e.target.value);
+document.getElementById("search").oninput = e => paint(e.target.value);
 
 fetch("data/index.json").then(r => r.json()).then(ix => {
-  INDEX = ix; paintList("");
+  INDEX = ix; paint("");
   load(new URLSearchParams(location.search).get("task") || "05f2a901");
 });
 </script>
