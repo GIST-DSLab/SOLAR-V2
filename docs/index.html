@@ -76,6 +76,30 @@ body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
 [data-page]{display:none}
 [data-page].on{display:block}
 
+/* hero — the one full-bleed dark band, so the page reads
+   nav(black) → hero(dark) → subsets(white) → footer(parchment) */
+.hero-tile{position:relative;overflow:hidden;isolation:isolate;
+  background:#0b0b0c;color:var(--on-dark);padding:132px 22px 140px}
+.hero-bg{position:absolute;inset:-60px;background:url(hero.png) center/cover no-repeat;
+  filter:blur(11px) saturate(1.25);opacity:.62}
+/* Without this the copy sits on whatever grid happens to be behind it. The veil
+   is opaque at the edges and thinnest at the centre, so the colour survives at
+   the margins where nothing has to be read. */
+.hero-veil{position:absolute;inset:0;
+  background:radial-gradient(118% 88% at 50% 46%,
+    rgba(11,11,12,.52) 0%, rgba(11,11,12,.80) 52%, rgba(11,11,12,.97) 100%)}
+.hero-copy{position:relative;z-index:1;text-align:center}
+.hero-tile .tagline{color:var(--primary-on-dark);margin-bottom:20px}
+.hero-tile p.lead{color:#fff;margin-bottom:20px}
+.hero-body{font-size:21px;line-height:1.38;letter-spacing:.011px;color:var(--body-muted);
+  max-width:58ch;margin:0 auto 40px}
+.cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+/* #0066cc is too dark to sit on near-black; the on-dark accent is the pair */
+.hero-tile .pill{background:var(--primary-focus)}
+.hero-tile .pill.ghost{background:transparent;color:var(--primary-on-dark);
+  border-color:var(--primary-on-dark)}
+@media (max-width:640px){.hero-tile{padding:80px 22px 88px}.hero-body{font-size:17px}}
+
 /* subsets — what exists and what does not */
 .subsets{display:grid;gap:24px;grid-template-columns:repeat(4,minmax(0,1fr))}
 .subset{background:var(--canvas);border:1px solid var(--hairline);border-radius:18px;
@@ -232,21 +256,26 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 
 <!-- ===== page: overview ===== -->
 <div data-page="home">
-<section class="tile light">
-  <div class="inner narrow" style="text-align:center">
+<section class="hero-tile">
+  <!-- real grids from the dataset, blurred back until they are only colour -->
+  <div class="hero-bg" aria-hidden="true"></div>
+  <div class="hero-veil" aria-hidden="true"></div>
+  <div class="inner narrow hero-copy">
     <div class="tagline">SOLAR</div>
     <h1 class="hero">One action at a time.</h1>
-    <p class="lead">Synthesized Offline Learning dataset for Abstraction and Reasoning.
-      Every ARC task here is solved as a sequence of grid operations, recorded so it
-      can be replayed.</p>
-    <div style="display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+    <p class="lead">Synthesized Offline Learning dataset for Abstraction and Reasoning.</p>
+    <p class="hero-body">Every ARC task here is solved as a sequence of grid operations
+      — select a region, recolor it, move an object, submit — with the environment
+      state recorded at every step, so a solution can be replayed, watched, or
+      trained on.</p>
+    <div class="cta">
       <a class="pill" href="#/tasks">Browse tasks</a>
       <a class="pill ghost" href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Get the data</a>
     </div>
   </div>
 </section>
 
-<section class="tile parchment">
+<section class="tile light">
   <div class="inner">
     <h2 class="display">Subsets</h2>
     <p class="caption" style="margin:0 0 32px">One released, the rest in progress.</p>
