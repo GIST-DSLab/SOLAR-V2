@@ -114,19 +114,25 @@ a.link:hover{text-decoration:underline}
 .card .meta{font-size:14px;letter-spacing:-.224px;color:var(--ink-48);margin-top:2px}
 .card.on{border-color:var(--primary-focus);border-width:2px;padding:23px}
 
-/* demonstrations — beside the episode, not a tile away from it */
-.demos{display:flex;flex-direction:column;gap:14px}
-.demo{display:flex;align-items:center;gap:10px}
-.demo .arrow{color:var(--body-muted);font-size:17px}
+/* Three titled columns. Every column starts with a .panel-title on the same
+   line, so the grids below them start at the same height. */
 .side{display:flex;flex-direction:column;gap:10px;align-items:center}
+.panel-title{font-family:var(--display);font-size:21px;font-weight:600;line-height:1.19;
+  letter-spacing:.231px;color:var(--on-dark);margin:0 0 6px}
+/* One grid for the demonstrations *and* the test row, so the arrow sits in the
+   same column on every line instead of drifting with each pair's width. */
+.pairs{display:grid;grid-template-columns:auto auto auto;gap:18px 14px;
+  align-items:center;justify-items:center}
+.pairs .arrow{color:var(--body-muted);font-size:21px;line-height:1}
+.pairs .sep{grid-column:1/-1;margin:14px 0 0}
 /* the unanswered half of the test pair — the thing the trajectory is for */
 .qmark{display:flex;align-items:center;justify-content:center;
   border:2px dashed rgba(255,255,255,.32);border-radius:10px;color:var(--body-muted);
   font-family:var(--display);font-size:34px;font-weight:600;line-height:1}
-.eps{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;max-width:210px}
-.ep{width:32px;height:32px;border-radius:9999px;border:none;cursor:pointer;
-  background:rgba(255,255,255,.10);color:var(--body-muted);font:inherit;font-size:14px;
-  letter-spacing:-.224px;line-height:1}
+.eps{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;max-width:230px}
+.ep{width:38px;height:38px;border-radius:9999px;border:none;cursor:pointer;
+  background:rgba(255,255,255,.10);color:var(--body-muted);font:inherit;font-size:17px;
+  letter-spacing:-.374px;line-height:1}
 .ep:active{transform:scale(.95)}
 .ep.on{background:var(--primary);color:#fff}
 .card .thumb{display:flex;align-items:center;justify-content:center;gap:8px;
@@ -187,16 +193,17 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
     <div class="opname" id="opname"></div>
     <div class="stage">
       <div class="side">
-        <div class="caption">Demonstrations</div>
-        <div class="demos" id="demos"></div>
-        <div class="caption" style="margin-top:22px">Test</div>
-        <div class="demo" id="test"></div>
+        <div class="panel-title">Demonstrations</div>
+        <div class="pairs" id="pairs"></div>
       </div>
-      <canvas id="main"></canvas>
       <div class="side">
-        <div class="caption">Target</div>
+        <div class="panel-title">Working grid</div>
+        <canvas id="main"></canvas>
+      </div>
+      <div class="side">
+        <div class="panel-title">Target</div>
         <canvas id="target"></canvas>
-        <div class="caption" style="margin-top:18px" id="ep-label">Episode</div>
+        <div class="panel-title" style="margin-top:30px" id="ep-label">Episode</div>
         <div class="eps" id="eps"></div>
       </div>
     </div>
@@ -387,26 +394,27 @@ async function load(task, epi){
   }
   document.getElementById("ep-label").textContent = `Episode ${EPI+1} of ${EPISODES_PER_TASK}`;
 
-  const demos = document.getElementById("demos");
-  demos.innerHTML = "";
+  const pairs = document.getElementById("pairs");
+  pairs.innerHTML = "";
+  const arrow = () => {
+    const s = document.createElement("span");
+    s.className = "arrow"; s.textContent = "→"; return s;
+  };
   EP.ex.slice(0,3).forEach(pair => {
-    const wrap = document.createElement("div"); wrap.className = "demo";
     const a = document.createElement("canvas"), b = document.createElement("canvas");
     draw(a, pair.in, sideFit(pair.in,DEMO_PX)); draw(b, pair.out, sideFit(pair.out,DEMO_PX));
-    const arrow = document.createElement("span"); arrow.className = "arrow"; arrow.textContent = "→";
-    wrap.append(a, arrow, b); demos.appendChild(wrap);
+    pairs.append(a, arrow(), b);
   });
 
-  // the test pair, posed the way the task poses it: input, and an open question
-  const test = document.getElementById("test");
-  test.innerHTML = "";
+  // the test pair, posed the way the task poses it: input, and an open question.
+  // Same grid as the demonstrations, so it lines up under them.
+  const sep = document.createElement("div");
+  sep.className = "panel-title sep"; sep.textContent = "Test";
   const ti = document.createElement("canvas");
   draw(ti, EP.states[0], sideFit(EP.states[0],DEMO_PX));
-  const tarrow = document.createElement("span");
-  tarrow.className = "arrow"; tarrow.textContent = "→";
   const q = document.createElement("div"); q.className = "qmark"; q.textContent = "?";
   q.style.width = q.style.height = Math.max(56, Math.min(ti.height, DEMO_PX)) + "px";
-  test.append(ti, tarrow, q);
+  pairs.append(sep, ti, arrow(), q);
 
   const tgt = EP.states[EP.states.length-1];
   draw(document.getElementById("target"), tgt, sideFit(tgt,TARGET_PX));
