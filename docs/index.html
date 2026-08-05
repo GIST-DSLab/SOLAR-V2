@@ -91,8 +91,12 @@ a.link:hover{text-decoration:underline}
 .stage{display:flex;gap:48px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
 #main{box-shadow:var(--product-shadow);display:block}
 #target{display:block}
-.opname{font-family:var(--display);font-size:40px;font-weight:600;line-height:1.10;
-  margin:0 0 24px;min-height:44px}
+/* Loading and failure messages only. The current operation is not repeated
+   here — the action row below the stage names it and places it in the
+   sequence, which a standalone heading cannot. */
+.notice{font-family:var(--display);font-size:21px;font-weight:600;line-height:1.19;
+  letter-spacing:.231px;color:var(--body-muted);margin:0 0 28px}
+.notice:empty{margin:0}
 .actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:32px;justify-content:center}
 .act{padding:11px 22px;border-radius:9999px;font-size:17px;letter-spacing:-.374px;
   background:rgba(255,255,255,.10);color:var(--body-muted);line-height:1}
@@ -174,7 +178,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 @media (max-width:833px){ .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .tile{padding:48px 20px} .sub-nav .count{display:none} }
 @media (max-width:640px){ .grid{grid-template-columns:1fr} h1.hero{font-size:34px}
-  .opname{font-size:28px} .search{width:150px} }
+  .search{width:150px} }
 </style>
 </head>
 <body>
@@ -209,7 +213,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 
 <section class="tile dark">
   <div class="inner" style="text-align:center">
-    <div class="opname" id="opname"></div>
+    <div class="notice" id="notice"></div>
     <div class="stage">
       <div class="side">
         <div class="panel-title">Demonstrations</div>
@@ -384,7 +388,7 @@ async function api(path){
 let INDEX = [], EP = null, TASK = null, TIDX = 0, EPI = 0, FRAME = 0, TIMER = null;
 
 function note(msg){
-  document.getElementById("opname").textContent = msg;
+  document.getElementById("notice").textContent = msg;
 }
 
 // /filter answers this question directly but returned 500 repeatedly, so rows
@@ -405,6 +409,7 @@ async function load(task, epi){
     return;
   }
   EP = decodeEpisode(row);
+  note("");   // render() used to clear this by overwriting it with the op name
 
   document.querySelectorAll(".card").forEach(e => e.classList.toggle("on", e.dataset.task === task));
   document.querySelector(".sub-nav .category").textContent = task;
@@ -503,7 +508,6 @@ function render(){
   const step = Math.floor(FRAME/2), phase = FRAME % 2;
   draw(document.getElementById("main"), EP.states[step + phase],
        fit(EP.states[step + phase], 480), phase === 0 ? EP.sel[step] : EP.after[step]);
-  document.getElementById("opname").textContent = EP.ops[step];
 
   const box = document.getElementById("actions"); box.innerHTML = "";
   runs(EP.ops).forEach(run => {
