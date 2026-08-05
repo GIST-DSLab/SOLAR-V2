@@ -97,7 +97,16 @@ a.link:hover{text-decoration:underline}
 .notice{font-family:var(--display);font-size:21px;font-weight:600;line-height:1.19;
   letter-spacing:.231px;color:var(--body-muted);margin:0 0 28px}
 .notice:empty{margin:0}
-.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:32px;justify-content:center}
+/* Sits in the working-grid column, right under the canvas it describes. The
+   canvas is 90-480px wide depending on the task, so the row can't inherit its
+   width: max-content sizes it to the pills, and max-width makes it wrap rather
+   than push the demonstrations and target apart. */
+.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:22px;justify-content:center;
+  width:max-content;max-width:min(520px,100%)}
+/* The column has to be clamped too. max-width stops the pill row from *drawing*
+   wider than 520, but the column still sized itself to the row's unwrapped
+   max-content and reserved the difference as dead space beside the grid. */
+.stage .side.mid{max-width:min(520px,100%)}
 .act{padding:11px 22px;border-radius:9999px;font-size:17px;letter-spacing:-.374px;
   background:rgba(255,255,255,.10);color:var(--body-muted);line-height:1}
 .act.past{background:rgba(255,255,255,.18);color:#fff}
@@ -179,6 +188,9 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
   .tile{padding:48px 20px} .sub-nav .count{display:none} }
 @media (max-width:640px){ .grid{grid-template-columns:1fr} h1.hero{font-size:34px}
   .search{width:150px} }
+/* below this the sub-nav's category, search and Browse pill stop fitting on one
+   line, and the pill is the one the page can lose — #tasks is right there */
+@media (max-width:480px){ .sub-nav .pill{display:none} }
 </style>
 </head>
 <body>
@@ -219,9 +231,10 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
         <div class="panel-title">Demonstrations</div>
         <div class="pairs" id="pairs"></div>
       </div>
-      <div class="side">
+      <div class="side mid">
         <div class="panel-title">Working grid</div>
         <canvas id="main"></canvas>
+        <div class="actions" id="actions"></div>
       </div>
       <div class="side">
         <div class="panel-title">Target</div>
@@ -230,7 +243,6 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
         <div class="eps" id="eps"></div>
       </div>
     </div>
-    <div class="actions" id="actions"></div>
     <div class="controls">
       <button class="pill" id="play">Play</button>
       <button class="pill ghost small" id="prev">Back</button>
@@ -506,8 +518,11 @@ function runs(ops){
 function render(){
   if(!EP) return;
   const step = Math.floor(FRAME/2), phase = FRAME % 2;
+  // The canvas was a flat 480px budget, which is wider than a phone: it drew
+  // past the tile's padding and took the whole page's scrollWidth with it.
+  const budget = Math.min(480, Math.max(150, window.innerWidth - 56));
   draw(document.getElementById("main"), EP.states[step + phase],
-       fit(EP.states[step + phase], 480), phase === 0 ? EP.sel[step] : EP.after[step]);
+       fit(EP.states[step + phase], budget), phase === 0 ? EP.sel[step] : EP.after[step]);
 
   const box = document.getElementById("actions"); box.innerHTML = "";
   runs(EP.ops).forEach(run => {
@@ -541,6 +556,10 @@ document.getElementById("play").onclick = () => {
 document.getElementById("prev").onclick = () => { stop(); go(-1); };
 document.getElementById("next").onclick = () => { stop(); go(1); };
 document.getElementById("slider").oninput = e => { stop(); FRAME = +e.target.value; render(); };
+// the canvas budget depends on the viewport, so it has to be redrawn on resize
+let RESIZE; addEventListener("resize", () => {
+  clearTimeout(RESIZE); RESIZE = setTimeout(render, 120);
+});
 document.addEventListener("keydown", e => {
   if(e.target.tagName === "INPUT" && e.target.type !== "range") return;
   if(e.key === "ArrowRight"){ stop(); go(1); }
