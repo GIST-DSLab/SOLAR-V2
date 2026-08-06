@@ -287,7 +287,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
     <!-- the name is the headline; nothing here is selling -->
     <h1 class="hero wordmark">SOLAR</h1>
     <p class="hero-def">Synthesized Offline Learning dataset for Abstraction and Reasoning</p>
-    <p class="hero-body">Every ARC-AGI-1 task solved step by step in ARCLE’s action
+    <p class="hero-body">Every ARC-AGI-1 training task solved step by step in ARCLE’s action
       space: select, recolor, move, submit. Full environment state recorded at
       each step. Not the answer, but a route to it.</p>
     <div class="cta">
@@ -295,7 +295,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
       <a class="pill ghost" href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Get the data</a>
     </div>
     <dl class="facts">
-      <div><dt>400</dt><dd>ARC-AGI-1 tasks</dd></div>
+      <div><dt>400</dt><dd>ARC-AGI-1 training tasks</dd></div>
       <div><dt>4,000</dt><dd>recorded trajectories</dd></div>
       <div><dt>1,718</dt><dd>original ARC pairs reproduced</dd></div>
     </dl>
@@ -309,24 +309,24 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
     <div class="subsets">
       <a class="subset live" href="#/tasks">
         <div class="tag">Released</div>
-        <div class="name">ARC-AGI-1</div>
-        <div class="meta">400 tasks · 10 episodes each</div>
+        <div class="name">RE-ARC</div>
+        <div class="meta">Augmented ARC-AGI-1 training set<br>400 tasks · 10 episodes each</div>
         <div class="go">Browse tasks ›</div>
       </a>
       <div class="subset">
         <div class="tag">Coming soon</div>
+        <div class="name">ARC-AGI-1</div>
+        <div class="meta">Evaluation set</div>
+      </div>
+      <div class="subset">
+        <div class="tag">Coming soon</div>
         <div class="name">ARC-AGI-2</div>
-        <div class="meta">Evaluation-set trajectories</div>
+        <div class="meta">Training set</div>
       </div>
       <div class="subset">
         <div class="tag">Coming soon</div>
-        <div class="name">1D-ARC</div>
-        <div class="meta">One-dimensional grids</div>
-      </div>
-      <div class="subset">
-        <div class="tag">Coming soon</div>
-        <div class="name">Handcraft</div>
-        <div class="meta">Hand-written generators</div>
+        <div class="name">ARC-AGI-2</div>
+        <div class="meta">Evaluation set</div>
       </div>
     </div>
   </div>
@@ -390,9 +390,9 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <div data-page="tasks">
 <section class="tile light">
   <div class="inner">
-    <h2 class="display">ARC-AGI-1</h2>
-    <p class="caption" style="margin:0 0 32px">400 tasks from the training split,
-      ten episodes each.</p>
+    <h2 class="display">RE-ARC</h2>
+    <p class="caption" style="margin:0 0 32px">Augmented ARC-AGI-1 training set.
+      400 tasks, ten episodes each.</p>
     <div id="slot-tasks">
       <!-- moved between the two pages by route(), status line and all -->
       <div id="gridwrap">
@@ -429,7 +429,7 @@ const API  = "https://datasets-server.huggingface.co";
 const EPISODES_PER_TASK = 10;
 // Which release the trajectories come from. Named everywhere a task is, so a
 // task id is never presented as if it were the whole dataset.
-const SUBSET = "ARC-AGI-1";
+const SUBSET = "RE-ARC";
 
 /* ---------- drawing ---------- */
 function draw(canvas, grid, cell, sel){
