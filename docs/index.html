@@ -162,6 +162,14 @@ a.link:hover{text-decoration:underline}
 .step{font-size:14px;letter-spacing:-.224px;color:var(--body-muted);min-width:190px}
 
 /* store-utility-card grid for the task picker */
+/* Says which of "still loading", "nothing matches" and "the server is down" is
+   true. Without it an empty grid and a confident "0 of 0 tasks" looked the same
+   in all three cases. */
+.grid-status{display:flex;align-items:center;justify-content:center;gap:16px;
+  flex-wrap:wrap;min-height:180px;margin:0;font-size:21px;letter-spacing:.011px;
+  color:var(--ink-48);text-align:center}
+.grid-status[hidden]{display:none}   /* display:flex outranks the UA [hidden] rule */
+.tile.dark .grid-status{color:var(--body-muted)}
 .grid{display:grid;gap:24px;grid-template-columns:repeat(5,minmax(0,1fr))}
 @media (max-width:1100px){.grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:700px){.grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
@@ -366,7 +374,13 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
     <h2 class="display">ARC-AGI-1</h2>
     <p class="caption" style="margin:0 0 32px">400 tasks from the training split,
       ten episodes each.</p>
-    <div id="slot-tasks"><div class="grid" id="grid"></div></div>
+    <div id="slot-tasks">
+      <!-- moved between the two pages by route(), status line and all -->
+      <div id="gridwrap">
+        <div class="grid" id="grid"></div>
+        <p class="grid-status" id="grid-status" hidden></p>
+      </div>
+    </div>
   </div>
 </section>
 </div>
@@ -501,6 +515,7 @@ async function api(path){
 
 /* ---------- state ---------- */
 let INDEX = [], EP = null, TASK = null, TIDX = 0, EPI = 0, FRAME = 0, TIMER = null;
+let INDEX_STATE = "loading";     // loading | ready | failed
 
 function note(msg){
   document.getElementById("notice").textContent = msg;
@@ -513,7 +528,11 @@ async function load(task, epi){
   note("Loading…");
   // A deep link can arrive before the index does; route() calls back once it has.
   const idx = INDEX.findIndex(t => t.task === task);
-  if(idx < 0){ if(INDEX.length) note(`No task ${task}`); return; }
+  if(idx < 0){
+    if(INDEX_STATE === "ready") note(`No task ${task}`);
+    else if(INDEX_STATE === "failed") note("Dataset server unavailable");
+    return;
+  }
   TASK = task; TIDX = idx; EPI = epi || 0; FRAME = 0;
   let row;
   try{
@@ -693,7 +712,30 @@ function paint(filter){
     b.onclick = () => { location.hash = `#/task/${t.task}`; };
     grid.appendChild(b);
   });
-  document.getElementById("count").textContent = `${shown.length} of ${INDEX.length} tasks`;
+
+  // Three different empty grids used to look identical, and the count asserted
+  // "0 of 0 tasks" while the index was still in flight — which is how clicking
+  // Browse tasks early looked like the site had nothing in it.
+  const status = document.getElementById("grid-status");
+  const count = document.getElementById("count");
+  status.textContent = ""; status.hidden = true;
+  if(INDEX_STATE === "loading"){
+    status.textContent = "Loading tasks…"; status.hidden = false;
+    count.textContent = "loading…";
+  }else if(INDEX_STATE === "failed"){
+    status.textContent = "Could not reach the dataset server.";
+    const again = document.createElement("button");
+    again.className = "pill ghost small"; again.textContent = "Try again";
+    again.onclick = () => loadIndex().then(ok => ok && route());
+    status.append(again); status.hidden = false;
+    count.textContent = "unavailable";
+  }else if(!shown.length){
+    status.textContent = q ? `No task matches “${filter}”.` : "No tasks.";
+    status.hidden = false;
+    count.textContent = `0 of ${INDEX.length} tasks`;
+  }else{
+    count.textContent = `${shown.length} of ${INDEX.length} tasks`;
+  }
 }
 document.getElementById("search").oninput = e => paint(e.target.value);
 
@@ -735,34 +777,45 @@ function route(){
   // built and their thumbnails fetched once, not once per page.
   if(page !== "home")
     document.getElementById(page === "tasks" ? "slot-tasks" : "slot-more")
-            .appendChild(document.getElementById("grid"));
+            .appendChild(document.getElementById("gridwrap"));
   scrollTo(0, 0);
 }
 addEventListener("hashchange", route);
+
+/* The four index pages are independent, so they go out together: the window
+   where the site looks empty is one round trip, not four. A single failure used
+   to be final; transient 500s from the dataset server are common enough that it
+   retries before giving up, and the failure is offered a Try again. */
+async function loadIndex(){
+  const q = () => document.getElementById("search").value;
+  INDEX_STATE = "loading"; paint(q());
+  for(let attempt = 0; attempt < 3; attempt++){
+    try{
+      const pages = await Promise.all([0,100,200,300].map(off =>
+        api(`/rows?dataset=${encodeURIComponent(DS)}&config=preview&split=train`
+          + `&offset=${off}&length=100`)));
+      INDEX = pages.flatMap(j => j.rows.map(({row}) => ({
+        task: row.task_id, ops: row.operations,
+        thumb_in: row.input.src, thumb_out: row.target.src,
+      })));
+      INDEX_STATE = "ready"; paint(q());
+      return true;
+    }catch(e){
+      if(attempt < 2) await new Promise(r => setTimeout(r, 700 * 2**attempt));
+    }
+  }
+  INDEX_STATE = "failed"; paint(q());
+  return false;
+}
 
 async function boot(){
   // ?task=<id> was the old deep link; keep it working
   const legacy = new URLSearchParams(location.search).get("task");
   if(legacy && !location.hash) location.hash = `#/task/${legacy}`;
   route();
-  try{
-    for(let off=0; off<400; off+=100){
-      const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=preview&split=train`
-                        + `&offset=${off}&length=100`);
-      j.rows.forEach(({row}) => INDEX.push({
-        task: row.task_id, ops: row.operations,
-        thumb_in: row.input.src, thumb_out: row.target.src,
-      }));
-      paint(document.getElementById("search").value);
-    }
-  }catch(e){
-    note("Dataset server unavailable");
-    document.getElementById("count").textContent = "could not reach the dataset server";
-    return;
-  }
   // load() needs INDEX to resolve a task to its row offset, so a deep link into
-  // the viewer only becomes loadable now
-  route();
+  // the viewer only becomes loadable once this returns
+  if(await loadIndex()) route();
 }
 boot();
 </script>
