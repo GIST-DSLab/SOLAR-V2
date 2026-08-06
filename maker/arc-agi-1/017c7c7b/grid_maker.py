@@ -64,12 +64,11 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, fgc) -> dic
     h += h
 
     go = canvas(0, (h + h // 2, w))
-    oh = unifint(diff_lb, diff_ub, (1, max(1, h // 3 * 2)))
+    oh = unifint(diff_lb, diff_ub, (2, max(2, h // 3 * 2)))
     ow = unifint(diff_lb, diff_ub, (1, w))
     bounds = asindices(canvas(-1, (oh, ow)))
-    ncellsd = unifint(diff_lb, diff_ub, (0, (h * w) // 2))
-    ncells = choice((ncellsd, oh * ow - ncellsd))
-    ncells = min(max(1, ncells), oh * ow)
+    ncellsd = unifint(diff_lb, diff_ub, (1, oh * ow))
+    ncells = min(max(1, ncellsd), oh * ow)
     obj = sample(totuple(bounds), ncells)
     for k in range((2 * h) // oh):
         go = fill(go, 2, shift(obj, (k * oh, 0)))
