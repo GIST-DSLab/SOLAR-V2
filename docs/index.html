@@ -90,10 +90,11 @@ body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
   background:radial-gradient(118% 88% at 50% 46%,
     rgba(11,11,12,.52) 0%, rgba(11,11,12,.80) 52%, rgba(11,11,12,.97) 100%)}
 .hero-copy{position:relative;z-index:1;text-align:center}
-.hero-tile .tagline{color:var(--primary-on-dark);margin-bottom:6px}
-.hero-def{font-size:17px;line-height:1.35;letter-spacing:-.374px;color:var(--body-muted);
+/* a five-letter wordmark wants air between the letters, not the tight tracking
+   a long headline wants */
+.hero-tile .wordmark{font-size:64px;letter-spacing:2.5px;margin:0 0 12px}
+.hero-def{font-size:21px;line-height:1.24;letter-spacing:.011px;color:var(--body-muted);
   margin:0 auto 34px;max-width:58ch}
-.hero-tile h1.hero{margin-bottom:26px}
 .hero-body{font-size:24px;line-height:1.33;letter-spacing:.011px;color:var(--body-muted);
   max-width:60ch;margin:0 auto 40px}
 .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
@@ -111,6 +112,7 @@ body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
 .hero-tile .pill.ghost{background:transparent;color:var(--primary-on-dark);
   border-color:var(--primary-on-dark)}
 @media (max-width:640px){.hero-tile{padding:80px 22px 88px}.hero-body{font-size:19px}
+  .hero-tile .wordmark{font-size:44px}.hero-def{font-size:19px}
   .facts{gap:20px 36px;margin-top:44px;padding-top:32px}.facts dt{font-size:32px}}
 
 /* subsets — what exists and what does not */
@@ -282,14 +284,12 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
   <div class="hero-bg" aria-hidden="true"></div>
   <div class="hero-veil" aria-hidden="true"></div>
   <div class="inner narrow hero-copy">
-    <!-- name and what it stands for are one unit; the headline gets the room -->
-    <div class="tagline">SOLAR</div>
+    <!-- the name is the headline; nothing here is selling -->
+    <h1 class="hero wordmark">SOLAR</h1>
     <p class="hero-def">Synthesized Offline Learning dataset for Abstraction and Reasoning</p>
-    <h1 class="hero">One action at a time.</h1>
-    <p class="hero-body">Every ARC task here is solved step by step in ARCLE’s action
-      space — select a region, recolor it, move an object, submit — with the full
-      environment state recorded at each step. Not the answer, but a route to it:
-      one a policy could have taken without being shown the target.</p>
+    <p class="hero-body">Every ARC-AGI-1 task solved step by step in ARCLE’s action
+      space — select, recolor, move, submit — with full environment state recorded
+      at each step. Not the answer, but a route to it.</p>
     <div class="cta">
       <a class="pill" href="#/tasks">Browse tasks</a>
       <a class="pill ghost" href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Get the data</a>
