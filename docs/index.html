@@ -253,7 +253,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 
 <nav class="global-nav">
   <a class="brand" href="#/">SOLAR</a>
-  <a href="#/tasks">Tasks</a>
+  <a href="#/tasks/re-arc">Tasks</a>
   <a href="https://github.com/QAZyunho/SOLAR-V2">Code</a>
   <a href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Dataset</a>
   <a href="demo.html">Demo trajectories</a>
@@ -264,7 +264,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
   <span class="count" id="count"></span>
   <span class="spacer"></span>
   <input class="search" id="search" placeholder="Search tasks" autocomplete="off" hidden>
-  <a class="pill small" id="nav-cta" href="#/tasks">Browse tasks</a>
+  <a class="pill small" id="nav-cta" href="#/tasks/re-arc">Browse tasks</a>
 </nav>
 
 <!-- ===== page: overview ===== -->
@@ -281,7 +281,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
       space: select, recolor, move, submit. Full environment state recorded at
       each step. Not the answer, but a route to it.</p>
     <div class="cta">
-      <a class="pill" href="#/tasks">Browse tasks</a>
+      <a class="pill" href="#/tasks/re-arc">Browse tasks</a>
       <a class="pill ghost" href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Get the data</a>
     </div>
   </div>
@@ -292,17 +292,17 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
     <h2 class="display">Subsets</h2>
     <p class="caption" style="margin:0 0 32px">Two released, a pilot, one in progress.</p>
     <div class="subsets">
-      <a class="subset live" href="#/tasks">
+      <a class="subset live" href="#/tasks/re-arc">
         <div class="tag">Released</div>
         <div class="name">RE-ARC</div>
         <div class="meta">Augmented ARC-AGI-1 training set<br>400 tasks · 10 episodes each</div>
         <div class="go">Browse tasks ›</div>
       </a>
-      <a class="subset live" href="https://huggingface.co/datasets/dbsgh797210/SOLAR/viewer/handcraft">
+      <a class="subset live" href="#/tasks/handcraft">
         <div class="tag">Released</div>
         <div class="name">Handcraft</div>
         <div class="meta">Makers written by hand, as a control<br>15 tasks · 10 episodes each</div>
-        <div class="go">View on Hugging Face ›</div>
+        <div class="go">Browse tasks ›</div>
       </a>
       <a class="subset live" href="demo.html">
         <div class="tag">Pilot</div>
@@ -377,9 +377,8 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <div data-page="tasks">
 <section class="tile light">
   <div class="inner">
-    <h2 class="display">RE-ARC</h2>
-    <p class="caption" style="margin:0 0 32px">Augmented ARC-AGI-1 training set.
-      400 tasks, ten episodes each.</p>
+    <h2 class="display" id="tasks-title">RE-ARC</h2>
+    <p class="caption" style="margin:0 0 32px" id="tasks-sub"></p>
     <div id="slot-tasks">
       <!-- moved between the two pages by route(), status line and all -->
       <div id="gridwrap">
@@ -414,9 +413,19 @@ const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
 const DS   = "dbsgh797210/SOLAR";
 const API  = "https://datasets-server.huggingface.co";
 const EPISODES_PER_TASK = 10;
-// Which release the trajectories come from. Named everywhere a task is, so a
-// task id is never presented as if it were the whole dataset.
-const SUBSET = "RE-ARC";
+/* Two released subsets, and they share task ids: every handcraft id is also an
+   arc_agi1 id. So the subset has to be part of the route, not inferred from the
+   task. Each entry names its data config, its picture config, and how many rows
+   a task occupies — the viewer addresses a row as task index * episodes +
+   episode because the Hub's /filter endpoint is unreliable. */
+const SUBSETS = {
+  "re-arc": {label:"RE-ARC", data:"arc_agi1", preview:"preview",
+             tasks:400, episodes:10, blurb:"Augmented ARC-AGI-1 training set"},
+  "handcraft": {label:"Handcraft", data:"handcraft", preview:"preview_handcraft",
+                tasks:15, episodes:10, blurb:"Makers written by hand, as a control"},
+};
+let SUB = "re-arc";
+const sub = () => SUBSETS[SUB];
 
 /* ---------- drawing ---------- */
 function draw(canvas, grid, cell, sel){
@@ -542,8 +551,8 @@ async function load(task, epi){
   TASK = task; TIDX = idx; EPI = epi || 0; FRAME = 0;
   let row;
   try{
-    const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=arc_agi1&split=train`
-                      + `&offset=${idx*EPISODES_PER_TASK + EPI}&length=1`);
+    const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=${sub().data}&split=train`
+                      + `&offset=${idx*sub().episodes + EPI}&length=1`);
     row = j.rows[0].row;
   }catch(e){
     note("Dataset server unavailable");
@@ -556,14 +565,14 @@ async function load(task, epi){
 
   const picker = document.getElementById("eps");
   picker.innerHTML = "";
-  for(let i=0;i<EPISODES_PER_TASK;i++){
+  for(let i=0;i<sub().episodes;i++){
     const b = document.createElement("button");
     b.className = "ep" + (i === EPI ? " on" : "");
     b.textContent = i + 1;
     b.onclick = () => { stop(); load(task, i); };
     picker.appendChild(b);
   }
-  document.getElementById("ep-label").textContent = `Episode ${EPI+1} of ${EPISODES_PER_TASK}`;
+  document.getElementById("ep-label").textContent = `Episode ${EPI+1} of ${sub().episodes}`;
 
   const pairs = document.getElementById("pairs");
   pairs.innerHTML = "";
@@ -714,8 +723,8 @@ function paint(filter){
                     `<img src="${t.thumb_out}" alt="" loading="lazy">` +
                   `</div>` +
                   `<div class="name">${t.task}</div>` +
-                  `<div class="meta">${EPISODES_PER_TASK} episodes</div>`;
-    b.onclick = () => { location.hash = `#/task/${t.task}`; };
+                  `<div class="meta">${sub().episodes} episodes</div>`;
+    b.onclick = () => { location.hash = `#/task/${SUB}/${t.task}`; };
     grid.appendChild(b);
   });
 
@@ -746,13 +755,26 @@ function paint(filter){
 document.getElementById("search").oninput = e => paint(e.target.value);
 
 /* ---------- routes ----------
-   #/ overview · #/tasks the 400 cards · #/task/<id> one episode. Hash routing
-   rather than separate files: the three pages share the palette, the packed-
-   column decoder and the renderer, and none of that is worth duplicating. */
+   #/ overview · #/tasks/<subset> the cards · #/task/<subset>/<id> one episode.
+   The subset is in the path because the two share task ids — every handcraft id
+   is also an arc_agi1 id, so #/task/1c786137 alone names two different episodes.
+   Hash routing rather than separate files: the pages share the palette, the
+   packed-column decoder and the renderer, and none of that is worth duplicating. */
+const SUB_RE = Object.keys(SUBSETS).join("|");
 function route(){
   const h = location.hash.replace(/^#/, "");
-  const m = h.match(/^\/task\/([0-9a-f]{8})$/);
-  const page = m ? "task" : (h === "/tasks" ? "tasks" : "home");
+  const m = h.match(new RegExp(`^\\/task\\/(${SUB_RE})\\/([0-9a-f]{8})$`))
+         || h.match(/^\/task\/([0-9a-f]{8})$/);          // pre-subset deep links
+  const legacyTask = m && m.length === 2;
+  const t = h.match(new RegExp(`^\\/tasks(?:\\/(${SUB_RE}))?$`));
+  const page = m ? "task" : (t ? "tasks" : "home");
+
+  // Switching subset invalidates the index, since it is the other config's rows
+  const want = m ? (legacyTask ? "re-arc" : m[1]) : (t && t[1]) || SUB;
+  if(want !== SUB){
+    SUB = want; INDEX = []; TASK = null; EP = null;
+    loadIndex().then(ok => ok && route());
+  }
 
   document.querySelectorAll("[data-page]").forEach(
     e => e.classList.toggle("on", e.dataset.page === page));
@@ -764,22 +786,27 @@ function route(){
   search.hidden = page !== "tasks";
   count.hidden = page !== "tasks";
   if(page === "home"){
-    title.textContent = "Overview"; cta.href = "#/tasks"; cta.textContent = "Browse tasks";
+    title.textContent = "Overview"; cta.href = "#/tasks/re-arc";
+    cta.textContent = "Browse tasks";
   }else if(page === "tasks"){
-    title.textContent = "Tasks"; cta.href = "#/"; cta.textContent = "Overview";
+    title.textContent = sub().label; cta.href = "#/"; cta.textContent = "Overview";
+    document.getElementById("tasks-title").textContent = sub().label;
+    document.getElementById("tasks-sub").textContent =
+      `${sub().blurb}. ${sub().tasks} tasks, ${sub().episodes} episodes each.`;
     paint(search.value);
   }else{
-    title.textContent = `${SUBSET} · ${m[1]}`;
-    cta.href = "#/tasks"; cta.textContent = "All tasks";
+    const id = legacyTask ? m[1] : m[2];
+    title.textContent = `${sub().label} · ${id}`;
+    cta.href = `#/tasks/${SUB}`; cta.textContent = "All tasks";
     document.getElementById("more-sub").textContent =
-      `${SUBSET} · ${INDEX.length || 400} tasks, ${EPISODES_PER_TASK} episodes each.`;
+      `${sub().label} · ${INDEX.length || sub().tasks} tasks, ${sub().episodes} episodes each.`;
     // "More tasks" claims to be all of them, so clear a filter left from #/tasks.
     // The input keeps its text, so going back restores the filtered view.
     if(search.value) paint("");
     stop();
-    if(m[1] !== TASK) load(m[1], 0); else render();
+    if(id !== TASK) load(id, 0); else render();
   }
-  // One grid element, moved between the two pages that show it — 400 cards are
+  // One grid element, moved between the two pages that show it — the cards are
   // built and their thumbnails fetched once, not once per page.
   if(page !== "home")
     document.getElementById(page === "tasks" ? "slot-tasks" : "slot-more")
@@ -797,8 +824,10 @@ async function loadIndex(){
   INDEX_STATE = "loading"; paint(q());
   for(let attempt = 0; attempt < 3; attempt++){
     try{
-      const pages = await Promise.all([0,100,200,300].map(off =>
-        api(`/rows?dataset=${encodeURIComponent(DS)}&config=preview&split=train`
+      const offs = [];
+      for(let o=0; o<sub().tasks; o+=100) offs.push(o);
+      const pages = await Promise.all(offs.map(off =>
+        api(`/rows?dataset=${encodeURIComponent(DS)}&config=${sub().preview}&split=train`
           + `&offset=${off}&length=100`)));
       INDEX = pages.flatMap(j => j.rows.map(({row}) => ({
         task: row.task_id, ops: row.operations,
@@ -817,7 +846,7 @@ async function loadIndex(){
 async function boot(){
   // ?task=<id> was the old deep link; keep it working
   const legacy = new URLSearchParams(location.search).get("task");
-  if(legacy && !location.hash) location.hash = `#/task/${legacy}`;
+  if(legacy && !location.hash) location.hash = `#/task/re-arc/${legacy}`;
   route();
   // load() needs INDEX to resolve a task to its row offset, so a deep link into
   // the viewer only becomes loadable once this returns
