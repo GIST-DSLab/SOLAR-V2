@@ -10,7 +10,9 @@ move → paste → submit), not just an input/output pair.
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![ARCLE](https://img.shields.io/badge/arcle-0.2.5-orange.svg)](https://github.com/ConfeitoHS/arcle)
 [![Makers](https://img.shields.io/badge/makers-433-brightgreen.svg)](#repository-layout)
-[![Original pairs](https://img.shields.io/badge/original%20ARC%20pairs-1718%2F1718-brightgreen.svg)](#verified-status)
+[![Original pairs](https://img.shields.io/badge/original%20ARC%20pairs-1718%2F1718-brightgreen.svg)](#what-is-being-claimed)
+
+### [Browse the trajectories &rarr;](https://qazyunho.github.io/SOLAR-V2/) &nbsp;·&nbsp; [Dataset on Hugging Face &rarr;](https://huggingface.co/datasets/dbsgh797210/SOLAR)
 
 ![one episode, action by action](figure/teaser.gif)
 
