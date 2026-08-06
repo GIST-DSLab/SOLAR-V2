@@ -70,6 +70,22 @@ SUBSETS = {
                 "--num_samples 25 --rand_seed 0 --max_grid_dim 30 30 "
                 "--data_folder <out>",
     ),
+    "handcraft": dict(
+        # The same 15 task ids appear in arc_agi1; the point is not new coverage
+        # but a control — makers written by hand rather than by the LLM, so the
+        # two can be compared on identical tasks.
+        root=DATA_ROOT / "ARC_handcraft_r1" / "whole",
+        makers="maker/arc-handcraft",
+        episodes=10,
+        label="handcraft",
+        manifest=None,
+        note="15 ARC-AGI-1 training tasks, makers written by hand",
+        # --force_grid_size is not optional here: these makers unpack
+        # max_grid_dim from kwargs and KeyError without it.
+        rollout="python pipeline/gen_rearc_trajectories_v2.py --subfolder handcraft "
+                "--num_samples 25 --rand_seed 0 --max_grid_dim 30 30 "
+                "--force_grid_size --data_folder <out>",
+    ),
     "arc_1d": dict(
         root=DATA_ROOT / "ARC_1d" / "whole",
         makers="maker/arc-1d",

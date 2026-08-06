@@ -269,7 +269,19 @@ def run_task(tid: str, maker_path: Path) -> tuple[int, int]:
             continue                       # only_failures mode: keep just the wrong ones
 
         data = solar_utils.convert_npint_to_int(data)
-        with open(folder / f"{desc['id']}.json", "w") as f:
+        # The filename comes from the maker's own id, and nothing obliges a maker
+        # to vary it per sample: the handcraft set returns a constant, so 25
+        # samples all wrote one path and 24 were silently lost. Only the last
+        # survived, and the run still reported 375/375 correct. Disambiguate on
+        # collision rather than trusting the id to be unique.
+        stem = str(desc["id"])
+        path = folder / f"{stem}.json"
+        if path.exists():
+            k = 1
+            while (folder / f"{stem}_{k}.json").exists():
+                k += 1
+            path = folder / f"{stem}_{k}.json"
+        with open(path, "w") as f:
             json.dump(data, f)
 
     return correct, total
