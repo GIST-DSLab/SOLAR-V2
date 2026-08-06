@@ -80,7 +80,7 @@ body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
 /* hero — the one full-bleed dark band, so the page reads
    nav(black) → hero(dark) → subsets(white) → footer(parchment) */
 .hero-tile{position:relative;overflow:hidden;isolation:isolate;
-  background:#0b0b0c;color:var(--on-dark);padding:132px 22px 140px}
+  background:#0b0b0c;color:var(--on-dark);padding:128px 22px 132px}
 .hero-bg{position:absolute;inset:-60px;background:url(hero.png) center/cover no-repeat;
   filter:blur(11px) saturate(1.25);opacity:.62}
 /* Without this the copy sits on whatever grid happens to be behind it. The veil
@@ -98,22 +98,12 @@ body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
 .hero-body{font-size:24px;line-height:1.33;letter-spacing:.011px;color:var(--body-muted);
   max-width:60ch;margin:0 auto 40px}
 .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
-/* the one horizontal element in an otherwise stacked, centred column */
-.facts{display:flex;justify-content:center;gap:24px 64px;flex-wrap:wrap;
-  margin:64px auto 0;padding-top:44px;max-width:56rem;
-  border-top:1px solid rgba(255,255,255,.14)}
-.facts > div{flex:0 1 auto}
-.facts dt{font-family:var(--display);font-size:40px;font-weight:600;line-height:1.10;
-  letter-spacing:0;color:#fff}
-.facts dd{margin:8px 0 0;font-size:14px;line-height:1.43;letter-spacing:-.224px;
-  color:var(--body-muted);max-width:26ch}
 /* #0066cc is too dark to sit on near-black; the on-dark accent is the pair */
 .hero-tile .pill{background:var(--primary-focus)}
 .hero-tile .pill.ghost{background:transparent;color:var(--primary-on-dark);
   border-color:var(--primary-on-dark)}
 @media (max-width:640px){.hero-tile{padding:80px 22px 88px}.hero-body{font-size:19px}
-  .hero-tile .wordmark{font-size:44px}.hero-def{font-size:19px}
-  .facts{gap:20px 36px;margin-top:44px;padding-top:32px}.facts dt{font-size:32px}}
+  .hero-tile .wordmark{font-size:44px}.hero-def{font-size:19px}}
 
 /* subsets — what exists and what does not */
 .subsets{display:grid;gap:24px;grid-template-columns:repeat(auto-fit,minmax(240px,340px))}
@@ -293,11 +283,6 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
       <a class="pill" href="#/tasks">Browse tasks</a>
       <a class="pill ghost" href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Get the data</a>
     </div>
-    <dl class="facts">
-      <div><dt>400</dt><dd>ARC-AGI-1 training tasks</dd></div>
-      <div><dt>4,000</dt><dd>recorded trajectories</dd></div>
-      <div><dt>1,718</dt><dd>original ARC pairs reproduced</dd></div>
-    </dl>
   </div>
 </section>
 
