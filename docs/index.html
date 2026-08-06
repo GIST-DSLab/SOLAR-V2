@@ -116,7 +116,7 @@ body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
   .facts{gap:20px 36px;margin-top:44px;padding-top:32px}.facts dt{font-size:32px}}
 
 /* subsets — what exists and what does not */
-.subsets{display:grid;gap:24px;grid-template-columns:repeat(4,minmax(0,1fr))}
+.subsets{display:grid;gap:24px;grid-template-columns:repeat(auto-fit,minmax(240px,340px))}
 .subset{background:var(--canvas);border:1px solid var(--hairline);border-radius:18px;
   padding:28px;text-decoration:none;color:inherit;display:flex;flex-direction:column;gap:4px}
 .subset .tag{font-size:12px;font-weight:600;line-height:1;letter-spacing:-.12px;
@@ -128,7 +128,6 @@ body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
 .subset.live .tag{color:var(--primary)}
 .subset:not(.live){opacity:.55}
 .subset.live:active{transform:scale(.98)}
-@media (max-width:1068px){.subsets{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:640px){.subsets{grid-template-columns:1fr}}
 
 h1.hero{font-family:var(--display);font-size:56px;font-weight:600;line-height:1.07;
@@ -305,7 +304,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <section class="tile light">
   <div class="inner">
     <h2 class="display">Subsets</h2>
-    <p class="caption" style="margin:0 0 32px">One released, the rest in progress.</p>
+    <p class="caption" style="margin:0 0 32px">One released, one in progress.</p>
     <div class="subsets">
       <a class="subset live" href="#/tasks">
         <div class="tag">Released</div>
@@ -315,18 +314,8 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
       </a>
       <div class="subset">
         <div class="tag">Coming soon</div>
-        <div class="name">ARC-AGI-1</div>
-        <div class="meta">Evaluation set</div>
-      </div>
-      <div class="subset">
-        <div class="tag">Coming soon</div>
         <div class="name">ARC-AGI-2</div>
         <div class="meta">Training set</div>
-      </div>
-      <div class="subset">
-        <div class="tag">Coming soon</div>
-        <div class="name">ARC-AGI-2</div>
-        <div class="meta">Evaluation set</div>
       </div>
     </div>
   </div>

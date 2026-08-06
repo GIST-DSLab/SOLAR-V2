@@ -95,7 +95,7 @@ def png(img: Image.Image) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="/hdd_data/yunho/ARC_best10_r4/whole")
+    ap.add_argument("--root", default="/hdd_data/yunho/ARC_best10_r5/whole")
     ap.add_argument("--out", default="/hdd_data/yunho/release_preview")
     ap.add_argument("--max_steps", type=int, default=12)
     args = ap.parse_args()

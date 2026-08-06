@@ -30,7 +30,7 @@ import pyarrow.parquet as pq
 
 SPEC_VERSION = "1.0"
 DATA_ROOT = Path("/hdd_data/yunho")
-SOLAR_ROOT = Path(__file__).resolve().parents[1]
+SOLAR_ROOT = Path(__file__).parent.resolve()
 
 # folder name: test.<task_id>.s30.<YY.MM.DD>
 FOLDER_RE = re.compile(r"^test\.(?P<task>[^.]+)\.s(?P<dim>\d+)\.(?P<date>[\d.]+)$")
@@ -58,15 +58,16 @@ SUBSETS = {
         # ARC_best10 (the 26.07.27 draw) predates the terminal-filler fix in
         # gen_rearc_trajectories_v2.py and ends every episode in Submit,Submit
         # with states and actions the same length. This is the re-roll.
-        root=DATA_ROOT / "ARC_best10_r3" / "whole",
+        root=DATA_ROOT / "ARC_best10_r5" / "whole",
         makers="maker/arc-best",
+        episodes=10,
         # what the maker set is called in the release; the working tree keeps its
         # own name, so renaming for publication does not disturb generation
         label="arc-agi-1",
         manifest=DATA_ROOT / "best_manifest.json",
         note="400 ARC-AGI-1 training tasks, one maker per task",
         rollout="python gen_rearc_trajectories_v2.py --subfolder arc-agi-1 "
-                "--num_samples 10 --rand_seed 0 --max_grid_dim 30 30 "
+                "--num_samples 25 --rand_seed 0 --max_grid_dim 30 30 "
                 "--data_folder <out>",
     ),
     "arc_1d": dict(
@@ -208,7 +209,21 @@ def export_subset(name: str, cfg: dict, out_root: Path, shard_rows: int,
             continue
         task, date = m["task"], m["date"]
         version = versions.get(task, cfg.get("label") or Path(cfg["makers"]).name)
-        for f in sorted(folder.glob("*.json")):
+        files = sorted(folder.glob("*.json"))
+        # Every task carries the same number of episodes, so a consumer can address
+        # a row by task index * episodes + episode — which the web viewer does,
+        # because the Hub's /filter endpoint is unreliable. A short task silently
+        # shifts every task after it onto the wrong data, so refuse to pack it.
+        # Roll out with more samples than this and the surplus is dropped here.
+        want = cfg.get("episodes")
+        if want:
+            if len(files) < want:
+                raise AssertionError(
+                    f"{folder.name}: {len(files)} episodes, need {want}. Re-run the "
+                    f"rollout with a larger --num_samples; do not ship a short task."
+                )
+            files = files[:want]
+        for f in files:
             jobs.append((f, task, date, version))
 
     out_dir = out_root / "data" / name
