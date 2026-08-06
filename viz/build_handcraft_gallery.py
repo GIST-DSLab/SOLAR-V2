@@ -52,14 +52,14 @@ def episode(path: Path) -> dict:
             "in": enc(d["in_grid"], gd[0]), "out": enc(d["out_grid"], gd[-1])}
 
 
-def collect(root: Path) -> list[dict]:
+def collect(root: Path, keep: tuple[str, ...]) -> list[dict]:
     tasks: dict[str, list[dict]] = {}
     for folder in sorted(root.iterdir()):
         if not folder.is_dir() or "." not in folder.name:
             continue
         name = folder.name.split(".")[1]
         base, _, suffix = name.partition("-")
-        if not suffix or ("expert" not in suffix and "half" not in suffix):
+        if not suffix or not any(k in suffix for k in keep):
             continue
         files = sorted(folder.glob("*.json"), key=os.path.getsize)
         if not files:                       # nothing survived validation
@@ -140,7 +140,7 @@ canvas{display:block;image-rendering:pixelated;border-radius:2px}
 </style>
 
 <header>
-  <h1>Handcraft: expert and half</h1>
+  <h1>__TITLE__</h1>
   <p>The same ARC task, solved by more than one hand-written route. Each frame is
      the grid an action was chosen from, outlined with the cells that action
      applies to. Variants of a task sit on adjacent rows so the routes can be
@@ -263,11 +263,15 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="/hdd_data/yunho/ARC_handcraft_all/whole")
     ap.add_argument("--out", default="/tmp/handcraft_gallery.html")
+    ap.add_argument("--variants", nargs="+", default=["expert", "half"],
+                    help="substrings a variant suffix must carry to be included")
     args = ap.parse_args()
 
-    data = collect(Path(args.root))
+    data = collect(Path(args.root), tuple(args.variants))
+    title = "Handcraft: " + " and ".join(args.variants)
     html = (HTML.replace("__DATA__", json.dumps(data, separators=(",", ":")))
-                .replace("__PALETTE__", json.dumps(PALETTE)))
+                .replace("__PALETTE__", json.dumps(PALETTE))
+                .replace("__TITLE__", title))
     out = Path(args.out)
     out.write_text(html)
     n = sum(len(t["variants"]) for t in data)
