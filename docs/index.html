@@ -301,7 +301,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
       <a class="subset live" href="#/tasks/handcraft">
         <div class="tag">Released</div>
         <div class="name">Handcraft</div>
-        <div class="meta">Makers written by hand, as a control<br>15 tasks · 10 episodes each</div>
+        <div class="meta">Makers written by hand, as a control<br>11 makers · 10 episodes each</div>
         <div class="go">Browse tasks ›</div>
       </a>
       <a class="subset live" href="demo.html">
@@ -422,7 +422,7 @@ const SUBSETS = {
   "re-arc": {label:"RE-ARC", data:"arc_agi1", preview:"preview",
              tasks:400, episodes:10, blurb:"Augmented ARC-AGI-1 training set"},
   "handcraft": {label:"Handcraft", data:"handcraft", preview:"preview_handcraft",
-                tasks:15, episodes:10, blurb:"Makers written by hand, as a control"},
+                tasks:11, episodes:10, blurb:"Hand-written half-variant makers over 10 tasks"},
 };
 let SUB = "re-arc";
 const sub = () => SUBSETS[SUB];
@@ -763,8 +763,9 @@ document.getElementById("search").oninput = e => paint(e.target.value);
 const SUB_RE = Object.keys(SUBSETS).join("|");
 function route(){
   const h = location.hash.replace(/^#/, "");
-  const m = h.match(new RegExp(`^\\/task\\/(${SUB_RE})\\/([0-9a-f]{8})$`))
-         || h.match(/^\/task\/([0-9a-f]{8})$/);          // pre-subset deep links
+  const ID = "[0-9a-f]{8}(?:-[a-z0-9]+)*";   // handcraft ids carry the variant
+  const m = h.match(new RegExp(`^\\/task\\/(${SUB_RE})\\/(${ID})$`))
+         || h.match(new RegExp(`^\\/task\\/(${ID})$`));   // pre-subset deep links
   const legacyTask = m && m.length === 2;
   const t = h.match(new RegExp(`^\\/tasks(?:\\/(${SUB_RE}))?$`));
   const page = m ? "task" : (t ? "tasks" : "home");
