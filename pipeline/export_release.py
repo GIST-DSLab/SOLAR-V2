@@ -108,6 +108,21 @@ SUBSETS = {
         note="20 ARC-AGI-2 eval tasks, maker may consult O",
         rollout="python gen_agi2_llm.py --mode construction",
     ),
+    # ARC-AGI-1 with a full trajectory for every demonstration example, not just
+    # the problem pair (leave-one-out expansion). Separate draw/dir from arc_agi1,
+    # which is left untouched. Rows carry group_id/role/example_index; siblings of
+    # a maker-sample share group_id.
+    "arc_agi1_demo": dict(
+        root=DATA_ROOT / "ARC_best10_r3_demo" / "whole",
+        makers="maker/arc-best",
+        label="arc-agi-1-demo",
+        manifest=DATA_ROOT / "best_manifest.json",
+        note="ARC-AGI-1 tasks; every demo example carries its own trajectory "
+             "(leave-one-out). role=problem|demo, grouped by group_id.",
+        rollout="python gen_rearc_trajectories_v2.py --subfolder arc-agi-1 "
+                "--num_samples 10 --rand_seed 0 --max_grid_dim 30 30 "
+                "--demo_trajectories --data_folder <out>",
+    ),
 }
 
 
@@ -151,6 +166,11 @@ def row_of(path: Path, subset: str, task_id: str, date: str, version: str) -> di
         "source_date": date,
         "n_steps": len(d["operation"]),
         "operation_name": list(d["operation_name"]),
+        # --demo_trajectories provenance (in desc). Null on ordinary draws, so
+        # the round-trip verifier — which skips desc — needs no special-casing.
+        "group_id": desc.get("group_id"),
+        "role": desc.get("role"),
+        "example_index": desc.get("example_index"),
     }
     for col in COL_DTYPE:
         blob, shape = pack(col, d[col], path)
@@ -190,6 +210,8 @@ def arrow_schema() -> pa.Schema:
         pa.field("maker_version", pa.string()), pa.field("source_date", pa.string()),
         pa.field("n_steps", pa.int32()),
         pa.field("operation_name", pa.list_(pa.string())),
+        pa.field("group_id", pa.string()), pa.field("role", pa.string()),
+        pa.field("example_index", pa.int32()),
     ]
     for col in COL_DTYPE:
         fields.append(pa.field(col, pa.binary()))

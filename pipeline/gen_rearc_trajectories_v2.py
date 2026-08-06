@@ -30,7 +30,10 @@ import gymnasium as gym
 import numpy as np
 from tqdm import tqdm
 
-SOLAR_ROOT = Path(__file__).resolve().parents[1]
+# The repo keeps this in pipeline/ and the working tree at its root, so a fixed
+# parents[N] is wrong in one of them — copying the file between the two put
+# MAKER_BASE outside the tree. Find the ancestor that actually holds maker/.
+SOLAR_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "maker").is_dir())
 sys.path.insert(0, str(SOLAR_ROOT))
 
 import utils as solar_utils
@@ -55,6 +58,12 @@ parser.add_argument("--tasks", nargs="+", default=None,
                     help="Only regenerate these task IDs (e.g. --tasks 045e512c 025d127b).")
 parser.add_argument("--only_failures", action="store_true", default=False,
                     help="Save ONLY samples whose output is wrong (for inspecting failures).")
+parser.add_argument("--demo_trajectories", action="store_true", default=False,
+                    help="Also emit a full trajectory for every demonstration example, "
+                         "not just the problem pair. Each maker-sample of N demos + 1 "
+                         "problem is expanded leave-one-out into N+1 targets sharing a "
+                         "group_id; each row is tagged role=problem|demo. Opt-in; off "
+                         "leaves output byte-identical to before.")
 args = parser.parse_args()
 
 MAX_GRID_DIM = tuple(args.max_grid_dim)
@@ -130,6 +139,62 @@ def _record_step(data: dict, obs: dict, action_sel_bbox, action_op: int,
     data["background"].append(_pad(obj["background"], fill=0).tolist())
 
 
+def _expand_demo_targets(loader, gm_mod) -> None:
+    """Leave-one-out expansion for --demo_trajectories.
+
+    Each maker-sample of N demos + 1 problem is rewritten into N+1 loader.data
+    entries — every pair takes a turn as the "problem" (the reset target ARCLE
+    replays), with the other N pairs as its worked examples. The problem reuses
+    its precomputed ops; each demo derives fresh ops via the maker's own
+    `derive_operations`. group_id/role/example_index ride in `desc`. The env is
+    built AFTER this, so prob_index addresses every target. A demo whose derive
+    raises is dropped here; one whose replay later mismatches is dropped by the
+    existing validation in run_task — neither drops its siblings.
+    """
+    import inspect
+
+    derive = gm_mod.derive_operations
+    n_params = len(inspect.signature(derive).parameters)
+
+    new_data = []
+    for sample in loader.data:
+        ex_in_list, ex_out_list, pr_in_list, pr_out_list, desc = sample
+        if not pr_in_list or not pr_out_list:
+            new_data.append(sample)          # degenerate sample: leave untouched
+            continue
+
+        base_id = str(desc["id"])
+        concept = desc.get("concept", "")
+        pairs = list(zip(ex_in_list, ex_out_list)) + [(pr_in_list[0], pr_out_list[0])]
+        prob_idx = len(pairs) - 1
+
+        for k, (Ik, Ok) in enumerate(pairs):
+            if k == prob_idx:
+                ops, sels = desc["operations"], desc["selections"]
+                row_id, role = base_id, "problem"
+            else:
+                try:
+                    ops, sels = derive(Ik, Ok) if n_params >= 2 else derive(Ik)
+                except Exception:
+                    continue                 # drop this demo target, keep siblings
+                row_id, role = f"{base_id}_ex{k}", "demo"
+
+            others = [p for j, p in enumerate(pairs) if j != k]
+            ex_i = [p[0] for p in others]
+            ex_o = [p[1] for p in others]
+            new_data.append((ex_i, ex_o, [Ik], [Ok], {
+                "id":            row_id,
+                "concept":       concept,
+                "operations":    ops,
+                "selections":    sels,
+                "group_id":      base_id,
+                "role":          role,
+                "example_index": k,
+            }))
+
+    loader.data = new_data
+
+
 def run_task(tid: str, maker_path: Path) -> tuple[int, int]:
     """Generate trajectories for one task. Returns (correct, total)."""
 
@@ -148,6 +213,11 @@ def run_task(tid: str, maker_path: Path) -> tuple[int, int]:
         # maker that unpacks it into (max_h, max_w) raise on the first sample.
         **({"max_grid_dim": MAX_GRID_DIM} if args.force_grid_size else {}),
     )
+
+    # Expand demos into their own targets BEFORE the env is built, so prob_index
+    # addresses every one of them.
+    if args.demo_trajectories:
+        _expand_demo_targets(loader, gm_mod)
 
     env = gym.make(
         "ARCLE/O2ARCv2Env-v0",
@@ -186,8 +256,16 @@ def run_task(tid: str, maker_path: Path) -> tuple[int, int]:
 
         grid_template = np.full(MAX_GRID_DIM, 10, dtype=np.int8)
 
+        _desc_out = {"id": desc["id"], "concept": desc.get("concept", "")}
+        # Provenance for --demo_trajectories rides in desc so the round-trip
+        # exporter (which ignores desc) needs no special-casing. Absent when the
+        # flag is off, leaving the record byte-identical to before.
+        for _extra in ("group_id", "role", "example_index"):
+            if _extra in desc:
+                _desc_out[_extra] = desc[_extra]
+
         data = {
-            "desc":         {"id": desc["id"], "concept": desc.get("concept", "")},
+            "desc":         _desc_out,
             "step":         [],
             "selection":    [],
             "operation":    [],
