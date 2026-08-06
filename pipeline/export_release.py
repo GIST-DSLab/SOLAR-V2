@@ -323,9 +323,10 @@ def main() -> None:
         "column_dtypes": COL_DTYPE,
         "subsets": prev,
         "caveats": [
-            "Rollouts whose final grid did not match the target were dropped, so "
-            "a subset holds fewer trajectories than tasks x samples requested "
-            "(ARC-AGI-1: 3969 of 4000, 99.2%).",
+            "Rollouts whose final grid did not match the target are dropped at "
+            "generation time. Subsets with an `episodes` count are rolled out "
+            "with a surplus and packed at exactly that many per task, so the "
+            "row order is task index * episodes + episode.",
             "The per-sample RNG seed was not recorded at generation time. These "
             "shards are the reference draw; re-running the makers yields a "
             "different, equally valid draw.",
