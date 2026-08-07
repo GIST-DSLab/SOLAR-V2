@@ -81,6 +81,10 @@ SUBSETS = {
         root=DATA_ROOT / "ARC_handcraft_h15" / "whole",
         makers="maker/arc-handcraft",
         episodes=10,
+        # 74dd1130-half is a transpose: FlipV, Rotate90, Submit, the same three
+        # actions on all 25 rollouts. There is no route to read off it, which is
+        # what this subset is for.
+        exclude={"74dd1130-half"},
         label="handcraft",
         manifest=None,
         note="11 hand-written half-variant makers over 10 ARC-AGI-1 training tasks",
@@ -232,6 +236,8 @@ def export_subset(name: str, cfg: dict, out_root: Path, shard_rows: int,
             print(f"  skip unparseable folder: {folder.name}")
             continue
         task, date = m["task"], m["date"]
+        if task in cfg.get("exclude", ()):
+            continue
         version = versions.get(task, cfg.get("label") or Path(cfg["makers"]).name)
         files = sorted(folder.glob("*.json"))
         # Every task carries the same number of episodes, so a consumer can address

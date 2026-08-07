@@ -98,6 +98,8 @@ def main() -> None:
     ap.add_argument("--root", default="/hdd_data/yunho/ARC_best10_r5/whole")
     ap.add_argument("--out", default="/hdd_data/yunho/release_preview")
     ap.add_argument("--max_steps", type=int, default=12)
+    ap.add_argument("--exclude", nargs="*", default=[],
+                    help="task ids to leave out, matching export_release.py's exclude")
     args = ap.parse_args()
 
     from datasets import Dataset, Features, Image as HFImage, Value
@@ -107,6 +109,8 @@ def main() -> None:
         if not folder.is_dir():
             continue
         task = folder.name.split(".")[1]
+        if task in args.exclude:
+            continue
         f = sorted(folder.glob("*.json"))[0]
         d = json.loads(f.read_text())
         ops = d["operation_name"]
