@@ -185,14 +185,30 @@ a.link:hover{text-decoration:underline}
 .card .name{font-size:17px;font-weight:600;line-height:1.24;letter-spacing:-.374px}
 .card .meta{font-size:14px;letter-spacing:-.224px;color:var(--ink-48);margin-top:2px}
 .card.on{border-color:var(--primary-focus);border-width:2px;padding:23px}
-/* A full-width heading between card groups. The demo cards are one per family,
-   ten per task; grouping them under the task id turns a flat 60 into 6 readable
-   blocks. Spans every column so the next card starts a fresh row. */
-.grid-section{grid-column:1/-1;font-family:var(--display);font-size:21px;font-weight:600;
-  line-height:1.19;letter-spacing:.231px;color:var(--ink);margin:16px 0 0;padding-top:16px;
-  border-top:1px solid var(--hairline)}
-.grid-section:first-child{margin-top:0;padding-top:0;border-top:none}
-.grid-section .n{color:var(--ink-48);font-weight:400;font-size:15px;margin-left:8px}
+/* Demo browser, compact by task. The 60 family cards collapse into 6 task rows,
+   each a representative thumbnail and a count; clicking a row expands that task's
+   samples inline. #grid drops its column grid and stacks the blocks. */
+#grid.stack{display:block}
+.task-block{border-top:1px solid var(--hairline)}
+.task-block:first-child{border-top:none}
+.task-card{display:flex;align-items:center;gap:18px;width:100%;background:none;border:none;
+  padding:16px 4px;cursor:pointer;text-align:left;font:inherit;color:inherit;border-radius:14px}
+.task-card:hover{background:var(--pearl)}
+.task-card:active{transform:scale(.99)}
+.task-card:focus-visible{outline:2px solid var(--primary-focus);outline-offset:2px}
+.task-card .thumb{display:flex;align-items:center;gap:8px;height:56px;flex:none;margin:0}
+.task-card .thumb img{border-radius:3px;max-height:52px;max-width:64px;width:auto;height:auto;
+  object-fit:contain;image-rendering:pixelated}
+.task-card .thumb .arrow{color:var(--ink-48);font-size:14px}
+.task-card .tinfo{flex:1;min-width:0}
+.task-card .name{font-family:var(--display);font-size:24px;font-weight:600;letter-spacing:.1px}
+.task-card .meta{font-size:14px;letter-spacing:-.224px;color:var(--ink-48);margin-top:2px}
+.task-card .chev{color:var(--ink-48);font-size:15px;flex:none;padding:0 6px}
+.sample-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:24px;padding:6px 0 26px}
+.sample-grid[hidden]{display:none}
+@media (max-width:1100px){.sample-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:700px){.sample-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}}
+@media (max-width:640px){.sample-grid{grid-template-columns:1fr}}
 
 /* Three titled columns. Every column starts with a .panel-title on the same
    line, so the grids below them start at the same height. */
@@ -563,6 +579,8 @@ let INDEX_STATE = "loading";     // loading | ready | failed
    the selection lists back into the Sets the renderer expects, giving the same
    EP shape decodeEpisode produces. Fetched once, then cached. */
 let LOCAL = null, LOCAL_PROMISE = null;
+// Which task rows are expanded in the demo browser (keyed by base task id).
+const EXPANDED = new Set();
 const localData = () => (LOCAL_PROMISE ||=
   fetch("demo_data.json").then(r => { if(!r.ok) throw new Error("demo_data.json"); return r.json(); })
     .then(j => (LOCAL = j)));
@@ -767,24 +785,10 @@ function paint(filter){
   // ops is not printed on the card any more, but it stays a search key —
   // "move", "floodfill" are the useful ways to find a task you can't name.
   const shown = INDEX.filter(t => !q || t.task.includes(q) || t.ops.toLowerCase().includes(q));
-  // The demo subset is one card per family (task-sample); its ids sort by task,
-  // so group them under a per-task heading. base = the task id, sample = the
-  // trailing number.
-  const baseOf = t => t.task.replace(/-\d+$/, "");
+  // The demo subset is one card per family (task-sample); its ids sort by task.
+  const baseOf = t => (t.task || t).replace(/-\d+$/, "");
   const sampleOf = t => t.task.replace(/^.*-/, "");
-  let lastBase = null;
-  shown.forEach(t => {
-    if(sub().family){
-      const base = baseOf(t);
-      if(base !== lastBase){
-        lastBase = base;
-        const cnt = shown.filter(x => baseOf(x) === base).length;
-        const h = document.createElement("div");
-        h.className = "grid-section";
-        h.innerHTML = `${base}<span class="n">${cnt} sample${cnt > 1 ? "s" : ""}</span>`;
-        grid.appendChild(h);
-      }
-    }
+  const sampleCard = t => {
     const b = document.createElement("button");
     b.className = "card" + (t.task === TASK ? " on" : ""); b.dataset.task = t.task;
     b.innerHTML = `<div class="thumb">` +
@@ -795,8 +799,48 @@ function paint(filter){
                   `<div class="name">${sub().family ? "Sample " + sampleOf(t) : t.task}</div>` +
                   `<div class="meta">${sub().family ? "problem + 3 demos" : sub().episodes + " episodes"}</div>`;
     b.onclick = () => { location.hash = `#/task/${SUB}/${t.task}`; };
-    grid.appendChild(b);
-  });
+    return b;
+  };
+
+  if(sub().family){
+    // Compact: one collapsible row per task, samples revealed on click. A search,
+    // or the task you are currently viewing, forces its row open.
+    grid.classList.add("stack");
+    const order = [], byBase = {};
+    shown.forEach(t => { const bs = baseOf(t);
+      if(!byBase[bs]){ byBase[bs] = []; order.push(bs); } byBase[bs].push(t); });
+    const curBase = TASK ? baseOf(TASK) : null;
+    order.forEach(bs => {
+      const samples = byBase[bs];
+      const open = !!q || EXPANDED.has(bs) || bs === curBase;
+      const rep = samples[0];
+      const block = document.createElement("div");
+      block.className = "task-block" + (open ? " open" : "");
+      const head = document.createElement("button");
+      head.className = "task-card"; head.setAttribute("aria-expanded", String(open));
+      head.innerHTML = `<div class="thumb">` +
+          `<img src="${rep.thumb_in}" alt="" loading="lazy">` +
+          `<span class="arrow">→</span>` +
+          `<img src="${rep.thumb_out}" alt="" loading="lazy"></div>` +
+        `<div class="tinfo"><div class="name">${bs}</div>` +
+          `<div class="meta">${samples.length} sample${samples.length > 1 ? "s" : ""}` +
+          ` · problem + 3 demos each</div></div>` +
+        `<span class="chev" aria-hidden="true">${open ? "▾" : "▸"}</span>`;
+      head.onclick = () => {
+        EXPANDED.has(bs) ? EXPANDED.delete(bs) : EXPANDED.add(bs);
+        paint(document.getElementById("search").value);
+      };
+      block.appendChild(head);
+      const sg = document.createElement("div"); sg.className = "sample-grid";
+      if(!open) sg.hidden = true;
+      samples.forEach(t => sg.appendChild(sampleCard(t)));
+      block.appendChild(sg);
+      grid.appendChild(block);
+    });
+  }else{
+    grid.classList.remove("stack");
+    shown.forEach(t => grid.appendChild(sampleCard(t)));
+  }
 
   // Three different empty grids used to look identical, and the count asserted
   // "0 of 0 tasks" while the index was still in flight — which is how clicking
@@ -817,9 +861,9 @@ function paint(filter){
   }else if(!shown.length){
     status.textContent = q ? `No task matches “${filter}”.` : "No tasks.";
     status.hidden = false;
-    count.textContent = `0 of ${INDEX.length} tasks`;
+    count.textContent = `0 of ${INDEX.length} ${sub().family ? "samples" : "tasks"}`;
   }else{
-    count.textContent = `${shown.length} of ${INDEX.length} tasks`;
+    count.textContent = `${shown.length} of ${INDEX.length} ${sub().family ? "samples" : "tasks"}`;
   }
 }
 document.getElementById("search").oninput = e => paint(e.target.value);
