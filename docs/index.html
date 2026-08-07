@@ -322,6 +322,12 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
         <div class="meta">Augmented ARC-AGI-1 training set<br>400 tasks · 10 episodes each</div>
         <div class="go">Browse tasks ›</div>
       </a>
+      <a class="subset live" href="#/tasks/arc-agi2">
+        <div class="tag">Beta</div>
+        <div class="name">ARC-AGI-2 training set</div>
+        <div class="meta">Real ARC-AGI-2 tasks, every demonstration solved<br>30 tasks · test + train pairs</div>
+        <div class="go">Browse tasks ›</div>
+      </a>
       <a class="subset live" href="#/tasks/handcraft">
         <div class="tag">Beta</div>
         <div class="name">Handcraft</div>
@@ -332,12 +338,6 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
         <div class="tag">Beta</div>
         <div class="name">Trajectories for demo pairs</div>
         <div class="meta">Every demonstration example carries its own trajectory<br>400 tasks · 10 samples · problem + 3 demos each</div>
-        <div class="go">Browse tasks ›</div>
-      </a>
-      <a class="subset live" href="#/tasks/arc-agi2">
-        <div class="tag">Beta</div>
-        <div class="name">ARC-AGI-2 construction</div>
-        <div class="meta">Real ARC-AGI-2 tasks, every demonstration solved<br>30 tasks · test + train pairs</div>
         <div class="go">Browse tasks ›</div>
       </a>
     </div>
@@ -467,7 +467,7 @@ const SUBSETS = {
   // the problem, each train pair a demonstration that also carries its own
   // trajectory. Variable episode count. Browsed flat (one family per task, so no
   // sample layer); served locally like `demo`.
-  "arc-agi2": {label:"ARC-AGI-2 construction", tasks:30,
+  "arc-agi2": {label:"ARC-AGI-2 training set", tasks:30,
                family:true, local:true, flat:true, path:"arc-agi2",
                blurb:"Real ARC-AGI-2 tasks, every demonstration solved step by step"},
 };
