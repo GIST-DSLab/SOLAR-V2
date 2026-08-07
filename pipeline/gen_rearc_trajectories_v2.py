@@ -61,8 +61,9 @@ parser.add_argument("--only_failures", action="store_true", default=False,
 parser.add_argument("--demo_trajectories", action="store_true", default=False,
                     help="Also emit a full trajectory for every demonstration example, "
                          "not just the problem pair. Each maker-sample of N demos + 1 "
-                         "problem is expanded leave-one-out into N+1 targets sharing a "
-                         "group_id; each row is tagged role=problem|demo. Opt-in; off "
+                         "problem is expanded into N+1 targets sharing a group_id, with "
+                         "the N demonstrations fixed as the worked examples for every "
+                         "target; each row is tagged role=problem|demo. Opt-in; off "
                          "leaves output byte-identical to before.")
 args = parser.parse_args()
 
@@ -140,12 +141,14 @@ def _record_step(data: dict, obs: dict, action_sel_bbox, action_op: int,
 
 
 def _expand_demo_targets(loader, gm_mod) -> None:
-    """Leave-one-out expansion for --demo_trajectories.
+    """Fixed-demonstration expansion for --demo_trajectories.
 
     Each maker-sample of N demos + 1 problem is rewritten into N+1 loader.data
     entries — every pair takes a turn as the "problem" (the reset target ARCLE
-    replays), with the other N pairs as its worked examples. The problem reuses
-    its precomputed ops; each demo derives fresh ops via the maker's own
+    replays), while the worked examples stay FIXED to the sample's N
+    demonstrations for every target (the test pair is never shown as a
+    demonstration). The problem reuses its precomputed ops; each demo derives
+    fresh ops via the maker's own
     `derive_operations`. group_id/role/example_index ride in `desc`. The env is
     built AFTER this, so prob_index addresses every target. A demo whose derive
     raises is dropped here; one whose replay later mismatches is dropped by the
@@ -179,9 +182,13 @@ def _expand_demo_targets(loader, gm_mod) -> None:
                     continue                 # drop this demo target, keep siblings
                 row_id, role = f"{base_id}_ex{k}", "demo"
 
-            others = [p for j, p in enumerate(pairs) if j != k]
-            ex_i = [p[0] for p in others]
-            ex_o = [p[1] for p in others]
+            # Worked examples are the sample's FIXED demonstrations — the same
+            # set for every target in the family, so the demonstration panel is
+            # identical across all N+1 episodes. The problem (test) pair is never
+            # shown as a demonstration; a demo target still sees the full demo
+            # set (itself included) rather than a leave-one-out subset.
+            ex_i = list(ex_in_list)
+            ex_o = list(ex_out_list)
             new_data.append((ex_i, ex_o, [Ik], [Ok], {
                 "id":            row_id,
                 "concept":       concept,
