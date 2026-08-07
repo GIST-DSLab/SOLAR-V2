@@ -6,3 +6,5 @@ __pycache__/
 !docs/demo_data.json
 figure/*.png
 !figure/teaser.png
+!docs/demo_index.json
+!docs/demo/*.json
