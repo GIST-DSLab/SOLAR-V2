@@ -3,5 +3,6 @@ __pycache__/
 .pytest_cache/
 *.json
 !maker/**/*.json
+!docs/demo_data.json
 figure/*.png
 !figure/teaser.png

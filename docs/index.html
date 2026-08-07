@@ -256,7 +256,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
   <a href="#/tasks/re-arc">Tasks</a>
   <a href="https://github.com/QAZyunho/SOLAR-V2">Code</a>
   <a href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Dataset</a>
-  <a href="demo.html">Demo trajectories</a>
+  <a href="#/tasks/demo">Demo trajectories</a>
 </nav>
 
 <nav class="sub-nav">
@@ -304,11 +304,11 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
         <div class="meta">Makers written by hand, as a control<br>11 makers · 10 episodes each</div>
         <div class="go">Browse tasks ›</div>
       </a>
-      <a class="subset live" href="demo.html">
+      <a class="subset live" href="#/tasks/demo">
         <div class="tag">Pilot</div>
         <div class="name">Demo trajectories</div>
-        <div class="meta">Every demonstration example carries its own trajectory<br>6 tasks · leave-one-out</div>
-        <div class="go">Open viewer ›</div>
+        <div class="meta">Every demonstration example carries its own trajectory<br>60 families · problem + 3 demos each</div>
+        <div class="go">Browse tasks ›</div>
       </a>
       <div class="subset">
         <div class="tag">Coming soon</div>
@@ -423,6 +423,13 @@ const SUBSETS = {
              tasks:400, episodes:10, blurb:"Augmented ARC-AGI-1 training set"},
   "handcraft": {label:"Handcraft", data:"handcraft", preview:"preview_handcraft",
                 tasks:11, episodes:10, blurb:"Hand-written half-variant makers over 10 tasks"},
+  // A pilot where every demonstration also carries a trajectory. Each card is one
+  // leave-one-out family: 4 rows — the problem, then the 3 demos, each in turn the
+  // target while the others are its worked examples. So episodes here are not
+  // independent draws; they are the family's four trajectories, problem first.
+  "demo": {label:"Demo trajectories", data:"arc_agi1_demo", preview:"preview_arc_agi1_demo",
+           tasks:60, episodes:4, family:true,
+           blurb:"Every demonstration example carries its own trajectory (leave-one-out)"},
 };
 let SUB = "re-arc";
 const sub = () => SUBSETS[SUB];
@@ -519,8 +526,18 @@ function decodeEpisode(row){
   for(let i=0;i<row.ex_in__shape[0];i++)
     ex.push({in: planeAt(exIn, i, exInD[i*2], exInD[i*2+1]),
              out: planeAt(exOut, i, exOutD[i*2], exOutD[i*2+1])});
-  return {id: row.id, ops, states, sel, after, ex};
+  // role/example_index only exist on the demo subset; undefined elsewhere.
+  return {id: row.id, ops, states, sel, after, ex,
+          role: row.role, example_index: row.example_index};
 }
+/* The demo subset's four "episodes" are a leave-one-out family, not draws: index
+   0 is the problem, 1..3 the demonstrations. Everywhere else an episode is just
+   its number. */
+function epName(i){
+  if(!sub().family) return String(i + 1);
+  return i === 0 ? "Problem" : `Demo ${i}`;
+}
+function epShort(i){ return sub().family ? (i === 0 ? "P" : `D${i}`) : String(i + 1); }
 
 async function api(path){
   const r = await fetch(API + path);
@@ -531,6 +548,22 @@ async function api(path){
 /* ---------- state ---------- */
 let INDEX = [], EP = null, TASK = null, TIDX = 0, EPI = 0, FRAME = 0, TIMER = null;
 let INDEX_STATE = "loading";     // loading | ready | failed
+
+/* The demo subset is a pilot shipped as a static file next to this page rather
+   than as an HF config, so it needs no dataset server. Its rows arrive already
+   decoded (states as digit rows, selections as cell lists); hydrateLocal turns
+   the selection lists back into the Sets the renderer expects, giving the same
+   EP shape decodeEpisode produces. Fetched once, then cached. */
+let LOCAL = null, LOCAL_PROMISE = null;
+const localData = () => (LOCAL_PROMISE ||=
+  fetch("demo_data.json").then(r => { if(!r.ok) throw new Error("demo_data.json"); return r.json(); })
+    .then(j => (LOCAL = j)));
+function hydrateLocal(o){
+  return {id: o.id, ops: o.ops, states: o.states, ex: o.ex,
+          role: o.role, example_index: o.example_index,
+          sel: o.sel.map(a => new Set(a)),
+          after: o.after.map(a => a ? new Set(a) : null)};
+}
 
 function note(msg){
   document.getElementById("notice").textContent = msg;
@@ -549,16 +582,26 @@ async function load(task, epi){
     return;
   }
   TASK = task; TIDX = idx; EPI = epi || 0; FRAME = 0;
-  let row;
-  try{
-    const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=${sub().data}&split=train`
-                      + `&offset=${idx*sub().episodes + EPI}&length=1`);
-    row = j.rows[0].row;
-  }catch(e){
-    note("Dataset server unavailable");
-    return;
+  if(sub().local){
+    try{
+      if(!LOCAL) await localData();
+      EP = hydrateLocal(LOCAL.rows[idx*sub().episodes + EPI]);
+    }catch(e){
+      note("Demo data unavailable");
+      return;
+    }
+  }else{
+    let row;
+    try{
+      const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=${sub().data}&split=train`
+                        + `&offset=${idx*sub().episodes + EPI}&length=1`);
+      row = j.rows[0].row;
+    }catch(e){
+      note("Dataset server unavailable");
+      return;
+    }
+    EP = decodeEpisode(row);
   }
-  EP = decodeEpisode(row);
   note("");   // render() used to clear this by overwriting it with the op name
 
   document.querySelectorAll(".card").forEach(e => e.classList.toggle("on", e.dataset.task === task));
@@ -568,11 +611,13 @@ async function load(task, epi){
   for(let i=0;i<sub().episodes;i++){
     const b = document.createElement("button");
     b.className = "ep" + (i === EPI ? " on" : "");
-    b.textContent = i + 1;
+    b.textContent = epShort(i);
+    b.title = epName(i);
     b.onclick = () => { stop(); load(task, i); };
     picker.appendChild(b);
   }
-  document.getElementById("ep-label").textContent = `Episode ${EPI+1} of ${sub().episodes}`;
+  document.getElementById("ep-label").textContent =
+    sub().family ? epName(EPI) : `Episode ${EPI+1} of ${sub().episodes}`;
 
   const pairs = document.getElementById("pairs");
   pairs.innerHTML = "";
@@ -723,7 +768,7 @@ function paint(filter){
                     `<img src="${t.thumb_out}" alt="" loading="lazy">` +
                   `</div>` +
                   `<div class="name">${t.task}</div>` +
-                  `<div class="meta">${sub().episodes} episodes</div>`;
+                  `<div class="meta">${sub().family ? "problem + 3 demos" : sub().episodes + " episodes"}</div>`;
     b.onclick = () => { location.hash = `#/task/${SUB}/${t.task}`; };
     grid.appendChild(b);
   });
@@ -792,15 +837,17 @@ function route(){
   }else if(page === "tasks"){
     title.textContent = sub().label; cta.href = "#/"; cta.textContent = "Overview";
     document.getElementById("tasks-title").textContent = sub().label;
-    document.getElementById("tasks-sub").textContent =
-      `${sub().blurb}. ${sub().tasks} tasks, ${sub().episodes} episodes each.`;
+    document.getElementById("tasks-sub").textContent = sub().family
+      ? `${sub().blurb}. ${sub().tasks} families, problem + 3 demos each.`
+      : `${sub().blurb}. ${sub().tasks} tasks, ${sub().episodes} episodes each.`;
     paint(search.value);
   }else{
     const id = legacyTask ? m[1] : m[2];
     title.textContent = `${sub().label} · ${id}`;
     cta.href = `#/tasks/${SUB}`; cta.textContent = "All tasks";
-    document.getElementById("more-sub").textContent =
-      `${sub().label} · ${INDEX.length || sub().tasks} tasks, ${sub().episodes} episodes each.`;
+    document.getElementById("more-sub").textContent = sub().family
+      ? `${sub().label} · ${INDEX.length || sub().tasks} families, problem + 3 demos each.`
+      : `${sub().label} · ${INDEX.length || sub().tasks} tasks, ${sub().episodes} episodes each.`;
     // "More tasks" claims to be all of them, so clear a filter left from #/tasks.
     // The input keeps its text, so going back restores the filtered view.
     if(search.value) paint("");
@@ -823,6 +870,17 @@ addEventListener("hashchange", route);
 async function loadIndex(){
   const q = () => document.getElementById("search").value;
   INDEX_STATE = "loading"; paint(q());
+  // The demo pilot ships as a static file beside this page, not as an HF config.
+  if(sub().local){
+    try{
+      const j = LOCAL || await localData();
+      INDEX = j.index.map(e => ({task: e.task, ops: e.ops,
+                                 thumb_in: e.thumb_in, thumb_out: e.thumb_out}));
+      INDEX_STATE = "ready"; paint(q()); return true;
+    }catch(e){
+      LOCAL_PROMISE = null; INDEX_STATE = "failed"; paint(q()); return false;
+    }
+  }
   for(let attempt = 0; attempt < 3; attempt++){
     try{
       const offs = [];
