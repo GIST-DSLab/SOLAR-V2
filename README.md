@@ -16,9 +16,12 @@ move → paste → submit), not just an input/output pair.
 
 ![one episode, action by action](figure/teaser.gif)
 
-418 makers were written by an LLM (Claude Opus) and filtered by the pipeline in
-this repo; 15 more were written by hand as a control. The trajectories they
-produce are published separately as a dataset (see [Data](#data)).
+**400 makers, one per task of the ARC-AGI-1 training split.** Inputs come from
+each task's [RE-ARC](https://github.com/michaelhodel/re-arc) generator rather
+than the original pairs, so any maker can be rolled out for as many fresh
+instances as you want — the published dataset is one draw of them, not their
+limit (see [Data](#data)). Two smaller sets sit beside them:
+`maker/arc-1d` (18) and `maker/handcraft` (15).
 
 ---
 
