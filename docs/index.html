@@ -281,7 +281,6 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
   <a href="#/tasks/re-arc">Tasks</a>
   <a href="https://github.com/QAZyunho/SOLAR-V2">Code</a>
   <a href="https://huggingface.co/datasets/dbsgh797210/SOLAR">Dataset</a>
-  <a href="#/tasks/demo">Demo trajectories</a>
 </nav>
 
 <nav class="sub-nav">
@@ -315,7 +314,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <section class="tile light">
   <div class="inner">
     <h2 class="display">Subsets</h2>
-    <p class="caption" style="margin:0 0 32px">Two released, a pilot, one in progress.</p>
+    <p class="caption" style="margin:0 0 32px">Three live, one in progress.</p>
     <div class="subsets">
       <a class="subset live" href="#/tasks/re-arc">
         <div class="tag">Released</div>
@@ -330,8 +329,8 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
         <div class="go">Browse tasks ›</div>
       </a>
       <a class="subset live" href="#/tasks/demo">
-        <div class="tag">Pilot</div>
-        <div class="name">Demo trajectories</div>
+        <div class="tag">New</div>
+        <div class="name">Trajectories for demo pairs</div>
         <div class="meta">Every demonstration example carries its own trajectory<br>400 tasks · 10 samples · problem + 3 demos each</div>
         <div class="go">Browse tasks ›</div>
       </a>
@@ -459,7 +458,7 @@ const SUBSETS = {
   // Served locally: a 400-task index, then one lazily-loaded shard per task. So
   // episodes here are not independent draws; they are the family's four
   // trajectories, problem first.
-  "demo": {label:"Demo trajectories", tasks:400, samplesPer:10, episodes:4,
+  "demo": {label:"Trajectories for demo pairs", tasks:400, samplesPer:10, episodes:4,
            family:true, local:true,
            blurb:"Every demonstration example carries its own trajectory"},
 };
@@ -525,19 +524,23 @@ function i16(b64){
   for(let i=0;i<out.length;i++) out[i] = dv.getInt16(i*2, true);
   return out;
 }
-const PAD = 30;                       // every plane is padded to 30x30
-function planeAt(u8, i, h, w){
-  const base = i*PAD*PAD, g = [];
+/* The plane stride is whatever the rollout padded to, and it is not always 30:
+   handcraft is rolled at a 15x15 ceiling, so its planes are 15x15. Reading them
+   with a hardcoded 30 walks off the end of the buffer and every byte past it
+   comes back undefined, which paints as the padding colour — one demonstration
+   half-right and the rest blank white. The shape column is the contract; use it. */
+function planeAt(u8, i, h, w, P){
+  const base = i*P*P, g = [];
   for(let r=0;r<h;r++){
     let row = "";
-    for(let c=0;c<w;c++) row += u8[base + r*PAD + c];
+    for(let c=0;c<w;c++) row += u8[base + r*P + c];
     g.push(row);
   }
   return {h, w, g};
 }
-function maskAt(u8, i, h, w){
-  const base = i*PAD*PAD, set = new Set();
-  for(let r=0;r<h;r++) for(let c=0;c<w;c++) if(u8[base + r*PAD + c]) set.add(r*100 + c);
+function maskAt(u8, i, h, w, P){
+  const base = i*P*P, set = new Set();
+  for(let r=0;r<h;r++) for(let c=0;c<w;c++) if(u8[base + r*P + c]) set.add(r*100 + c);
   return set;
 }
 function decodeEpisode(row){
@@ -546,18 +549,21 @@ function decodeEpisode(row){
   const selM = bytes(row.selection_mask), aftM = bytes(row.selected);
   const exIn = bytes(row.ex_in), exOut = bytes(row.ex_out);
   const exInD = i16(row.ex_in_grid_dim), exOutD = i16(row.ex_out_grid_dim);
+  const gP = row.grid__shape[1], sP = row.selection_mask__shape[1];
+  const aP = row.selected__shape[1];
+  const eiP = row.ex_in__shape[1], eoP = row.ex_out__shape[1];
   const n = ops.length;
   const states = [], sel = [], after = [];
-  for(let i=0;i<=n;i++) states.push(planeAt(grid, i, dims[i*2], dims[i*2+1]));
+  for(let i=0;i<=n;i++) states.push(planeAt(grid, i, dims[i*2], dims[i*2+1], gP));
   for(let i=0;i<n;i++){
-    sel.push(maskAt(selM, i, dims[i*2], dims[i*2+1]));
-    const a = maskAt(aftM, i+1, dims[(i+1)*2], dims[(i+1)*2+1]);
+    sel.push(maskAt(selM, i, dims[i*2], dims[i*2+1], sP));
+    const a = maskAt(aftM, i+1, dims[(i+1)*2], dims[(i+1)*2+1], aP);
     after.push(a.size ? a : null);
   }
   const ex = [];
   for(let i=0;i<row.ex_in__shape[0];i++)
-    ex.push({in: planeAt(exIn, i, exInD[i*2], exInD[i*2+1]),
-             out: planeAt(exOut, i, exOutD[i*2], exOutD[i*2+1])});
+    ex.push({in: planeAt(exIn, i, exInD[i*2], exInD[i*2+1], eiP),
+             out: planeAt(exOut, i, exOutD[i*2], exOutD[i*2+1], eoP)});
   // role/example_index only exist on the demo subset; undefined elsewhere.
   return {id: row.id, ops, states, sel, after, ex,
           role: row.role, example_index: row.example_index};
