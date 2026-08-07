@@ -185,6 +185,14 @@ a.link:hover{text-decoration:underline}
 .card .name{font-size:17px;font-weight:600;line-height:1.24;letter-spacing:-.374px}
 .card .meta{font-size:14px;letter-spacing:-.224px;color:var(--ink-48);margin-top:2px}
 .card.on{border-color:var(--primary-focus);border-width:2px;padding:23px}
+/* A full-width heading between card groups. The demo cards are one per family,
+   ten per task; grouping them under the task id turns a flat 60 into 6 readable
+   blocks. Spans every column so the next card starts a fresh row. */
+.grid-section{grid-column:1/-1;font-family:var(--display);font-size:21px;font-weight:600;
+  line-height:1.19;letter-spacing:.231px;color:var(--ink);margin:16px 0 0;padding-top:16px;
+  border-top:1px solid var(--hairline)}
+.grid-section:first-child{margin-top:0;padding-top:0;border-top:none}
+.grid-section .n{color:var(--ink-48);font-weight:400;font-size:15px;margin-left:8px}
 
 /* Three titled columns. Every column starts with a .panel-title on the same
    line, so the grids below them start at the same height. */
@@ -759,7 +767,24 @@ function paint(filter){
   // ops is not printed on the card any more, but it stays a search key —
   // "move", "floodfill" are the useful ways to find a task you can't name.
   const shown = INDEX.filter(t => !q || t.task.includes(q) || t.ops.toLowerCase().includes(q));
+  // The demo subset is one card per family (task-sample); its ids sort by task,
+  // so group them under a per-task heading. base = the task id, sample = the
+  // trailing number.
+  const baseOf = t => t.task.replace(/-\d+$/, "");
+  const sampleOf = t => t.task.replace(/^.*-/, "");
+  let lastBase = null;
   shown.forEach(t => {
+    if(sub().family){
+      const base = baseOf(t);
+      if(base !== lastBase){
+        lastBase = base;
+        const cnt = shown.filter(x => baseOf(x) === base).length;
+        const h = document.createElement("div");
+        h.className = "grid-section";
+        h.innerHTML = `${base}<span class="n">${cnt} sample${cnt > 1 ? "s" : ""}</span>`;
+        grid.appendChild(h);
+      }
+    }
     const b = document.createElement("button");
     b.className = "card" + (t.task === TASK ? " on" : ""); b.dataset.task = t.task;
     b.innerHTML = `<div class="thumb">` +
@@ -767,7 +792,7 @@ function paint(filter){
                     `<span class="arrow">→</span>` +
                     `<img src="${t.thumb_out}" alt="" loading="lazy">` +
                   `</div>` +
-                  `<div class="name">${t.task}</div>` +
+                  `<div class="name">${sub().family ? "Sample " + sampleOf(t) : t.task}</div>` +
                   `<div class="meta">${sub().family ? "problem + 3 demos" : sub().episodes + " episodes"}</div>`;
     b.onclick = () => { location.hash = `#/task/${SUB}/${t.task}`; };
     grid.appendChild(b);
