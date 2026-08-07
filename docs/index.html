@@ -206,6 +206,7 @@ a.link:hover{text-decoration:underline}
 .task-card .chev{color:var(--ink-48);font-size:15px;flex:none;padding:0 6px}
 .sample-grid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:24px;padding:6px 0 26px}
 .sample-grid[hidden]{display:none}
+.sample-loading{grid-column:1/-1;margin:0;padding:8px 2px 12px;color:var(--ink-48);font-size:15px}
 @media (max-width:1100px){.sample-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
 @media (max-width:700px){.sample-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}}
 @media (max-width:640px){.sample-grid{grid-template-columns:1fr}}
@@ -331,7 +332,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
       <a class="subset live" href="#/tasks/demo">
         <div class="tag">Pilot</div>
         <div class="name">Demo trajectories</div>
-        <div class="meta">Every demonstration example carries its own trajectory<br>60 families · problem + 3 demos each</div>
+        <div class="meta">Every demonstration example carries its own trajectory<br>400 tasks · 10 samples · problem + 3 demos each</div>
         <div class="go">Browse tasks ›</div>
       </a>
       <div class="subset">
@@ -434,7 +435,8 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <script>
 const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
                  "#F012BE","#FF851B","#7FDBFF","#870C25","#F0F0F0"];
-const DS   = "dbsgh797210/SOLAR";
+const DS    = "dbsgh797210/SOLAR";          // the release: arc_agi1, nothing else
+const EXTRA = "dbsgh797210/SOLAR-extras";   // the control subset and the thumbnails
 const API  = "https://datasets-server.huggingface.co";
 const EPISODES_PER_TASK = 10;
 /* Two released subsets, and they share task ids: every handcraft id is also an
@@ -443,17 +445,23 @@ const EPISODES_PER_TASK = 10;
    a task occupies — the viewer addresses a row as task index * episodes +
    episode because the Hub's /filter endpoint is unreliable. */
 const SUBSETS = {
-  "re-arc": {label:"RE-ARC", data:"arc_agi1", preview:"preview",
+  // repo/prepo because these no longer share one dataset: SOLAR holds the release
+  // and nothing else, so the control subset and every thumbnail live in -extras.
+  "re-arc": {label:"RE-ARC", repo:DS, data:"arc_agi1",
+             prepo:EXTRA, preview:"preview",
              tasks:400, episodes:10, blurb:"Augmented ARC-AGI-1 training set"},
-  "handcraft": {label:"Handcraft", data:"handcraft", preview:"preview_handcraft",
+  "handcraft": {label:"Handcraft", repo:EXTRA, data:"handcraft",
+                prepo:EXTRA, preview:"preview_handcraft",
                 tasks:11, episodes:10, blurb:"Hand-written half-variant makers over 10 tasks"},
-  // A pilot where every demonstration also carries a trajectory. Each card is one
-  // leave-one-out family: 4 rows — the problem, then the 3 demos, each in turn the
-  // target while the others are its worked examples. So episodes here are not
-  // independent draws; they are the family's four trajectories, problem first.
-  "demo": {label:"Demo trajectories", data:"arc_agi1_demo", preview:"preview_arc_agi1_demo",
-           tasks:60, episodes:4, family:true, local:true,
-           blurb:"Every demonstration example carries its own trajectory (leave-one-out)"},
+  // Every demonstration also carries a trajectory. Browsed by task: 400 tasks,
+  // ten samples each, every sample a family of 4 trajectories (the problem, then
+  // the 3 demos — each in turn the target under the same fixed demonstrations).
+  // Served locally: a 400-task index, then one lazily-loaded shard per task. So
+  // episodes here are not independent draws; they are the family's four
+  // trajectories, problem first.
+  "demo": {label:"Demo trajectories", tasks:400, samplesPer:10, episodes:4,
+           family:true, local:true,
+           blurb:"Every demonstration example carries its own trajectory"},
 };
 let SUB = "re-arc";
 const sub = () => SUBSETS[SUB];
@@ -573,17 +581,25 @@ async function api(path){
 let INDEX = [], EP = null, TASK = null, TIDX = 0, EPI = 0, FRAME = 0, TIMER = null;
 let INDEX_STATE = "loading";     // loading | ready | failed
 
-/* The demo subset is a pilot shipped as a static file next to this page rather
-   than as an HF config, so it needs no dataset server. Its rows arrive already
-   decoded (states as digit rows, selections as cell lists); hydrateLocal turns
-   the selection lists back into the Sets the renderer expects, giving the same
-   EP shape decodeEpisode produces. Fetched once, then cached. */
-let LOCAL = null, LOCAL_PROMISE = null;
+/* The demo subset is served locally, not from the dataset server: a small
+   demo_index.json (one entry per task, with a representative thumbnail) and one
+   shard per task, demo/<task>.json, fetched lazily when that task is expanded or
+   opened. A shard's rows arrive already decoded (states as digit rows,
+   selections as cell lists); hydrateLocal turns the selection lists back into
+   the Sets the renderer expects, the same EP shape decodeEpisode gives. */
+let DEMO_INDEX = null, DEMO_INDEX_PROMISE = null;
+const DEMO_SHARDS = {}, DEMO_SHARD_PROMISE = {};
 // Which task rows are expanded in the demo browser (keyed by base task id).
 const EXPANDED = new Set();
-const localData = () => (LOCAL_PROMISE ||=
-  fetch("demo_data.json").then(r => { if(!r.ok) throw new Error("demo_data.json"); return r.json(); })
-    .then(j => (LOCAL = j)));
+const demoBase = id => id.replace(/-\d+$/, "");
+const demoSample = id => id.replace(/^.*-/, "");
+const demoIndex = () => (DEMO_INDEX_PROMISE ||=
+  fetch("demo_index.json").then(r => { if(!r.ok) throw new Error("demo_index.json"); return r.json(); })
+    .then(j => (DEMO_INDEX = j)));
+const demoShard = base => (DEMO_SHARDS[base] ? Promise.resolve(DEMO_SHARDS[base]) :
+  (DEMO_SHARD_PROMISE[base] ||= fetch(`demo/${base}.json`)
+    .then(r => { if(!r.ok) throw new Error(`demo/${base}.json`); return r.json(); })
+    .then(j => (DEMO_SHARDS[base] = j))));
 function hydrateLocal(o){
   return {id: o.id, ops: o.ops, states: o.states, ex: o.ex,
           role: o.role, example_index: o.example_index,
@@ -601,17 +617,22 @@ function note(msg){
 async function load(task, epi){
   note("Loading…");
   // A deep link can arrive before the index does; route() calls back once it has.
-  const idx = INDEX.findIndex(t => t.task === task);
+  // Demo ids are <task>-<sample>; the index is keyed by the task, and the sample
+  // lives inside that task's shard. Every other subset keys on the task itself.
+  const key = sub().family ? demoBase(task) : task;
+  const idx = INDEX.findIndex(t => t.task === key);
   if(idx < 0){
     if(INDEX_STATE === "ready") note(`No task ${task}`);
-    else if(INDEX_STATE === "failed") note("Dataset server unavailable");
+    else if(INDEX_STATE === "failed") note(sub().local ? "Demo data unavailable" : "Dataset server unavailable");
     return;
   }
   TASK = task; TIDX = idx; EPI = epi || 0; FRAME = 0;
-  if(sub().local){
+  if(sub().family){
     try{
-      if(!LOCAL) await localData();
-      EP = hydrateLocal(LOCAL.rows[idx*sub().episodes + EPI]);
+      const shard = await demoShard(demoBase(task));
+      const s = shard.samples.find(x => String(x.sample) === demoSample(task));
+      if(!s) throw new Error("sample");
+      EP = hydrateLocal(s.rows[EPI]);
     }catch(e){
       note("Demo data unavailable");
       return;
@@ -619,7 +640,7 @@ async function load(task, epi){
   }else{
     let row;
     try{
-      const j = await api(`/rows?dataset=${encodeURIComponent(DS)}&config=${sub().data}&split=train`
+      const j = await api(`/rows?dataset=${encodeURIComponent(sub().repo)}&config=${sub().data}&split=train`
                         + `&offset=${idx*sub().episodes + EPI}&length=1`);
       row = j.rows[0].row;
     }catch(e){
@@ -784,62 +805,68 @@ function paint(filter){
   const q = (filter||"").toLowerCase();
   // ops is not printed on the card any more, but it stays a search key —
   // "move", "floodfill" are the useful ways to find a task you can't name.
-  const shown = INDEX.filter(t => !q || t.task.includes(q) || t.ops.toLowerCase().includes(q));
-  // The demo subset is one card per family (task-sample); its ids sort by task.
-  const baseOf = t => (t.task || t).replace(/-\d+$/, "");
-  const sampleOf = t => t.task.replace(/^.*-/, "");
-  const sampleCard = t => {
+  const shown = INDEX.filter(t => !q || t.task.includes(q) || (t.ops || "").toLowerCase().includes(q));
+  const repaint = () => paint(document.getElementById("search").value);
+  const thumbHTML = (a, c) => `<div class="thumb"><img src="${a}" alt="" loading="lazy">` +
+    `<span class="arrow">→</span><img src="${c}" alt="" loading="lazy"></div>`;
+  const taskCard = t => {
     const b = document.createElement("button");
     b.className = "card" + (t.task === TASK ? " on" : ""); b.dataset.task = t.task;
-    b.innerHTML = `<div class="thumb">` +
-                    `<img src="${t.thumb_in}" alt="" loading="lazy">` +
-                    `<span class="arrow">→</span>` +
-                    `<img src="${t.thumb_out}" alt="" loading="lazy">` +
-                  `</div>` +
-                  `<div class="name">${sub().family ? "Sample " + sampleOf(t) : t.task}</div>` +
-                  `<div class="meta">${sub().family ? "problem + 3 demos" : sub().episodes + " episodes"}</div>`;
+    b.innerHTML = thumbHTML(t.thumb_in, t.thumb_out) +
+      `<div class="name">${t.task}</div>` +
+      `<div class="meta">${sub().episodes} episodes</div>`;
     b.onclick = () => { location.hash = `#/task/${SUB}/${t.task}`; };
     return b;
   };
 
   if(sub().family){
-    // Compact: one collapsible row per task, samples revealed on click. A search,
-    // or the task you are currently viewing, forces its row open.
+    // Compact: one collapsible row per task; a task's ten samples live in its own
+    // shard, fetched only when the row is opened (or the task is being viewed).
     grid.classList.add("stack");
-    const order = [], byBase = {};
-    shown.forEach(t => { const bs = baseOf(t);
-      if(!byBase[bs]){ byBase[bs] = []; order.push(bs); } byBase[bs].push(t); });
-    const curBase = TASK ? baseOf(TASK) : null;
-    order.forEach(bs => {
-      const samples = byBase[bs];
-      const open = !!q || EXPANDED.has(bs) || bs === curBase;
-      const rep = samples[0];
+    const curBase = TASK ? demoBase(TASK) : null;
+    const demoSampleCard = (base, s) => {
+      const id = `${base}-${s.sample}`;
+      const b = document.createElement("button");
+      b.className = "card" + (id === TASK ? " on" : ""); b.dataset.task = id;
+      b.innerHTML = thumbHTML(s.thumb_in, s.thumb_out) +
+        `<div class="name">Sample ${s.sample}</div>` +
+        `<div class="meta">problem + 3 demos</div>`;
+      b.onclick = () => { location.hash = `#/task/${SUB}/${id}`; };
+      return b;
+    };
+    shown.forEach(te => {
+      const base = te.task;
+      const open = EXPANDED.has(base) || base === curBase;
       const block = document.createElement("div");
       block.className = "task-block" + (open ? " open" : "");
       const head = document.createElement("button");
       head.className = "task-card"; head.setAttribute("aria-expanded", String(open));
-      head.innerHTML = `<div class="thumb">` +
-          `<img src="${rep.thumb_in}" alt="" loading="lazy">` +
-          `<span class="arrow">→</span>` +
-          `<img src="${rep.thumb_out}" alt="" loading="lazy"></div>` +
-        `<div class="tinfo"><div class="name">${bs}</div>` +
-          `<div class="meta">${samples.length} sample${samples.length > 1 ? "s" : ""}` +
-          ` · problem + 3 demos each</div></div>` +
+      head.innerHTML = thumbHTML(te.thumb_in, te.thumb_out) +
+        `<div class="tinfo"><div class="name">${base}</div>` +
+          `<div class="meta">${te.count} sample${te.count > 1 ? "s" : ""} · problem + 3 demos each</div></div>` +
         `<span class="chev" aria-hidden="true">${open ? "▾" : "▸"}</span>`;
       head.onclick = () => {
-        EXPANDED.has(bs) ? EXPANDED.delete(bs) : EXPANDED.add(bs);
-        paint(document.getElementById("search").value);
+        EXPANDED.has(base) ? EXPANDED.delete(base) : EXPANDED.add(base);
+        repaint();
       };
       block.appendChild(head);
       const sg = document.createElement("div"); sg.className = "sample-grid";
-      if(!open) sg.hidden = true;
-      samples.forEach(t => sg.appendChild(sampleCard(t)));
+      if(!open){
+        sg.hidden = true;
+      }else if(DEMO_SHARDS[base]){
+        DEMO_SHARDS[base].samples.forEach(s => sg.appendChild(demoSampleCard(base, s)));
+      }else{
+        const p = document.createElement("p");
+        p.className = "sample-loading"; p.textContent = "Loading…";
+        sg.appendChild(p);
+        demoShard(base).then(repaint).catch(() => {});
+      }
       block.appendChild(sg);
       grid.appendChild(block);
     });
   }else{
     grid.classList.remove("stack");
-    shown.forEach(t => grid.appendChild(sampleCard(t)));
+    shown.forEach(t => grid.appendChild(taskCard(t)));
   }
 
   // Three different empty grids used to look identical, and the count asserted
@@ -852,7 +879,8 @@ function paint(filter){
     status.textContent = "Loading tasks…"; status.hidden = false;
     count.textContent = "loading…";
   }else if(INDEX_STATE === "failed"){
-    status.textContent = "Could not reach the dataset server.";
+    status.textContent = sub().local ? "Could not load the demo data."
+                                      : "Could not reach the dataset server.";
     const again = document.createElement("button");
     again.className = "pill ghost small"; again.textContent = "Try again";
     again.onclick = () => loadIndex().then(ok => ok && route());
@@ -861,9 +889,9 @@ function paint(filter){
   }else if(!shown.length){
     status.textContent = q ? `No task matches “${filter}”.` : "No tasks.";
     status.hidden = false;
-    count.textContent = `0 of ${INDEX.length} ${sub().family ? "samples" : "tasks"}`;
+    count.textContent = `0 of ${INDEX.length} tasks`;
   }else{
-    count.textContent = `${shown.length} of ${INDEX.length} ${sub().family ? "samples" : "tasks"}`;
+    count.textContent = `${shown.length} of ${INDEX.length} tasks`;
   }
 }
 document.getElementById("search").oninput = e => paint(e.target.value);
@@ -907,7 +935,7 @@ function route(){
     title.textContent = sub().label; cta.href = "#/"; cta.textContent = "Overview";
     document.getElementById("tasks-title").textContent = sub().label;
     document.getElementById("tasks-sub").textContent = sub().family
-      ? `${sub().blurb}. ${sub().tasks} families, problem + 3 demos each.`
+      ? `${sub().blurb}. ${sub().tasks} tasks · ${sub().samplesPer} samples each (problem + 3 demos).`
       : `${sub().blurb}. ${sub().tasks} tasks, ${sub().episodes} episodes each.`;
     paint(search.value);
   }else{
@@ -915,7 +943,7 @@ function route(){
     title.textContent = `${sub().label} · ${id}`;
     cta.href = `#/tasks/${SUB}`; cta.textContent = "All tasks";
     document.getElementById("more-sub").textContent = sub().family
-      ? `${sub().label} · ${INDEX.length || sub().tasks} families, problem + 3 demos each.`
+      ? `${sub().label} · ${INDEX.length || sub().tasks} tasks · ${sub().samplesPer} samples each.`
       : `${sub().label} · ${INDEX.length || sub().tasks} tasks, ${sub().episodes} episodes each.`;
     // "More tasks" claims to be all of them, so clear a filter left from #/tasks.
     // The input keeps its text, so going back restores the filtered view.
@@ -939,15 +967,16 @@ addEventListener("hashchange", route);
 async function loadIndex(){
   const q = () => document.getElementById("search").value;
   INDEX_STATE = "loading"; paint(q());
-  // The demo pilot ships as a static file beside this page, not as an HF config.
+  // The demo subset ships as static files beside this page, not as an HF config:
+  // one task-level index, then per-task shards loaded on demand.
   if(sub().local){
     try{
-      const j = LOCAL || await localData();
-      INDEX = j.index.map(e => ({task: e.task, ops: e.ops,
+      const j = DEMO_INDEX || await demoIndex();
+      INDEX = j.tasks.map(e => ({task: e.task, count: e.count,
                                  thumb_in: e.thumb_in, thumb_out: e.thumb_out}));
       INDEX_STATE = "ready"; paint(q()); return true;
     }catch(e){
-      LOCAL_PROMISE = null; INDEX_STATE = "failed"; paint(q()); return false;
+      DEMO_INDEX_PROMISE = null; INDEX_STATE = "failed"; paint(q()); return false;
     }
   }
   for(let attempt = 0; attempt < 3; attempt++){
@@ -955,7 +984,7 @@ async function loadIndex(){
       const offs = [];
       for(let o=0; o<sub().tasks; o+=100) offs.push(o);
       const pages = await Promise.all(offs.map(off =>
-        api(`/rows?dataset=${encodeURIComponent(DS)}&config=${sub().preview}&split=train`
+        api(`/rows?dataset=${encodeURIComponent(sub().prepo)}&config=${sub().preview}&split=train`
           + `&offset=${off}&length=100`)));
       INDEX = pages.flatMap(j => j.rows.map(({row}) => ({
         task: row.task_id, ops: row.operations,
