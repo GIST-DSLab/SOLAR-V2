@@ -78,7 +78,7 @@ SUBSETS = {
         # spanned different variants, because the variants differ in how many
         # demonstrations they also solve, not in the route to the problem. Within
         # half alone no two variants share a trajectory.
-        root=DATA_ROOT / "ARC_handcraft_half" / "whole",
+        root=DATA_ROOT / "ARC_handcraft_h15" / "whole",
         makers="maker/arc-handcraft",
         episodes=10,
         label="handcraft",
@@ -86,8 +86,12 @@ SUBSETS = {
         note="11 hand-written half-variant makers over 10 ARC-AGI-1 training tasks",
         # --force_grid_size is not optional here: these makers unpack
         # max_grid_dim from kwargs and KeyError without it.
+        # 15x15, not the 30x30 the release uses. These makers scale their work
+        # with the grid: the move-an-object one spent 1828 actions on a 30x30
+        # sample. At 15 the worst episode is 174 and the grids still look like
+        # ARC tasks, which 10x10 does not — it squeezes several makers into 5x5.
         rollout="python pipeline/gen_rearc_trajectories_v2.py --subfolder handcraft "
-                "--num_samples 25 --rand_seed 0 --max_grid_dim 30 30 "
+                "--num_samples 25 --rand_seed 0 --max_grid_dim 15 15 "
                 "--force_grid_size --data_folder <out>",
     ),
     "arc_1d": dict(
