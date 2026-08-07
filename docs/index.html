@@ -314,7 +314,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <section class="tile light">
   <div class="inner">
     <h2 class="display">Subsets</h2>
-    <p class="caption" style="margin:0 0 32px">One released, two in beta, one in progress.</p>
+    <p class="caption" style="margin:0 0 32px">One released, three in beta.</p>
     <div class="subsets">
       <a class="subset live" href="#/tasks/re-arc">
         <div class="tag">Released</div>
@@ -334,11 +334,12 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
         <div class="meta">Every demonstration example carries its own trajectory<br>400 tasks · 10 samples · problem + 3 demos each</div>
         <div class="go">Browse tasks ›</div>
       </a>
-      <div class="subset">
-        <div class="tag">Coming soon</div>
-        <div class="name">ARC-AGI-2</div>
-        <div class="meta">Training set</div>
-      </div>
+      <a class="subset live" href="#/tasks/arc-agi2">
+        <div class="tag">Beta</div>
+        <div class="name">ARC-AGI-2 construction</div>
+        <div class="meta">Real ARC-AGI-2 tasks, every demonstration solved<br>30 tasks · test + train pairs</div>
+        <div class="go">Browse tasks ›</div>
+      </a>
     </div>
   </div>
 </section>
@@ -459,8 +460,16 @@ const SUBSETS = {
   // episodes here are not independent draws; they are the family's four
   // trajectories, problem first.
   "demo": {label:"Trajectories for demo pairs", tasks:400, samplesPer:10, episodes:4,
-           family:true, local:true,
+           family:true, local:true, path:"demo",
            blurb:"Every demonstration example carries its own trajectory"},
+  // Real ARC-AGI-2 tasks (construction makers). No sampling — each task's train
+  // and test pairs are fixed, so a task is a single family: the test pair(s) as
+  // the problem, each train pair a demonstration that also carries its own
+  // trajectory. Variable episode count. Browsed flat (one family per task, so no
+  // sample layer); served locally like `demo`.
+  "arc-agi2": {label:"ARC-AGI-2 construction", tasks:30,
+               family:true, local:true, flat:true, path:"arc-agi2",
+               blurb:"Real ARC-AGI-2 tasks, every demonstration solved step by step"},
 };
 let SUB = "re-arc";
 const sub = () => SUBSETS[SUB];
@@ -568,14 +577,22 @@ function decodeEpisode(row){
   return {id: row.id, ops, states, sel, after, ex,
           role: row.role, example_index: row.example_index};
 }
-/* The demo subset's four "episodes" are a leave-one-out family, not draws: index
-   0 is the problem, 1..3 the demonstrations. Everywhere else an episode is just
-   its number. */
-function epName(i){
-  if(!sub().family) return String(i + 1);
-  return i === 0 ? "Problem" : `Demo ${i}`;
+/* A family's episodes are not independent draws: they are its problem(s) and its
+   demonstrations, each with a trajectory, labelled by role from the loaded
+   family FAM (variable in number — demo is always 1+3, arc-agi2 varies). Every
+   other subset numbers its episodes. */
+let FAM = null;   // current family sample {rows:[{role,...}]}, set on family load
+function epLabel(i, short){
+  if(!sub().family || !FAM) return String(i + 1);
+  const roles = FAM.rows.map(r => r.role), role = roles[i];
+  let k = 0; for(let j = 0; j <= i; j++) if(roles[j] === role) k++;
+  const multi = roles.filter(r => r === role).length > 1;
+  if(role === "problem") return short ? (multi ? `P${k}` : "P") : (multi ? `Problem ${k}` : "Problem");
+  return short ? `D${k}` : `Demo ${k}`;
 }
-function epShort(i){ return sub().family ? (i === 0 ? "P" : `D${i}`) : String(i + 1); }
+const epName = i => epLabel(i, false);
+const epShort = i => epLabel(i, true);
+const epCount = () => (sub().family && FAM) ? FAM.rows.length : sub().episodes;
 
 async function api(path){
   const r = await fetch(API + path);
@@ -587,25 +604,30 @@ async function api(path){
 let INDEX = [], EP = null, TASK = null, TIDX = 0, EPI = 0, FRAME = 0, TIMER = null;
 let INDEX_STATE = "loading";     // loading | ready | failed
 
-/* The demo subset is served locally, not from the dataset server: a small
-   demo_index.json (one entry per task, with a representative thumbnail) and one
-   shard per task, demo/<task>.json, fetched lazily when that task is expanded or
-   opened. A shard's rows arrive already decoded (states as digit rows,
-   selections as cell lists); hydrateLocal turns the selection lists back into
-   the Sets the renderer expects, the same EP shape decodeEpisode gives. */
-let DEMO_INDEX = null, DEMO_INDEX_PROMISE = null;
+/* The local (family) subsets are served as static files, not from the dataset
+   server: a small <path>_index.json (one entry per task, with a representative
+   thumbnail) and one shard per task, <path>/<task>.json, fetched lazily. A
+   shard's rows arrive already decoded (states as digit rows, selections as cell
+   lists); hydrateLocal turns the selection lists back into the Sets the renderer
+   expects, the same EP shape decodeEpisode gives. Everything is keyed by the
+   subset's `path` so two local subsets (demo, arc-agi2) never collide. */
+const DEMO_INDEX = {}, DEMO_INDEX_PROMISE = {};
 const DEMO_SHARDS = {}, DEMO_SHARD_PROMISE = {};
 // Which task rows are expanded in the demo browser (keyed by base task id).
 const EXPANDED = new Set();
 const demoBase = id => id.replace(/-\d+$/, "");
 const demoSample = id => id.replace(/^.*-/, "");
-const demoIndex = () => (DEMO_INDEX_PROMISE ||=
-  fetch("demo_index.json").then(r => { if(!r.ok) throw new Error("demo_index.json"); return r.json(); })
-    .then(j => (DEMO_INDEX = j)));
-const demoShard = base => (DEMO_SHARDS[base] ? Promise.resolve(DEMO_SHARDS[base]) :
-  (DEMO_SHARD_PROMISE[base] ||= fetch(`demo/${base}.json`)
-    .then(r => { if(!r.ok) throw new Error(`demo/${base}.json`); return r.json(); })
-    .then(j => (DEMO_SHARDS[base] = j))));
+const demoIndex = () => { const p = sub().path;
+  return DEMO_INDEX[p] ? Promise.resolve(DEMO_INDEX[p]) :
+    (DEMO_INDEX_PROMISE[p] ||= fetch(`${p}_index.json`)
+      .then(r => { if(!r.ok) throw new Error(`${p}_index.json`); return r.json(); })
+      .then(j => (DEMO_INDEX[p] = j))); };
+const demoShard = base => { const k = `${sub().path}/${base}`;
+  return DEMO_SHARDS[k] ? Promise.resolve(DEMO_SHARDS[k]) :
+    (DEMO_SHARD_PROMISE[k] ||= fetch(`${k}.json`)
+      .then(r => { if(!r.ok) throw new Error(`${k}.json`); return r.json(); })
+      .then(j => (DEMO_SHARDS[k] = j))); };
+const shardOf = base => DEMO_SHARDS[`${sub().path}/${base}`];   // sync cache peek
 function hydrateLocal(o){
   return {id: o.id, ops: o.ops, states: o.states, ex: o.ex,
           role: o.role, example_index: o.example_index,
@@ -625,7 +647,11 @@ async function load(task, epi){
   // A deep link can arrive before the index does; route() calls back once it has.
   // Demo ids are <task>-<sample>; the index is keyed by the task, and the sample
   // lives inside that task's shard. Every other subset keys on the task itself.
-  const key = sub().family ? demoBase(task) : task;
+  // Flat family subsets (arc-agi2) key on the task itself — one family per task,
+  // no sample layer; the accordion family subset (demo) keys on the base task and
+  // finds the sample inside the shard.
+  const base = sub().flat ? task : demoBase(task);
+  const key = sub().family ? base : task;
   const idx = INDEX.findIndex(t => t.task === key);
   if(idx < 0){
     if(INDEX_STATE === "ready") note(`No task ${task}`);
@@ -635,15 +661,19 @@ async function load(task, epi){
   TASK = task; TIDX = idx; EPI = epi || 0; FRAME = 0;
   if(sub().family){
     try{
-      const shard = await demoShard(demoBase(task));
-      const s = shard.samples.find(x => String(x.sample) === demoSample(task));
+      const shard = await demoShard(base);
+      const s = sub().flat ? shard.samples[0]
+                           : shard.samples.find(x => String(x.sample) === demoSample(task));
       if(!s) throw new Error("sample");
+      FAM = s;
+      if(EPI >= s.rows.length) EPI = 0;      // families vary in episode count
       EP = hydrateLocal(s.rows[EPI]);
     }catch(e){
       note("Demo data unavailable");
       return;
     }
   }else{
+    FAM = null;
     let row;
     try{
       const j = await api(`/rows?dataset=${encodeURIComponent(sub().repo)}&config=${sub().data}&split=train`
@@ -661,7 +691,7 @@ async function load(task, epi){
 
   const picker = document.getElementById("eps");
   picker.innerHTML = "";
-  for(let i=0;i<sub().episodes;i++){
+  for(let i=0;i<epCount();i++){
     const b = document.createElement("button");
     b.className = "ep" + (i === EPI ? " on" : "");
     b.textContent = epShort(i);
@@ -825,7 +855,20 @@ function paint(filter){
     return b;
   };
 
-  if(sub().family){
+  if(sub().family && sub().flat){
+    // One family per task, no sample layer: flat cards that open the family
+    // straight away. count is the family's episode count (test + demos).
+    grid.classList.remove("stack");
+    shown.forEach(te => {
+      const b = document.createElement("button");
+      b.className = "card" + (te.task === TASK ? " on" : ""); b.dataset.task = te.task;
+      b.innerHTML = thumbHTML(te.thumb_in, te.thumb_out) +
+        `<div class="name">${te.task}</div>` +
+        `<div class="meta">${te.count} trajectories</div>`;
+      b.onclick = () => { location.hash = `#/task/${SUB}/${te.task}`; };
+      grid.appendChild(b);
+    });
+  }else if(sub().family){
     // Compact: one collapsible row per task; a task's ten samples live in its own
     // shard, fetched only when the row is opened (or the task is being viewed).
     grid.classList.add("stack");
@@ -859,8 +902,8 @@ function paint(filter){
       const sg = document.createElement("div"); sg.className = "sample-grid";
       if(!open){
         sg.hidden = true;
-      }else if(DEMO_SHARDS[base]){
-        DEMO_SHARDS[base].samples.forEach(s => sg.appendChild(demoSampleCard(base, s)));
+      }else if(shardOf(base)){
+        shardOf(base).samples.forEach(s => sg.appendChild(demoSampleCard(base, s)));
       }else{
         const p = document.createElement("p");
         p.className = "sample-loading"; p.textContent = "Loading…";
@@ -940,16 +983,18 @@ function route(){
   }else if(page === "tasks"){
     title.textContent = sub().label; cta.href = "#/"; cta.textContent = "Overview";
     document.getElementById("tasks-title").textContent = sub().label;
-    document.getElementById("tasks-sub").textContent = sub().family
-      ? `${sub().blurb}. ${sub().tasks} tasks · ${sub().samplesPer} samples each (problem + 3 demos).`
+    document.getElementById("tasks-sub").textContent =
+      (sub().family && sub().flat) ? `${sub().blurb}. ${sub().tasks} tasks.`
+      : sub().family ? `${sub().blurb}. ${sub().tasks} tasks · ${sub().samplesPer} samples each (problem + 3 demos).`
       : `${sub().blurb}. ${sub().tasks} tasks, ${sub().episodes} episodes each.`;
     paint(search.value);
   }else{
     const id = legacyTask ? m[1] : m[2];
     title.textContent = `${sub().label} · ${id}`;
     cta.href = `#/tasks/${SUB}`; cta.textContent = "All tasks";
-    document.getElementById("more-sub").textContent = sub().family
-      ? `${sub().label} · ${INDEX.length || sub().tasks} tasks · ${sub().samplesPer} samples each.`
+    document.getElementById("more-sub").textContent =
+      (sub().family && sub().flat) ? `${sub().label} · ${INDEX.length || sub().tasks} tasks.`
+      : sub().family ? `${sub().label} · ${INDEX.length || sub().tasks} tasks · ${sub().samplesPer} samples each.`
       : `${sub().label} · ${INDEX.length || sub().tasks} tasks, ${sub().episodes} episodes each.`;
     // "More tasks" claims to be all of them, so clear a filter left from #/tasks.
     // The input keeps its text, so going back restores the filtered view.
@@ -973,16 +1018,16 @@ addEventListener("hashchange", route);
 async function loadIndex(){
   const q = () => document.getElementById("search").value;
   INDEX_STATE = "loading"; paint(q());
-  // The demo subset ships as static files beside this page, not as an HF config:
-  // one task-level index, then per-task shards loaded on demand.
+  // Local (family) subsets ship as static files beside this page, not as HF
+  // configs: one task-level index, then per-task shards loaded on demand.
   if(sub().local){
     try{
-      const j = DEMO_INDEX || await demoIndex();
+      const j = await demoIndex();
       INDEX = j.tasks.map(e => ({task: e.task, count: e.count,
                                  thumb_in: e.thumb_in, thumb_out: e.thumb_out}));
       INDEX_STATE = "ready"; paint(q()); return true;
     }catch(e){
-      DEMO_INDEX_PROMISE = null; INDEX_STATE = "failed"; paint(q()); return false;
+      DEMO_INDEX_PROMISE[sub().path] = null; INDEX_STATE = "failed"; paint(q()); return false;
     }
   }
   for(let attempt = 0; attempt < 3; attempt++){

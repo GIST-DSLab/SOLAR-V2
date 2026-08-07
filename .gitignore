@@ -8,3 +8,5 @@ figure/*.png
 !figure/teaser.png
 !docs/demo_index.json
 !docs/demo/*.json
+!docs/arc-agi2_index.json
+!docs/arc-agi2/*.json
