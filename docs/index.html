@@ -708,7 +708,9 @@ async function load(task, epi){
     const s = document.createElement("span");
     s.className = "arrow"; s.textContent = "→"; return s;
   };
-  EP.ex.slice(0,3).forEach(pair => {
+  // Every worked example, not just the first three — an ARC-AGI-2 task can carry
+  // more train pairs than that, and they are the whole point of the demo subsets.
+  EP.ex.forEach(pair => {
     const a = document.createElement("canvas"), b = document.createElement("canvas");
     draw(a, pair.in, sideFit(pair.in,DEMO_PX)); draw(b, pair.out, sideFit(pair.out,DEMO_PX));
     pairs.append(a, arrow(), b);
