@@ -773,11 +773,14 @@ stripBtn.onclick = () => {
   if(STRIP_OPEN){ buildStrip(); render(); }
 };
 
-function runs(ops){
-  const out = [];
+// One pill per distinct operation (in first-appearance order) with how many times
+// it is used, rather than one per consecutive run — a Color/FloodFill trajectory
+// that alternates would otherwise repeat the same two labels down the whole row.
+function opSummary(ops){
+  const out = [], at = {};
   ops.forEach((name,i) => {
-    const last = out[out.length-1];
-    if(last && last.name === name) last.end = i; else out.push({name,start:i,end:i});
+    if(at[name] === undefined){ at[name] = out.length; out.push({name, count:1, last:i}); }
+    else { const o = out[at[name]]; o.count++; o.last = i; }
   });
   return out;
 }
@@ -792,11 +795,13 @@ function render(){
        fit(EP.states[step + phase], budget), phase === 0 ? EP.sel[step] : EP.after[step]);
 
   const box = document.getElementById("actions"); box.innerHTML = "";
-  runs(EP.ops).forEach(run => {
+  const curOp = EP.ops[Math.min(step, EP.ops.length - 1)];
+  opSummary(EP.ops).forEach(o => {
     const b = document.createElement("span");
-    b.className = "act" + (step > run.end ? " past"
-                  : (step >= run.start ? " now" + (phase ? " released" : "") : ""));
-    b.textContent = run.name; box.appendChild(b);
+    const now = o.name === curOp;
+    b.className = "act" + (now ? " now" + (phase ? " released" : "") : (o.last < step ? " past" : ""));
+    b.textContent = o.count > 1 ? `${o.name} ×${o.count}` : o.name;
+    box.appendChild(b);
   });
   document.getElementById("slider").value = FRAME;
   // Naming the phase matters: without it both frames of an action read
