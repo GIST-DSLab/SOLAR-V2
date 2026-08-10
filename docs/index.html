@@ -800,7 +800,7 @@ function render(){
     const b = document.createElement("span");
     const now = o.name === curOp;
     b.className = "act" + (now ? " now" + (phase ? " released" : "") : (o.last < step ? " past" : ""));
-    b.textContent = o.count > 1 ? `${o.name} ×${o.count}` : o.name;
+    b.textContent = o.name;
     box.appendChild(b);
   });
   document.getElementById("slider").value = FRAME;
