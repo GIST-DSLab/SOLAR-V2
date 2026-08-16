@@ -181,30 +181,25 @@ rejection alone throws away nearly everything.
 
 ## How a maker is made
 
-```
-  GENERATE   an LLM writes generate() / sample_colors() / derive_operations()
-             for one task, from the RE-ARC generator and verifier plus the
-             task's original ARC pairs
-      │
-      ▼
-  CHECK      simulation   do the ops turn I into O; does the grid revisit a
-                          state; is any op removable with O still reached —
-                          inside the generating conversation, so a rejection is
-                          re-prompted immediately, up to 3 tries
-             samples      pipeline/verify_grid_makers.py — N fresh instances must all
-                          reach the target, not just the ones it was written on
-             critic       pipeline/critique_makers_llm.py — an LLM replays an episode and
-                          judges the route against the solver's concept
-             originals    pipeline/probe_originals.py — the same solution replayed on the
-                          task's own original ARC pairs
-      │
-      ▼
-  REFINE     pipeline/critique_to_feedback.py turns every finding into per-task feedback,
-             and regeneration starts again from GENERATE with it in the prompt
-```
+A maker starts as one LLM generation — `generate()`, `sample_colors()` and
+`derive_operations()` for a single task, written from the RE-ARC generator and
+verifier plus that task's original ARC pairs. It then has to survive **four
+kinds of check**:
 
-The loop ran for several rounds and each task kept its best maker. Nothing here
-was generated in one shot.
+| check | what it asks | where |
+|---|---|---|
+| **simulation** | do the ops turn I into O; does the grid revisit a state; is any op removable with O still reached | inside the generating conversation, so a rejection is re-prompted immediately, up to 3 tries |
+| **samples** | do N *fresh* instances all reach the target, not just the ones it was written on | `pipeline/verify_grid_makers.py` |
+| **critic** | replaying an episode, does the route match the solver's concept | `pipeline/critique_makers_llm.py` |
+| **originals** | does the same solution replay on the task's own original ARC pairs | `pipeline/probe_originals.py` |
+
+**These are four filters, not four stages.** They were added at different points
+and run in different orders and combinations from round to round — the honest
+description is that every maker ended up passing all four, not that it walked a
+fixed 1→2→3→4. Whatever a round found,
+`pipeline/critique_to_feedback.py` turned into per-task feedback and
+regeneration started again with it in the prompt. The loop ran for several rounds
+and each task kept its best maker. Nothing here was generated in one shot.
 
 The feedback that closed the hardest cases carried no diagnosis — just the
 failing original pair, what the trajectory produced instead, and a couple of
