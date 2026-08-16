@@ -87,9 +87,10 @@ either way. The released dataset was rolled out without it.
 
 ```
 .
-├── docs/                             the GitHub Pages viewer; reads the dataset from the Hub
+├── docs/                             the GitHub Pages viewer; carries no data of its own
 │   ├── .nojekyll
 │   ├── arcle_reference_v2.md
+│   ├── hero.png
 │   └── index.html
 ├── figure/                           teaser.png and teaser.gif
 │   ├── teaser.gif
@@ -165,6 +166,8 @@ test output is inferable from the examples).
 | `pipeline/gen_rearc_trajectories_v2.py` | Roll makers out into trajectories | `--subfolder` (`arc-from-rearc-v2`), `--num_samples` (10), `--num_examples` (3), `--max_grid_dim` (`30 30`), `--force_grid_size`, `--data_folder`, `--tasks`, `--v1`, `--only_failures` |
 | `pipeline/export_release.py` | Pack trajectories into parquet shards | `--out`, `--subsets` (`arc_agi1` `arc_1d`), `--shard_rows`, `--verify`, `--maker_version` |
 | `viz/make_teaser.py` / `viz/make_teaser_gif.py` | Render one trajectory as a figure / GIF | `--root`, `--task` (required), `--out`, `--max_steps`, `--ms`, `--hold`, `--dpi` |
+| `viz/build_handcraft_gallery.py` | one page per task with every hand-written variant on adjacent rows | `--root`, `--out`, `--variants` (`expert half`) |
+| `viz/build_hero_bg.py` | the overview page's backdrop, a mosaic of real grids | `--preview`, `--out`, `--width`, `--height`, `--seed` |
 | `viz/viz_trajectories.py` | Streamlit viewer — run with `streamlit run` | — |
 | `pipeline/utils.py` | Recording format and selection helpers (imported, not run) | — |
 
@@ -257,10 +260,13 @@ makers or `pipeline/probe_originals.py`; all are in the tooling around them.
   `--arc_dir`; `pipeline/export_release.py`'s `DATA_ROOT` and per-subset `root` are
   module constants that must be edited.
 
-- **`pipeline/export_release.py` references assets not in this repo** — maker sets
-  `maker/arc-best`, `maker/arc-agi2-solve`, `maker/arc-agi2-construction`, and
-  the script `gen_agi2_llm.py` (quoted in its `rollout` strings). Only the
-  `arc_1d` subset maps onto a maker set present here.
+- **`pipeline/export_release.py` names maker sets that are not in this repo.**
+  Its `arc_agi1` subset points at `maker/arc-best` and its ARC-AGI-2 subsets at
+  `maker/arc-agi2-solve` / `maker/arc-agi2-construction`, none of which ship
+  here; `gen_agi2_llm.py`, quoted in a `rollout` string, does not either. The
+  `arc_1d` and `handcraft` subsets do map onto sets present here. The name is
+  only used as a fallback label, so an export still runs — pass
+  `--subfolder arc-agi-1` when rolling out.
 
 - **No CI.** There is no `.github/` directory; the badges above are static.
 
@@ -268,9 +274,10 @@ makers or `pipeline/probe_originals.py`; all are in the tooling around them.
 
 [**qazyunho.github.io/SOLAR-V2**](https://qazyunho.github.io/SOLAR-V2/) steps
 through the episodes: pick a task, walk the actions, watch the selection move.
-The page is one HTML file with no data of its own — it reads the published
-dataset through the Hub's dataset server, decoding the packed columns in the
-browser the same way the card's Python snippet does.
+The page is one HTML file with no data of its own. The released subsets come
+through the Hub's dataset server, decoded in the browser the same way the card's
+Python snippet does; the family subsets are per-task JSON shards fetched from
+the same dataset repo. Nothing is served from this repository but the page.
 
 ## Data
 

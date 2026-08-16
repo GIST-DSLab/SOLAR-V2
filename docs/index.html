@@ -437,6 +437,11 @@ const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
                  "#F012BE","#FF851B","#7FDBFF","#870C25","#F0F0F0"];
 const DS    = "dbsgh797210/SOLAR";          // the release: arc_agi1, nothing else
 const EXTRA = "dbsgh797210/SOLAR-extras";   // the control subset and the thumbnails
+/* The family subsets are per-task JSON shards, not an HF config — the viewer
+   lazy-loads one shard per task. They used to sit beside this page, which put
+   161 MB of data back into a repository whose whole point was not to carry any.
+   They are files in the same dataset repo now; resolve/ sends CORS headers. */
+const VIEWER = "https://huggingface.co/datasets/dbsgh797210/SOLAR-extras/resolve/main/viewer";
 const API  = "https://datasets-server.huggingface.co";
 const EPISODES_PER_TASK = 10;
 /* Two released subsets, and they share task ids: every handcraft id is also an
@@ -619,12 +624,12 @@ const demoBase = id => id.replace(/-\d+$/, "");
 const demoSample = id => id.replace(/^.*-/, "");
 const demoIndex = () => { const p = sub().path;
   return DEMO_INDEX[p] ? Promise.resolve(DEMO_INDEX[p]) :
-    (DEMO_INDEX_PROMISE[p] ||= fetch(`${p}_index.json`)
+    (DEMO_INDEX_PROMISE[p] ||= fetch(`${VIEWER}/${p}_index.json`)
       .then(r => { if(!r.ok) throw new Error(`${p}_index.json`); return r.json(); })
       .then(j => (DEMO_INDEX[p] = j))); };
 const demoShard = base => { const k = `${sub().path}/${base}`;
   return DEMO_SHARDS[k] ? Promise.resolve(DEMO_SHARDS[k]) :
-    (DEMO_SHARD_PROMISE[k] ||= fetch(`${k}.json`)
+    (DEMO_SHARD_PROMISE[k] ||= fetch(`${VIEWER}/${k}.json`)
       .then(r => { if(!r.ok) throw new Error(`${k}.json`); return r.json(); })
       .then(j => (DEMO_SHARDS[k] = j))); };
 const shardOf = base => DEMO_SHARDS[`${sub().path}/${base}`];   // sync cache peek

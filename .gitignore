@@ -3,10 +3,11 @@ __pycache__/
 .pytest_cache/
 *.json
 !maker/**/*.json
-!docs/demo_data.json
 figure/*.png
 !figure/teaser.png
-!docs/demo_index.json
-!docs/demo/*.json
-!docs/arc-agi2_index.json
-!docs/arc-agi2/*.json
+# Local maker experiments — the published sets are arc-agi-1, arc-1d, handcraft
+maker/arc-best
+maker/arc-agi1-noref-*
+maker/arc-agi1-withverif
+__pycache__/
+*.pyc
