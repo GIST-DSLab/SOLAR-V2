@@ -56,7 +56,7 @@ LOG_DIR = SOLAR_ROOT / "critique_logs"
 
 # ── args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
-parser.add_argument("--subfolder",    type=str, default="arc-from-rearc-v6")
+parser.add_argument("--subfolder",    type=str, default="arc-agi-1")
 parser.add_argument("--tasks",        nargs="+", default=None)
 parser.add_argument("--num_samples",  type=int, default=1,
                     help="Episodes per task shown to the critic (default 1 — each costs an LLM call)")

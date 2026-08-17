@@ -50,7 +50,7 @@ parser.add_argument("--force_grid_size", action="store_true", default=False,
                          "from a gen_rearc_makers.py that supports max_grid_dim.")
 parser.add_argument("--data_folder",   type=str,
                     default=str(SOLAR_ROOT.parent / "ARC_Single_llm_v2_obj"))
-parser.add_argument("--subfolder",     type=str, default="arc-from-rearc-v2")
+parser.add_argument("--subfolder",     type=str, default="arc-agi-1")
 parser.add_argument("--skip_on_error", action="store_true", default=True)
 parser.add_argument("--v1", action="store_true", default=False,
                     help="Output v1-compatible format (no object_states fields).")

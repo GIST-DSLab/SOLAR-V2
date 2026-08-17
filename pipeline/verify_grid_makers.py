@@ -29,7 +29,7 @@ import utils as solar_utils
 
 # ── args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
-parser.add_argument("--subfolder",   type=str, default="arc-from-rearc-v6")
+parser.add_argument("--subfolder",   type=str, default="arc-agi-1")
 parser.add_argument("--num_samples", type=int, default=5,
                     help="Episodes per task")
 parser.add_argument("--num_examples",type=int, default=3)
@@ -51,6 +51,23 @@ np.random.seed(args.rand_seed)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+def _paint(grid, sel, colour):
+    """Apply a Color op to `grid` in place, for either selection form.
+
+    A maker may return a bbox `[r, c, h, w]` (h/w are offsets, so the region is
+    h+1 by w+1) or the cell-list form `{"cells": [[r, c], ...]}` that
+    `maker/sel_helpers.py` produces for non-rectangular objects. Only the bbox
+    form used to be handled, which aborted the whole task with an unpacking
+    error on any maker that selects by cell.
+    """
+    if isinstance(sel, dict) and "cells" in sel:
+        for r, c in sel["cells"]:
+            grid[r, c] = colour
+        return
+    r, c, h, w = sel
+    grid[r:r + h + 1, c:c + w + 1] = colour
+
 
 def run_ops(env, obs, ops, sels):
     """Execute ops/sels from initial obs. Returns final grid or None on error."""
@@ -200,8 +217,7 @@ def run_task(tid, maker_path):
                     for op2, sel2 in zip(ex_ops[:-1], ex_sels[:-1]):
                         if op2 > 9:
                             continue
-                        r2, c2, sh2, sw2 = sel2
-                        grid[r2:r2+sh2+1, c2:c2+sw2+1] = op2
+                        _paint(grid, sel2, op2)
                     result2 = grid[:g_h2, :g_w2]
                     if not np.array_equal(result2, eo_arr):
                         b_pass = False

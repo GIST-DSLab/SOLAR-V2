@@ -36,8 +36,8 @@ import numpy as np
 SOLAR_ROOT    = Path(__file__).resolve().parents[1]
 REARC_ROOT    = SOLAR_ROOT / "re-arc"
 LOG_DIR       = SOLAR_ROOT / "conv_logs"
-_ARCLE_REF_TEMPLATE    = (SOLAR_ROOT / "arcle_reference.md").read_text(encoding="utf-8")
-_ARCLE_REF_TEMPLATE_V2 = (SOLAR_ROOT / "arcle_reference_v2.md").read_text(encoding="utf-8")
+_ARCLE_REF_PATH = SOLAR_ROOT / "docs" / "arcle_reference.md"
+_ARCLE_REF_TEMPLATE = _ARCLE_REF_PATH.read_text(encoding="utf-8")
 
 LOG_DIR.mkdir(exist_ok=True)
 
@@ -61,24 +61,22 @@ parser.add_argument("--parallel",     type=int, default=4,
 parser.add_argument("--save_log",     action="store_true",
                     help="Save full conversation JSON to SOLAR-Generator/conv_logs/<task_id>.json")
 parser.add_argument("--rand_seed",    type=int, default=42)
-parser.add_argument("--prompt_version", type=str, default="v1", choices=["v1", "v2", "v3"],
-                    help="Prompt version: v1=original, v2=fixed (correct op semantics), v3=v2+targeted patterns")
 parser.add_argument(
     "--trajectory_mode", choices=["efficient", "dsl_faithful"], default="efficient",
-    help=("v3 trajectory objective: efficient=correct/minimal ARCLE actions (default); "
+    help=("Trajectory objective: efficient=correct/minimal ARCLE actions (default); "
           "dsl_faithful=also preserve solver-level Move/Rotate/Flip families"),
 )
 parser.add_argument(
     "--include_verifier", action=argparse.BooleanOptionalAction, default=True,
-    help="Include the declarative verifier in the v3 user prompt (default: true)",
+    help="Include the declarative verifier in the user prompt (default: true)",
 )
 parser.add_argument(
     "--include_solver", action=argparse.BooleanOptionalAction, default=False,
-    help="Include the procedural re-arc-llm solver in the v3 user prompt (default: false)",
+    help="Include the procedural re-arc-llm solver in the user prompt (default: false)",
 )
 parser.add_argument(
     "--include_object_hints", action=argparse.BooleanOptionalAction, default=False,
-    help="Include task-id-derived object-op hints in the v3 prompt (default: false)",
+    help="Include task-id-derived object-op hints in the prompt (default: false)",
 )
 parser.add_argument(
     "--builtin_feedback", action=argparse.BooleanOptionalAction, default=False,
@@ -88,7 +86,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--rule_first", action=argparse.BooleanOptionalAction, default=False,
-    help="v3 only: make the model state the rule in plain English before the code "
+    help="Make the model state the rule in plain English before the code "
          "block (default: false). Unlike --include_solver this needs no per-task "
          "reference and so extends to unseen tasks.",
 )
@@ -140,7 +138,6 @@ np.random.seed(args.rand_seed)
 MAX_H, MAX_W = args.max_grid_dim
 MIN_H, MIN_W = args.min_grid_dim
 ARCLE_REF = _ARCLE_REF_TEMPLATE.replace("{MAX_H}", str(MAX_H)).replace("{MAX_W}", str(MAX_W))
-ARCLE_REF_V2 = _ARCLE_REF_TEMPLATE_V2.replace("{MAX_H}", str(MAX_H)).replace("{MAX_W}", str(MAX_W))
 OUTPUT_DIR = SOLAR_ROOT / "maker" / args.output_subdir
 CLAUDE_SESSION_LIMIT_REACHED = threading.Event()
 
@@ -290,323 +287,13 @@ def _format_examples(pairs: list[tuple]) -> str:
 
 # ── Prompt builders ────────────────────────────────────────────────────────────
 
+# ── The prompt ────────────────────────────────────────────────────────────────
+# This is the prompt the 400 published makers were written with. Earlier drafts
+# are not kept here. It states each rule (bgc repair, recolor-vs-move, Copy
+# source choice, structural patterns, the padded-repaint and in-place-op-sweep
+# waste patterns) at the point in the prompt where it is actually decided,
+# rather than appending them as a trailing "additional patterns" section.
 SYSTEM_PROMPT = f"""\
-You are an expert at writing ARC (Abstraction and Reasoning Corpus) grid transformers \
-using the ARCLE reinforcement-learning environment.
-
-You will receive a RE-ARC task: its generator source code plus concrete input→output examples.
-
-Your output: exactly THREE Python functions in a single ```python``` block:
-
----
-
-### 1. sample_colors() -> dict
-Returns a dict of color-role kwargs used by generate().
-Sample colors randomly here (using random.choice / random.sample).
-The same dict will be passed to ALL instances in one episode so colors stay consistent.
-
-Rules:
-- Include EVERY color variable that the original generator samples randomly (bgc, fgc, col1, col2, etc.)
-- At minimum, background color must be fixed if the task has one
-- If a color is hardcoded (not randomly sampled), do NOT include it — only include random ones
-- When in doubt, include more color roles rather than fewer
-- Exception: if the task rule depends only on the *presence/pattern* of objects (not their specific color),
-  foreground colors do NOT need to be fixed — only bgc. For example, a task that finds colored patterns
-  against a background only needs bgc fixed; fgc can freely vary across instances in the same episode.
-
-```python
-def sample_colors() -> dict:
-    # example — adjust roles to match this task's color variables
-    cols = list(range(1, 10))  # exclude 0=black if task uses it as background
-    bgc = random.choice(cols)
-    fgc = random.choice([c for c in cols if c != bgc])
-    return {{"bgc": bgc, "fgc": fgc}}
-```
-
-### 2. generate(diff_lb, diff_ub, max_h, max_w, **color_kwargs) -> dict
-A modified version of the RE-ARC generator that:
-- Replaces hardcoded `30` upper bounds for h/w with `max_h`/`max_w`
-- Uses color_kwargs instead of sampling colors internally
-- Returns {{"input": grid, "output": grid}} (same format as original)
-
-```python
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc) -> dict:
-    h = unifint(diff_lb, diff_ub, (2, max_h))
-    w = unifint(diff_lb, diff_ub, (2, max_w))
-    ...
-    return {{"input": gi, "output": go}}
-```
-
-### 3. derive_operations(I, O) -> tuple[list[int], list[list[int]]]
-Returns (ops, sels) — the ARCLE operation sequence transforming I into O.
-- Last op MUST be Submit = 34
-- len(ops) == len(sels)
-- Each selection is [r, c, h, w]
-- Must work for ANY valid (I, O) pair this task can produce
-
-**Complete ARCLE op table (O2ARCv2Env-v0):**
-```
- 0–9  : Color0–Color9      — paint selected region with color N
-10–19 : FloodFill0–9       — flood-fill from seed cell with color N  (op = 10 + color)
-20    : MoveU              — move selected object up 1 cell
-21    : MoveD              — move selected object down 1 cell
-22    : MoveR              — move selected object right 1 cell
-23    : MoveL              — move selected object left 1 cell
-24    : Rotate90           — rotate selected region 90° CW
-25    : Rotate270          — rotate selected region 270° CW (= 90° CCW)
-26    : FlipH              — flip selected region horizontally (top↔bottom)
-27    : FlipV              — flip selected region vertically (left↔right)
-28    : CopyI              — copy selection to clipboard I  (rarely needed)
-29    : CopyO              — copy selection to clipboard O  (rarely needed)
-30    : Paste              — paste clipboard (rarely needed)
-31    : CopyInput          — reset current grid to input    (rarely needed)
-32    : ResetGrid          — clear entire grid              (rarely needed)
-33    : ResizeGrid/CropGrid                                 (rarely needed)
-34    : Submit             — submit current grid as answer  (ALWAYS last op)
-35    : None               — no-op
-```
-ONLY use ops 0–27 and 34. Never use 28–33 or 35.
-
-**Op selection priority — choose the highest-level op that fits:**
-
-1. **Move** (MoveU=20/MoveD=21/MoveR=22/MoveL=23): object translates to a new position.
-   Select the object bbox, update selection after each 1-cell step.
-2. **Rotate** (Rotate90=24 / Rotate270=25): object rotates. Select bbox.
-3. **Flip** (FlipH=26 / FlipV=27): object mirrors. Select bbox.
-4. **FloodFill** (FloodFill0–9 = ops 10–19): connected region changes color.
-   op = 10 + target_color.  Select the SEED CELL [r, c, 0, 0] — ONE cell inside the region.
-   Use FloodFill (not cell-by-cell Color) whenever the target is a contiguous blob,
-   the interior of a closed shape, or any connected same-color area.
-   DSL equivalents: `fill(grid, color, region)`, `fill_background(grid, color, region)`.
-5. **Color** (0–9): use ONLY for isolated cells, sparse non-connected pixels, or when
-   no higher-level op applies.
-
-**When using Color ops — paint by object/region, NOT by raster order:**
-- ❌ Wrong: scan top-left → bottom-right, paint every cell row by row.
-- ✓ Right: find a semantically meaningful reference point (object top-left, adjacent
-  to a landmark, center of a region), then paint cells of the same target color together.
-- Group all cells of the same new color and paint them as a contiguous block or
-  in an order that reflects the spatial structure (e.g., paint each object/patch as a unit).
-
----
-
-ARCLE Reference:
-{ARCLE_REF}
-
-Output ONLY the three functions in a single ```python``` block. No prose.
-"""
-
-# ── V2 prompt ─────────────────────────────────────────────────────────────────
-
-DSL_ARCLE_MAP_V2 = """\
-## RE-ARC DSL → ARCLE op mapping (v2 — corrected)
-
-numpy is the ground truth. Every DSL transform maps to a numpy op first, then to ARCLE.
-
-| DSL call       | numpy equivalent      | ARCLE op | Notes                                          |
-|----------------|-----------------------|----------|------------------------------------------------|
-| rot90(grid)    | np.rot90(I, k=3) CW  | **25**   | Non-square: ResizeGrid→sq, rotate sq, CropGrid  |
-| rot180(grid)   | np.rot90(I, k=2)     | 26 + 27  | FlipH then FlipV — safe for ANY shape           |
-| rot270(grid)   | np.rot90(I, k=1) CCW | **24**   | Non-square: ResizeGrid→sq, rotate sq, CropGrid  |
-| vmirror(piece) | np.fliplr(I)         | **26**   | FlipH = left↔right — safe for any shape        |
-| hmirror(piece) | np.flipud(I)         | **27**   | FlipV = up↔down — safe for any shape           |
-| dmirror/cmirror| (no numpy shortcut)  | Color ops| No direct ARCLE op — repaint cells individually|
-| shift/move     | —                    | 20–23    | MoveU/D/R/L — 1 cell per op, update sel each  |
-| fill(grid,v,r) | —                    | 10+v     | FloodFill — seed = 1 cell inside region        |
-
-⚠️  Common mistakes to AVOID:
-- rot90→24 is WRONG. rot90 (CW) = op 25 (Rotate270).
-- rot270→25 is WRONG. rot270 (CCW) = op 24 (Rotate90).
-- hmirror→26 is WRONG. hmirror (flipud) = op 27 (FlipV).
-- vmirror→27 is WRONG. vmirror (fliplr) = op 26 (FlipH).
-- Rotate on non-square: op24/op25 produce WRONG positions when h≠w. Fix: ResizeGrid to a
-  square canvas, rotate the square, CropGrid to the output shape (see the table row above —
-  NOT a Color-by-cell fallback, which is the pixel-by-pixel anti-pattern).
-
-Priority: Move/Rotate/Flip > FloodFill > Color.
-"""
-
-SYSTEM_PROMPT_V2 = f"""\
-You are an expert at writing ARC (Abstraction and Reasoning Corpus) grid transformers \
-using the ARCLE reinforcement-learning environment.
-
-You will receive a RE-ARC task: its generator source code plus concrete input→output examples.
-
-Your output: exactly THREE Python functions in a single ```python``` block:
-
----
-
-### 1. sample_colors() -> dict
-Returns a dict of color-role kwargs used by generate().
-Sample colors randomly here (using random.choice / random.sample).
-The same dict will be passed to ALL instances in one episode so colors stay consistent.
-
-Rules:
-- Include EVERY color variable that the original generator samples randomly (bgc, fgc, col1, col2, etc.)
-- At minimum, background color must be fixed if the task has one
-- If a color is hardcoded (not randomly sampled), do NOT include it
-- Exception: if the task rule depends only on the *presence/pattern* of objects (not their color),
-  foreground colors do NOT need to be fixed — only bgc.
-
-```python
-def sample_colors() -> dict:
-    cols = list(range(10))
-    bgc = random.choice(cols)
-    fgc = random.choice([c for c in cols if c != bgc])
-    return {{"bgc": bgc, "fgc": fgc}}
-```
-
-### 2. generate(diff_lb, diff_ub, max_h, max_w, **color_kwargs) -> dict
-A modified version of the RE-ARC generator that:
-- Replaces hardcoded `30` upper bounds for h/w with `max_h`/`max_w`
-- Uses color_kwargs instead of sampling colors internally
-- Returns {{"input": grid, "output": grid}}
-
-**Classification tasks** (task maps input to one of N fixed categories):
-Add a `col=None` parameter (or similar) so parse() can pre-assign which category each
-instance uses. Default `None` = random (for backward compat):
-```python
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc, col=None) -> dict:
-    mapping = [(label_A, shape_A), (label_B, shape_B), ...]
-    if col is None:
-        col, obj = choice(mapping)
-    else:
-        obj = next(o for c, o in mapping if c == col)
-    ...
-```
-
-In GridMaker.parse() pre-assign categories so TEST always shows a category seen in examples:
-```python
-cats = [cat_A, cat_B, cat_C, cat_D]
-random.shuffle(cats)
-ex_cats = cats[:num_examples]
-test_cat = random.choice(ex_cats)   # test = one of the example categories
-assigned = ex_cats + [test_cat]
-# then: generate(..., col=assigned[j]) for instance j
-```
-
-### 3. derive_operations(I, O) -> tuple[list[int], list[list[int]]]
-Returns (ops, sels) — the ARCLE operation sequence transforming I into O.
-- Last op MUST be Submit = 34
-- len(ops) == len(sels)
-- Each selection is [r, c, h, w]
-- Must work for ANY valid (I, O) pair this task can produce
-
-**Complete ARCLE op table (O2ARCv2Env-v0):**
-```
- 0–9  : Color0–Color9      — paint selected region with color N
-10–19 : FloodFill0–9       — flood-fill from seed cell (op = 10 + color)
-20    : MoveU              — move selected object up 1 cell
-21    : MoveD              — move selected object down 1 cell
-22    : MoveR              — move selected object right 1 cell
-23    : MoveL              — move selected object left 1 cell
-24    : Rotate90           — rotate 90° CCW = np.rot90(k=1)  ⚠️ SQUARE ONLY
-25    : Rotate270          — rotate 90° CW  = np.rot90(k=3)  ⚠️ SQUARE ONLY
-26    : FlipH              — flip left↔right = np.fliplr = vmirror
-27    : FlipV              — flip up↔down   = np.flipud = hmirror
-28    : CopyI              — copy input region to clipboard
-29    : CopyO              — copy grid region to clipboard
-30    : Paste              — paste clipboard at selection origin (transparent: zeros not written)
-31    : CopyInput          — reset grid to input (only needed mid-sequence; NOT at episode start)
-32    : ResetGrid          — ⛔ DO NOT USE — clears grid; forces blind repaint of O from scratch
-33    : ResizeGrid/CropGrid— resize canvas (transparent copy of current grid)
-34    : Submit             — submit answer (ALWAYS last op)
-```
-
-⚠️ **Op semantics — memorize these, they are NOT intuitive:**
-- op24 (Rotate**90**) = **CCW** (counter-clockwise) — NOT clockwise
-- op25 (Rotate**270**) = **CW** (clockwise, 90°) — NOT 270° counter-clockwise
-- op26 (Flip**H**) = **left↔right** (fliplr, vmirror) — NOT top↔bottom
-- op27 (Flip**V**) = **up↔down** (flipud, hmirror) — NOT left↔right
-
-⚠️ **Rotate on non-square inputs:**
-op24/op25 compute wrong object position when the SELECTED REGION is non-square (h ≠ w).
-Fix: use ResizeGrid (op33) to pad the canvas to a square, rotate the square region,
-then CropGrid (op33) to extract the correctly-sized output.
-- If the generator explicitly sets `w = h`: inputs are square → rotate directly.
-- If h and w are sampled independently: assume non-square possible → resize+rotate+crop.
-See the ARCLE Reference for the exact crop coordinates after rotation.
-
-**Op selection priority — choose the highest-level op that fits:**
-
-1. **Move** (20–23): object translates — i.e. the SAME content visibly reappears at a
-   DIFFERENT position in O. Select bbox, update after each step.
-   ⚠️ Move is NOT for erasing/removing an object (it disappears in O, period — that's
-   Color/FloodFill to bgc, not a Move) and NOT a way to compute a bounding box or offset
-   for your own bookkeeping. If the object doesn't reappear elsewhere in O, don't reach
-   for Move at all — pick the next-lower op that actually matches what happens.
-2. **Rotate** (24/25): square objects only. op25=CW(rot90), op24=CCW(rot270).
-3. **Flip** (26/27): any shape. op26=fliplr(vmirror), op27=flipud(hmirror). rot180 = op26+op27.
-4. **FloodFill** (10–19): connected same-color region recolor. Select 1 seed cell [r,c,0,0].
-5. **Color** (0–9): isolated cells or sparse non-connected pixels.
-
-**⛔ Forbidden and wasteful patterns — do NOT do these:**
-- **ResetGrid (op32)**: clearing the grid and repainting O from scratch is NOT a valid
-  transformation. It means you don't understand I→O. Always derive ops that directly
-  transform I into O using geometric ops, recolor ops, or targeted paints.
-- **CopyInput (op31) as first op**: grid starts as input already — op31 at position 0 is a no-op waste.
-- **Redundant op cycles**: any sub-sequence that returns the grid to a state it was already in
-  is forbidden. Examples:
-  - MoveD×3 then MoveU×3 → net zero, wastes 6 steps
-  - Rotate CW then Rotate CCW → identity, wastes 2 steps
-  - CopyInput mid-sequence after non-trivial ops → undoes all prior work
-  Every op must make net, irreversible progress toward O.
-- **Copying O pixel-by-pixel**: do not iterate over O cells and paint each one individually
-  without using geometric structure. Identify WHAT transformation I undergoes and implement it.
-- **An op used only for its side effect on your Python bookkeeping**: every op's GRID EFFECT
-  must be part of the actual I→O transformation. Never emit a Move/Rotate/Flip/Resize call
-  just to help *your derive_operations code* compute a bounding box, offset, or padding amount —
-  do that arithmetic directly in Python, no ARCLE call needed. Self-check: if you deleted this
-  op, would the final submitted grid change? If not, delete it.
-- **Padding a repaint region wider than the actual diff**: when erasing/repainting an area
-  (e.g. a margin around a moved or erased object), do NOT blindly paint every cell in a
-  rounded-up rectangle "to be safe." Check each candidate cell against its CURRENT value first —
-  only emit a Color/FloodFill op where the cell does not already hold the colour you are about
-  to paint. Painting already-that-colour cells "just in case" is a wasted op per cell, and it
-  compounds fast on padded bounding boxes. Judge against the grid as it stands NOW, never
-  against the finished output: dropping cells because a later op will cover them turns the
-  selection itself into a copy of the answer.
-
-**When using Color ops — paint by object/region, NOT by raster order:**
-- Group all cells of the same new color and paint as a contiguous block.
-- Reference from semantic landmarks (object top-left, adjacent to boundary) not row-by-row.
-
----
-
-**Episode learnability check — required before writing parse():**
-
-Ask yourself: "Given ONLY my N examples, could a solver always determine the correct output for ANY new test instance this task produces?"
-
-If the answer is NO for any plausible test instance, your parse() must fix it:
-
-- **Classification tasks**: every output class that can appear in test MUST appear in ≥1 example.
-  Use pre-assignment: shuffle all classes, assign examples first, then `test_cat = random.choice(ex_cats)`.
-  This is mandatory — do NOT rely on random.choice() to accidentally cover all classes.
-
-- **Color-dependent rules**: if the transformation depends on a specific color role (not just bgc),
-  fix that role in sample_colors(). A test instance with a new unseen color combo breaks learnability.
-
-- **Structural variants**: if the task has N distinct object shapes / pattern types / structural modes,
-  and the rule differs per variant, ensure all variants that could appear in test appear in examples.
-
-If all variants are always distinguishable from the I→O pattern shown in examples, no extra steps needed.
-Only act when a test instance could be ambiguous or unseen relative to examples.
-
----
-
-ARCLE Reference (v2):
-{ARCLE_REF_V2}
-
-Output ONLY the three functions in a single ```python``` block. No prose.
-"""
-
-# ── V3 prompt (written fresh, not V2 + appended patches) ───────────────────────
-# V2 stays above untouched for --prompt_version v2. V3 folds in everything V2's
-# patches taught us (bgc repair, recolor-vs-move, Copy source choice, structural
-# patterns, the padded-repaint/in-place-op-sweep waste patterns) at the point in
-# the prompt where it's actually decided, instead of appending it all as a
-# separate "additional patterns" section repeating half of V2.
-SYSTEM_PROMPT_V3 = f"""\
 You are an expert at writing ARC (Abstraction and Reasoning Corpus) grid transformers \
 using the ARCLE reinforcement-learning environment.
 
@@ -982,13 +669,13 @@ Only act when a test instance could plausibly be ambiguous or unseen relative to
 
 ---
 
-ARCLE Reference (v2):
-{ARCLE_REF_V2}
+ARCLE Reference:
+{ARCLE_REF}
 
 Output ONLY the three functions in a single ```python``` block. No prose.
 """
 
-# v3 ends by telling the model to emit code and nothing else, and it obeys: 238 of 240
+# The prompt ends by telling the model to emit code and nothing else, and it obeys: 238 of 240
 # v7 responses had zero characters before the code fence, so the concept was never
 # stated anywhere — not by the model, and (with the solver hidden) not by the prompt.
 # The 5 hand-written built_in_feedback entries worked precisely because they filled
@@ -996,10 +683,10 @@ Output ONLY the three functions in a single ```python``` block. No prose.
 # which exists only for these 400 tasks — also works on a task we have never seen.
 # _extract_code() reads the first ```python block, so a "RULE:" preamble is safe.
 # Swapped in for the no-prose line when --rule_first is set (see process_task).
-_V3_NO_PROSE_LINE = (
+_NO_PROSE_LINE = (
     "Output ONLY the three functions in a single ```python``` block. No prose."
 )
-_V3_RULE_FIRST_CONTRACT = """\
+_RULE_FIRST_CONTRACT = """\
 Your output has TWO parts, in this order.
 
 PART 1 — "RULE:" then 3-8 plain-English sentences stating what this transformation
@@ -1013,66 +700,8 @@ the rule you just stated. Where the code and the rule disagree, the rule is what
 meant: fix the code, not the rule."""
 
 
-def _user_prompt_v2(task_id: str, src: str, pairs: list[tuple]) -> str:
-    n_show = min(args.num_examples, len(pairs))
-    verifier_block = ""
-    if task_id in verify_bodies:
-        verifier_block = (
-            f"RE-ARC verifier (ground truth I→O rule):\n"
-            f"```python\n{verify_bodies[task_id]}\n```\n\n"
-        )
-
-    solver_block = ""
-    if task_id in solver_bodies:
-        solver_block = (
-            f"re-arc-llm solver (high-level DSL — shows WHAT to do, translate to ARCLE ops):\n"
-            f"Do NOT import or call DSL functions. Translate each DSL op using the mapping table.\n"
-            f"```python\n{solver_bodies[task_id]}\n```\n\n"
-        )
-
-    object_hint = ""
-    if task_id in object_level_tasks:
-        mandatory = []
-        if task_id in shift_move_tasks:
-            mandatory.append(
-                "• TRANSLATION: use MoveU=20/MoveD=21/MoveR=22/MoveL=23 (1 cell per op).\n"
-                "  Select bbox at CURRENT position before each step."
-            )
-        if task_id in rotate_tasks:
-            mandatory.append(
-                "• ROTATION: check generator — is w = h forced?\n"
-                "  Square inputs: rot90(CW)=op25, rot270(CCW)=op24, rot180=op26+op27.\n"
-                "  Non-square/uncertain: ResizeGrid to sq=max(h,w), rotate sq×sq, CropGrid to output.\n"
-                "  Exact crop offset: CW→(0, sq-h), CCW→(sq-w, 0). See ARCLE Reference."
-            )
-        if task_id in flip_tasks:
-            mandatory.append(
-                "• FLIP: vmirror(fliplr)=op26(FlipH), hmirror(flipud)=op27(FlipV).\n"
-                "  dmirror/cmirror: no ARCLE op — use Color fallback."
-            )
-        object_hint = (
-            f"\n⚠️  MANDATORY for derive_operations — object-level ops required:\n"
-            + "\n".join(mandatory) + "\n\n"
-            + DSL_ARCLE_MAP_V2 + "\n"
-        )
-    else:
-        object_hint = f"\n{DSL_ARCLE_MAP_V2}\n"
-
-    return (
-        f"Task ID: {task_id}\n\n"
-        f"{verifier_block}"
-        f"Original RE-ARC generator:\n"
-        f"```python\n{src}\n```\n\n"
-        f"Concrete I/O examples:\n"
-        f"{_format_examples(pairs[:n_show])}\n"
-        f"{object_hint}"
-        f"{solver_block}"
-        f"Write the three functions: sample_colors(), generate(), derive_operations()."
-    )
-
-
-def _user_prompt_v3(task_id: str, src: str, pairs: list[tuple]) -> str:
-    """Build the v3 prompt without treating declarative DSL calls as an ARCLE trace."""
+def _user_prompt(task_id: str, src: str, pairs: list[tuple]) -> str:
+    """Build the user prompt without treating declarative DSL calls as an ARCLE trace."""
     n_show = min(args.num_examples, len(pairs))
 
     verifier_block = ""
@@ -1090,8 +719,8 @@ def _user_prompt_v3(task_id: str, src: str, pairs: list[tuple]) -> str:
     solver_block = ""
     if include_solver and task_id in solver_bodies:
         # The solver says WHAT the rule is; it is never a template for HOW.
-        # v1/v2 said "translate each DSL op to an ARCLE op", which instructed the
-        # mimicry we now forbid. v3 answered by hiding the solver, which left
+        # Earlier drafts said "translate each DSL op to an ARCLE op", which
+        # instructed the mimicry we now forbid. Hiding the solver answered that, but left
         # "derive from the visible I→O transformation" as the only remaining
         # instruction — and with no concept to derive from, that collapses into
         # painting the diff. Both failures inscribe information the policy will
@@ -1220,73 +849,6 @@ def _user_prompt_v3(task_id: str, src: str, pairs: list[tuple]) -> str:
         "Write the three functions: sample_colors(), generate(), derive_operations()."
     )
 
-
-def _user_prompt(task_id: str, src: str, pairs: list[tuple]) -> str:
-    n_show = min(args.num_examples, len(pairs))
-    verifier_block = ""
-    if task_id in verify_bodies:
-        verifier_block = (
-            f"RE-ARC verifier (direct I→O transformation rule — ground truth):\n"
-            f"```python\n{verify_bodies[task_id]}\n```\n\n"
-        )
-
-    # Always include solver block if available
-    solver_block = ""
-    if task_id in solver_bodies:
-        solver_block = (
-            f"re-arc-llm solver — READ-ONLY. Shows the exact transformation purpose in high-level DSL.\n"
-            f"Your derive_operations MUST implement the same logic: parse the solver to understand WHAT\n"
-            f"the transformation does, then implement it in Python/numpy (ARCLE has no DSL primitives —\n"
-            f"compute object detection, argmax, filtering etc. manually using numpy/BFS/iteration).\n"
-            f"Translate each DSL op to ARCLE ops per the mapping table. Fall back to Color only when\n"
-            f"there is NO matching ARCLE op for a DSL call.\n"
-            f"Do NOT import or call any re_arc / DSL functions.\n"
-            f"```python\n{solver_bodies[task_id]}\n```\n\n"
-        )
-
-    object_hint = ""
-    if task_id in object_level_tasks:
-        # Per-category mandatory instructions
-        mandatory = []
-        if task_id in shift_move_tasks:
-            mandatory.append(
-                "• TRANSLATION (shift/move): use MoveU=20/MoveD=21/MoveR=22/MoveL=23 — one cell per op.\n"
-                "  Steps: find bbox in I → compute (dr,dc) → loop: append op, select [r,c,h-1,w-1], update r/c.\n"
-                "  See 'Move object' pattern in the ARCLE Reference."
-            )
-        if task_id in rotate_tasks:
-            mandatory.append(
-                "• ROTATION (rot90/rot180/rot270): use Rotate90=24 / Rotate270=25 on the object bbox.\n"
-                "  rot180 = two Rotate90 ops."
-            )
-        if task_id in flip_tasks:
-            mandatory.append(
-                "• FLIP (hmirror/vmirror): use FlipH=26 (top↔bottom) / FlipV=27 (left↔right) on the object bbox.\n"
-                "  dmirror/cmirror have no direct ARCLE op — use Color ops as fallback."
-            )
-
-        object_hint = (
-            f"\n⚠️  MANDATORY for derive_operations — object-level ops required:\n"
-            + "\n".join(mandatory) + "\n\n"
-            + DSL_ARCLE_MAP + "\n"
-        )
-    else:
-        # Non-object-level tasks still get the DSL→ARCLE map for reference
-        object_hint = f"\n{DSL_ARCLE_MAP}\n"
-
-    return (
-        f"Task ID: {task_id}\n\n"
-        f"{verifier_block}"
-        f"Original RE-ARC generator (read to understand structure, then rewrite as generate()):\n"
-        f"```python\n{src}\n```\n\n"
-        f"Concrete I/O examples (generated with default diff range):\n"
-        f"{_format_examples(pairs[:n_show])}\n"
-        f"{object_hint}"
-        f"{solver_block}"
-        f"Now write the three functions: sample_colors(), generate(), derive_operations()."
-    )
-
-# ── claude -p subprocess call ──────────────────────────────────────────────────
 
 def call_claude(system: str, user: str, timeout: int = 2700,
                 log_path: str | None = None) -> str | None:
@@ -1525,8 +1087,8 @@ def _validate(
             return False, f"missing required ops: {', '.join(missing)}"
 
     # Test sample_colors + generate, including the generic per-instance plan.
-    # category_plan remains supported for v1/v2 and already-generated responses;
-    # v3 should use instance_plan (a list of kwargs dicts).
+    # category_plan remains supported for already-generated responses;
+    # new makers should use instance_plan (a list of kwargs dicts).
     try:
         import inspect as _inspect
         n_ex = args.num_examples
@@ -1696,26 +1258,25 @@ def _validate(
             # Copy/Paste can legitimately revisit the same grid while changing or
             # consuming hidden clipboard state, so intervals containing clipboard
             # ops are excluded from this conservative cycle test.
-            if args.prompt_version == "v3":
-                _first_state_at = {_states[0]: -1}
-                for _k, _state in enumerate(_states[1:-1]):  # exclude Submit's state
-                    _prev = _first_state_at.get(_state)
-                    if _prev is not None:
-                        _interval_ops = ops[_prev + 1:_k + 1]
-                        if not any(int(o) in (28, 29, 30) for o in _interval_ops):
-                            return False, (
-                                f"example {i+1}: redundant cycle/no-op through op index {_k}; "
-                                f"the visible grid already had this state after index {_prev}"
-                            )
-                    # Advance the baseline after a legitimate clipboard-only state so
-                    # a following ordinary no-op is still detected.
-                    _first_state_at[_state] = _k
+            _first_state_at = {_states[0]: -1}
+            for _k, _state in enumerate(_states[1:-1]):  # exclude Submit's state
+                _prev = _first_state_at.get(_state)
+                if _prev is not None:
+                    _interval_ops = ops[_prev + 1:_k + 1]
+                    if not any(int(o) in (28, 29, 30) for o in _interval_ops):
+                        return False, (
+                            f"example {i+1}: redundant cycle/no-op through op index {_k}; "
+                            f"the visible grid already had this state after index {_prev}"
+                        )
+                # Advance the baseline after a legitimate clipboard-only state so
+                # a following ordinary no-op is still detected.
+                _first_state_at[_state] = _k
 
-            # Implement v3's "could I delete this op?" self-check in validation.
+            # Implement the prompt's "could I delete this op?" self-check in validation.
             # Exhaustively test ordinary trajectories. For very long pixel-heavy
             # traces, test every structural/destructive op; immediate no-op Color
             # actions are already caught by the repeated-state check above.
-            if args.prompt_version == "v3" and i == 0:
+            if i == 0:
                 _body_len = max(0, len(ops) - 1)  # never delete Submit
                 if _body_len <= 80:
                     _delete_candidates = range(_body_len)
@@ -1825,7 +1386,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
@@ -1929,26 +1490,17 @@ def process_task(tid: str) -> str:
         return f"FAIL {tid}: no I/O pairs"
 
     src  = func_bodies[tid]
-    if args.prompt_version == "v3":
-        system_prompt = SYSTEM_PROMPT_V3
-        if args.rule_first:
-            # Replace the closing "emit code, no prose" line with the two-part
-            # RULE-then-code contract. Anchored on the exact line so a prompt edit
-            # that drops it fails loudly here instead of silently no-op'ing.
-            if _V3_NO_PROSE_LINE not in system_prompt:
-                raise RuntimeError(
-                    "--rule_first: expected no-prose line not found in SYSTEM_PROMPT_V3"
-                )
-            system_prompt = system_prompt.replace(
-                _V3_NO_PROSE_LINE, _V3_RULE_FIRST_CONTRACT
+    system_prompt = SYSTEM_PROMPT
+    if args.rule_first:
+        # Replace the closing "emit code, no prose" line with the two-part
+        # RULE-then-code contract. Anchored on the exact line so a prompt edit
+        # that drops it fails loudly here instead of silently no-op'ing.
+        if _NO_PROSE_LINE not in system_prompt:
+            raise RuntimeError(
+                "--rule_first: expected no-prose line not found in SYSTEM_PROMPT"
             )
-        user = _user_prompt_v3(tid, src, pairs)
-    elif args.prompt_version == "v2":
-        system_prompt = SYSTEM_PROMPT_V2
-        user = _user_prompt_v2(tid, src, pairs)
-    else:
-        system_prompt = SYSTEM_PROMPT
-        user = _user_prompt(tid, src, pairs)
+        system_prompt = system_prompt.replace(_NO_PROSE_LINE, _RULE_FIRST_CONTRACT)
+    user = _user_prompt(tid, src, pairs)
 
     if args.dry_run:
         return (
@@ -1959,17 +1511,13 @@ def process_task(tid: str) -> str:
 
     log_path = str(LOG_DIR / f"{tid}.json") if args.save_log else None
 
-    # Efficient v3 validates the visible I→O transformation, not reference-code
+    # Efficient mode validates the visible I→O transformation, not reference-code
     # vocabulary. DSL-faithful mode retains the historical solver-op gate as a
-    # separate research objective. V1/V2 keep their legacy default unless the
-    # caller explicitly overrides --[no-]enforce_solver_ops.
+    # separate research objective. Either is overridable with
+    # --[no-]enforce_solver_ops.
     _required: dict[str, list[int]] = {}
     if args.enforce_solver_ops is None:
-        enforce_solver_ops = (
-            args.trajectory_mode == "dsl_faithful"
-            if args.prompt_version == "v3"
-            else True
-        )
+        enforce_solver_ops = args.trajectory_mode == "dsl_faithful"
     else:
         enforce_solver_ops = args.enforce_solver_ops
 
@@ -2040,8 +1588,8 @@ def process_task(tid: str) -> str:
 
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
-# Guarded so this module can be imported (e.g. to inspect SYSTEM_PROMPT_V3 or
-# call _user_prompt_v2 directly) without kicking off real generation.
+# Guarded so this module can be imported (e.g. to inspect SYSTEM_PROMPT or
+# call _user_prompt directly) without kicking off real generation.
 
 if __name__ == "__main__":
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

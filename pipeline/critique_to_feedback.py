@@ -11,7 +11,7 @@ list, which the regeneration prompt never shows, so they would be noise. The evi
 text survives — it describes what went wrong in terms that stand on their own.
 
 Usage:
-    python critique_to_feedback.py --critique /hdd_data/yunho/critique_v6.json \
+    python critique_to_feedback.py --critique critique.json \
         --out feedback_from_v6.json
 
     # then, into a NEW maker dir (never overwrite the audited one):

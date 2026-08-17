@@ -10,7 +10,7 @@ One row per task: the input, the target, and a filmstrip of the whole episode
 with each action's selection outlined. Rendering is plain PIL — matplotlib would
 be ~20x slower over 400 tasks and is not needed for flat colour cells.
 
-    python build_preview.py --out /hdd_data/yunho/release_preview
+    python build_preview.py --root <rollout>/whole --out <release_preview>
 """
 from __future__ import annotations
 
@@ -95,8 +95,9 @@ def png(img: Image.Image) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="/hdd_data/yunho/ARC_best10_r5/whole")
-    ap.add_argument("--out", default="/hdd_data/yunho/release_preview")
+    ap.add_argument("--root", required=True,
+                    help="a rollout directory, e.g. <data_root>/ARC_best10_r5/whole")
+    ap.add_argument("--out", required=True)
     ap.add_argument("--max_steps", type=int, default=12)
     ap.add_argument("--exclude", nargs="*", default=[],
                     help="task ids to leave out, matching export_release.py's exclude")

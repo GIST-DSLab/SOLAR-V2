@@ -42,7 +42,7 @@ generate → check → refine loop, and the makers in this repo are its output.
 |---|---|
 | Python | 3.11 (developed and verified on 3.11.15) |
 | Dependencies | `pip install -r requirements.txt` |
-| ARC-AGI-1 data | Only for `pipeline/probe_originals.py`. Defaults to `/hdd_data/yunho/ARC-AGI/data/training`; override with `--arc_dir` |
+| ARC-AGI-1 data | Only for `pipeline/probe_originals.py`. A clone of [fchollet/ARC-AGI](https://github.com/fchollet/ARC-AGI); point at it with `--arc_dir` or `$SOLAR_ARC_DIR` |
 | `claude` CLI | Only for the two LLM scripts (`pipeline/gen_rearc_makers_llm.py`, `pipeline/critique_makers_llm.py`). They shell out to [Claude Code](https://claude.com/claude-code) — no separate API key |
 
 `requirements.txt` pins `arcle == 0.2.5`; the recording format depends on that
@@ -89,7 +89,7 @@ either way. The released dataset was rolled out without it.
 .
 ├── docs/                             the GitHub Pages viewer; carries no data of its own
 │   ├── .nojekyll
-│   ├── arcle_reference_v2.md
+│   ├── arcle_reference.md
 │   ├── hero.png
 │   └── index.html
 ├── figure/                           teaser.png and teaser.gif
@@ -121,7 +121,9 @@ either way. The released dataset was rolled out without it.
 │   ├── generators.py
 │   ├── utils.py
 │   └── verifiers.py
-├── viz/                              figure, GIF, Streamlit viewer
+├── viz/                              figures, GIF, gallery pages, Streamlit viewer
+│   ├── build_handcraft_gallery.py
+│   ├── build_hero_bg.py
 │   ├── make_teaser.py
 │   ├── make_teaser_gif.py
 │   └── viz_trajectories.py
@@ -148,10 +150,10 @@ Defaults below are read from each script's `argparse` block.
 
 | Script | Role | Key flags (default) |
 |---|---|---|
-| `pipeline/gen_rearc_makers_llm.py` | **GENERATE** — an LLM writes a maker per task; the simulation check runs inside the same conversation | `--output_subdir` (`arc-from-rearc`), `--tasks`, `--num_examples` (6), `--parallel` (4), `--attempts` (3), `--prompt_version` (`v1`\|`v2`\|`v3`), `--task_feedback_file`, `--overwrite`, `--dry_run` |
-| `pipeline/verify_grid_makers.py` | **CHECK** — do N fresh samples all reach the target | `--subfolder` (`arc-from-rearc-v6`), `--num_samples`, `--tasks`, `--show_fail` |
-| `pipeline/critique_makers_llm.py` | **CHECK** — an LLM replays an episode and judges whether the route is honest | `--subfolder` (`arc-from-rearc-v6`), `--parallel` (2), `--out`, `--dry_run`, `--dump_payloads`, `--save_log` |
-| `pipeline/probe_originals.py` | **CHECK** — replay the solution on the task's original ARC pairs | `--subfolder` (`arc-best`), `--arc_dir`, `--samples`, `--out` |
+| `pipeline/gen_rearc_makers_llm.py` | **GENERATE** — an LLM writes a maker per task; the simulation check runs inside the same conversation | `--output_subdir` (`arc-from-rearc`), `--tasks`, `--num_examples` (6), `--parallel` (4), `--attempts` (3), `--trajectory_mode` (`efficient`), `--task_feedback_file`, `--overwrite`, `--dry_run` |
+| `pipeline/verify_grid_makers.py` | **CHECK** — do N fresh samples all reach the target | `--subfolder` (`arc-agi-1`), `--num_samples`, `--tasks`, `--show_fail` |
+| `pipeline/critique_makers_llm.py` | **CHECK** — an LLM replays an episode and judges whether the route is honest | `--subfolder` (`arc-agi-1`), `--parallel` (2), `--out`, `--dry_run`, `--dump_payloads`, `--save_log` |
+| `pipeline/probe_originals.py` | **CHECK** — replay the solution on the task's original ARC pairs | `--subfolder` (`arc-agi-1`), `--arc_dir`, `--samples`, `--out` |
 | `pipeline/critique_to_feedback.py` | **REFINE** — turn verdicts into a `--task_feedback_file` | `--critique` (required), `--out`, `--min_severity` (`medium`), `--verdicts` (`FAIL REVISE`), `--forbid_ops`, `--print_tasks` |
 
 `pipeline/verify_grid_makers.py` reports three gates per task: **A** trajectory
@@ -163,8 +165,8 @@ test output is inferable from the examples).
 
 | Script | Role | Key flags (default) |
 |---|---|---|
-| `pipeline/gen_rearc_trajectories_v2.py` | Roll makers out into trajectories | `--subfolder` (`arc-from-rearc-v2`), `--num_samples` (10), `--num_examples` (3), `--max_grid_dim` (`30 30`), `--force_grid_size`, `--data_folder`, `--tasks`, `--v1`, `--only_failures` |
-| `pipeline/export_release.py` | Pack trajectories into parquet shards | `--out`, `--subsets` (`arc_agi1` `arc_1d`), `--shard_rows`, `--verify`, `--maker_version` |
+| `pipeline/gen_rearc_trajectories_v2.py` | Roll makers out into trajectories | `--subfolder` (`arc-agi-1`), `--num_samples` (10), `--num_examples` (3), `--max_grid_dim` (`30 30`), `--force_grid_size`, `--data_folder`, `--tasks`, `--v1`, `--only_failures` |
+| `pipeline/export_release.py` | Pack trajectories into parquet shards | `--data_root`, `--out`, `--subsets` (all three), `--shard_rows`, `--verify`, `--maker_version` |
 | `viz/make_teaser.py` / `viz/make_teaser_gif.py` | Render one trajectory as a figure / GIF | `--root`, `--task` (required), `--out`, `--max_steps`, `--ms`, `--hold`, `--dpi` |
 | `viz/build_handcraft_gallery.py` | one page per task with every hand-written variant on adjacent rows | `--root`, `--out`, `--variants` (`expert half`) |
 | `viz/build_hero_bg.py` | the overview page's backdrop, a mosaic of real grids | `--preview`, `--out`, `--width`, `--height`, `--seed` |
@@ -228,45 +230,23 @@ minutes, and it is the check that catches a `generate()` that has drifted from
 the task. Pipe any output through `pipeline/critique_to_feedback.py` and back into
 `pipeline/gen_rearc_makers_llm.py --task_feedback_file` to close the loop.
 
-`docs/arcle_reference_v2.md` is the operation reference makers are written
+`docs/arcle_reference.md` is the operation reference makers are written
 against, and is also what the generator prompt is built from.
 
+## Where the data goes
+
+Rollouts do not live in the repository; a full draw is tens of gigabytes. The
+scripts that read or write them take a directory, and default to `./solar-data`:
+
+```bash
+export SOLAR_DATA_ROOT=/somewhere/with/space   # or pass --data_root
+export SOLAR_ARC_DIR=/path/to/ARC-AGI/data/training   # probe_originals.py only
+```
+
+`--data_root`, `--out`, `--arc_dir` and `--data_folder` all override their
+environment variable.
+
 ## Known gaps
-
-Found by running each entry point from a clean checkout. None affect the
-makers or `pipeline/probe_originals.py`; all are in the tooling around them.
-
-- **`pipeline/gen_rearc_makers_llm.py` does not start.** It reads `arcle_reference.md`
-  and `arcle_reference_v2.md` from the repository root
-  ([line 39–40](pipeline/gen_rearc_makers_llm.py)), but the repo ships only
-  `docs/arcle_reference_v2.md`, so importing it raises `FileNotFoundError`.
-  Copy or symlink both files to the root to run it.
-
-- **Check scripts default to maker sets that are not in this repo.**
-  `--subfolder` defaults to `arc-from-rearc-v6` (`pipeline/verify_grid_makers.py`,
-  `pipeline/critique_makers_llm.py`) and `arc-best` (`pipeline/probe_originals.py`). Always pass
-  `--subfolder arc-agi-1`, `arc-1d`, or `handcraft` explicitly.
-
-- **`pipeline/verify_grid_makers.py` errors on makers that emit cell-list selections.**
-  Line 203 unpacks a selection as a 4-tuple bbox (`r2, c2, sh2, sw2 = sel2`),
-  but some makers emit `{'cells': [[r, c], ...]}`. The task aborts with
-  `ERROR: not enough values to unpack (expected 4, got 1)`. Observed on 8 of 25
-  sampled `arc-agi-1` tasks and on `1d_fill`. Only the B2 sub-check needs the
-  bbox form; A and C are unaffected. `pipeline/probe_originals.py` does not have this
-  limitation.
-
-- **Absolute paths baked into `pipeline/export_release.py` and `pipeline/probe_originals.py`.**
-  Both resolve data under `/hdd_data/yunho`. `pipeline/probe_originals.py` exposes
-  `--arc_dir`; `pipeline/export_release.py`'s `DATA_ROOT` and per-subset `root` are
-  module constants that must be edited.
-
-- **`pipeline/export_release.py` names maker sets that are not in this repo.**
-  Its `arc_agi1` subset points at `maker/arc-best` and its ARC-AGI-2 subsets at
-  `maker/arc-agi2-solve` / `maker/arc-agi2-construction`, none of which ship
-  here; `gen_agi2_llm.py`, quoted in a `rollout` string, does not either. The
-  `arc_1d` and `handcraft` subsets do map onto sets present here. The name is
-  only used as a fallback label, so an export still runs — pass
-  `--subfolder arc-agi-1` when rolling out.
 
 - **No CI.** There is no `.github/` directory; the badges above are static.
 

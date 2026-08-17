@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,7 +38,9 @@ sys.path.insert(0, str(SOLAR_ROOT))
 import utils as solar_utils  # noqa: E402
 
 MAX_GRID_DIM = (30, 30)
-DEFAULT_ARC = Path("/hdd_data/yunho/ARC-AGI/data/training")
+# A clone of fchollet/ARC-AGI. Override with --arc_dir, or set SOLAR_ARC_DIR.
+DEFAULT_ARC = Path(os.environ.get(
+    "SOLAR_ARC_DIR", Path.cwd() / "ARC-AGI" / "data" / "training"))
 
 # Same schema as critique_makers_llm.py's FINDING_CODES. Both codes are about the
 # same observation; they differ in who is known to be wrong, which is decided by
@@ -210,8 +213,10 @@ def probe(task: str, maker_path: Path, arc_dir: Path, n_samples: int,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--subfolder", default="arc-best")
-    ap.add_argument("--arc_dir", default=str(DEFAULT_ARC))
+    ap.add_argument("--subfolder", default="arc-agi-1")
+    ap.add_argument("--arc_dir", default=str(DEFAULT_ARC),
+                    help="ARC-AGI training JSON directory "
+                         "(default: $SOLAR_ARC_DIR, else ./ARC-AGI/data/training)")
     ap.add_argument("--rearc_root", default=str(SOLAR_ROOT / "re-arc"))
     ap.add_argument("--tasks", nargs="+", default=None)
     ap.add_argument("--samples", type=int, default=2,

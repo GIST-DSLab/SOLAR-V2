@@ -13,13 +13,15 @@ Provenance the records did not carry is injected here: `maker_version` per task
 name, and the source folder date. `rand_seed` is deliberately absent — see
 release_manifest.json:caveats.
 
-    python export_release.py --out /hdd_data/yunho/release --subsets arc_1d --verify
-    python export_release.py --out /hdd_data/yunho/release --verify
+    export SOLAR_DATA_ROOT=<where the rollouts landed>
+    python export_release.py --subsets arc_1d --verify 40
+    python export_release.py --verify 40
 """
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -29,8 +31,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 SPEC_VERSION = "1.0"
-DATA_ROOT = Path("/hdd_data/yunho")
 SOLAR_ROOT = Path(__file__).parent.resolve()
+
+# Where the rollouts live. Not inside the repo: a full draw is tens of GB.
+# Override with --data_root, or SOLAR_DATA_ROOT for a whole shell session.
+DEFAULT_DATA_ROOT = Path(os.environ.get("SOLAR_DATA_ROOT", Path.cwd() / "solar-data"))
+DATA_ROOT = DEFAULT_DATA_ROOT
 
 # folder name: test.<task_id>.s30.<YY.MM.DD>
 FOLDER_RE = re.compile(r"^test\.(?P<task>[^.]+)\.s(?P<dim>\d+)\.(?P<date>[\d.]+)$")
@@ -59,7 +65,7 @@ SUBSETS = {
         # gen_rearc_trajectories_v2.py and ends every episode in Submit,Submit
         # with states and actions the same length. This is the re-roll.
         root=DATA_ROOT / "ARC_best10_r5" / "whole",
-        makers="maker/arc-best",
+        makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its
         # own name, so renaming for publication does not disturb generation
@@ -79,7 +85,7 @@ SUBSETS = {
         # demonstrations they also solve, not in the route to the problem. Within
         # half alone no two variants share a trajectory.
         root=DATA_ROOT / "ARC_handcraft_h15" / "whole",
-        makers="maker/arc-handcraft",
+        makers="maker/handcraft",
         episodes=10,
         # 74dd1130-half is a transpose: FlipV, Rotate90, Submit, the same three
         # actions on all 25 rollouts. There is no route to read off it, which is
@@ -105,20 +111,6 @@ SUBSETS = {
         note="18 1D-ARC task families",
         rollout="python gen_rearc_trajectories_v2.py --subfolder arc-1d "
                 "--num_samples 10 --max_grid_dim 30 30 --data_folder <out>",
-    ),
-    "arc_agi2_solve": dict(
-        root=DATA_ROOT / "ARC_agi2_pilot" / "solve" / "whole",
-        makers="maker/arc-agi2-solve",
-        manifest=None,
-        note="20 ARC-AGI-2 eval tasks, maker sees I only (no output leakage)",
-        rollout="python gen_agi2_llm.py --mode solve",
-    ),
-    "arc_agi2_construction": dict(
-        root=DATA_ROOT / "ARC_agi2_pilot" / "construction" / "whole",
-        makers="maker/arc-agi2-construction",
-        manifest=None,
-        note="20 ARC-AGI-2 eval tasks, maker may consult O",
-        rollout="python gen_agi2_llm.py --mode construction",
     ),
 }
 
@@ -312,9 +304,27 @@ def export_subset(name: str, cfg: dict, out_root: Path, shard_rows: int,
     }
 
 
+def retarget(data_root: Path) -> None:
+    """Point every subset at a different rollout directory.
+
+    SUBSETS is built at import time against DEFAULT_DATA_ROOT, so --data_root
+    rebases the paths that sit under it rather than rebuilding the registry.
+    """
+    for cfg in SUBSETS.values():
+        for key in ("root", "manifest"):
+            p = cfg.get(key)
+            if p is None:
+                continue
+            cfg[key] = data_root / p.relative_to(DEFAULT_DATA_ROOT)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default=str(DATA_ROOT / "release"))
+    ap.add_argument("--data_root", default=str(DEFAULT_DATA_ROOT),
+                    help="directory holding the rollout folders "
+                         "(default: $SOLAR_DATA_ROOT, else ./solar-data)")
+    ap.add_argument("--out", default=None,
+                    help="where to write the release (default: <data_root>/release)")
     ap.add_argument("--subsets", nargs="+", default=list(SUBSETS),
                     choices=list(SUBSETS))
     ap.add_argument("--shard_rows", type=int, default=500)
@@ -325,7 +335,9 @@ def main() -> None:
                          "best_manifest.json instead of the maker set name")
     args = ap.parse_args()
 
-    out_root = Path(args.out)
+    data_root = Path(args.data_root).expanduser().resolve()
+    retarget(data_root)
+    out_root = Path(args.out) if args.out else data_root / "release"
     out_root.mkdir(parents=True, exist_ok=True)
     stats = {}
     for name in args.subsets:
