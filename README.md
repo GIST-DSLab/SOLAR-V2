@@ -126,6 +126,7 @@ either way. The released dataset was rolled out without it.
 │   ├── make_teaser_gif.py
 │   └── viz_trajectories.py
 ├── .gitignore
+├── FUTURE_WORK.md                    what the data enables, and what it does not
 ├── LICENSE
 ├── README.md
 └── requirements.txt
@@ -269,6 +270,23 @@ makers or `pipeline/probe_originals.py`; all are in the tooling around them.
   `--subfolder arc-agi-1` when rolling out.
 
 - **No CI.** There is no `.github/` directory; the badges above are static.
+
+## Future work
+
+[**FUTURE_WORK.md**](FUTURE_WORK.md) is the longer version: what this data makes
+possible that we have not done, what would have to be built first, and what the
+data does not support. The short version is that four properties do most of the
+work — a discrete-plus-spatial action space, a single terminal reward bit after
+a median of 7 and up to 407 actions, complete environment state at every step,
+and makers that can be rolled out again for as much data as you want.
+
+That points at offline RL under sparse reward, step-level process supervision
+(ARC is one of the few reasoning settings where an *intermediate* state is
+checkable), prompting with routes instead of input/output pairs, and scaling
+studies that separate episodes-per-task from number-of-tasks. It also lists the
+things that would be a mistake: this is the ARC-AGI-1 **training** split, the
+routes are one maker's route rather than canonical ones, and there are no failed
+trajectories in the release.
 
 ## Browse it
 
