@@ -10,7 +10,7 @@ Deliberately *not* blurred here. Flat colour blocks quantise to a tiny PNG-8;
 blurring them first replaces every flat region with a gradient and multiplies
 the file size. The page applies the blur in CSS, where it is free to tune.
 
-    python viz/build_hero_bg.py --preview /hdd_data/yunho/release_preview/preview.parquet \
+    python viz/build_hero_bg.py --preview <release_preview>/preview.parquet \
                                 --out docs/hero.png
 """
 from __future__ import annotations
@@ -28,7 +28,8 @@ GROUND = (16, 16, 18)
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--preview", default="/hdd_data/yunho/release_preview/preview.parquet")
+    ap.add_argument("--preview", required=True,
+                    help="a build_preview.py parquet")
     ap.add_argument("--out", default="docs/hero.png")
     ap.add_argument("--width", type=int, default=1920)
     ap.add_argument("--height", type=int, default=1000)

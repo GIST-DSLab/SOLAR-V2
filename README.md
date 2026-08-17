@@ -10,7 +10,7 @@ move → paste → submit), not just an input/output pair.
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![ARCLE](https://img.shields.io/badge/arcle-0.2.5-orange.svg)](https://github.com/ConfeitoHS/arcle)
 [![Makers](https://img.shields.io/badge/makers-433-brightgreen.svg)](#layout)
-[![Original pairs](https://img.shields.io/badge/original%20ARC%20pairs-1718%2F1718-brightgreen.svg)](#the-claim)
+[![Original pairs](https://img.shields.io/badge/original%20ARC%20pairs-1718%2F1718-brightgreen.svg)](#what-counts-as-a-solution)
 
 ### [Browse the trajectories &rarr;](https://qazyunho.github.io/SOLAR-V2/) &nbsp;·&nbsp; [Dataset on Hugging Face &rarr;](https://huggingface.co/datasets/dbsgh797210/SOLAR)
 
@@ -20,12 +20,12 @@ move → paste → submit), not just an input/output pair.
 each task's [RE-ARC](https://github.com/michaelhodel/re-arc) generator rather
 than the original pairs, so any maker can be rolled out for as many fresh
 instances as you want — the published dataset is one draw of them, not their
-limit (see [The dataset](#the-dataset)). Two smaller sets sit beside them:
+limit (see [Download](#download)). Two smaller sets sit beside them:
 `maker/arc-1d` (18) and `maker/handcraft` (15).
 
 ---
 
-## The claim
+## What counts as a solution
 
 Getting the right answer is cheap to check and cheap to fake — a maker can copy
 the target grid into place and call it a solution. The property this pipeline
@@ -85,13 +85,6 @@ streamlit run viz/viz_trajectories.py
 python pipeline/probe_originals.py --subfolder arc-agi-1
 ```
 
-A sample reaches disk only if its final grid matches the target, so a rollout
-**drops** what it cannot solve rather than repairing it. The released draw kept
-3,975 of 4,000, with every task yielding at least 6.
-
-One flag differs by maker set: the `handcraft` makers read `max_grid_dim` out of
-their kwargs and fail without `--force_grid_size`, while the LLM-written sets run
-either way. The released dataset was rolled out without it.
 
 ## Layout
 
@@ -116,6 +109,7 @@ either way. The released dataset was rolled out without it.
 │   ├── base_grid_maker.py
 │   └── sel_helpers.py
 ├── pipeline/                         GENERATE / CHECK / REFINE, plus rollout and export
+│   ├── README.md                     every script and flag, and the loop in full
 │   ├── build_preview.py
 │   ├── critique_makers_llm.py
 │   ├── critique_to_feedback.py
@@ -132,6 +126,7 @@ either way. The released dataset was rolled out without it.
 │   ├── utils.py
 │   └── verifiers.py
 ├── viz/                              figures, GIF, gallery pages, Streamlit viewer
+│   ├── README.md
 │   ├── build_handcraft_gallery.py
 │   ├── build_hero_bg.py
 │   ├── make_teaser.py
@@ -152,47 +147,44 @@ The 15 `handcraft` makers cover tasks `arc-agi-1` also covers, written by hand
 before this pipeline existed. They are kept as the honest control: the same
 task, solved by a person and by a model, in the same action space.
 
-## Scripts
+## Generating a dataset
 
-Defaults below are read from each script's `argparse` block.
+Two commands. The first rolls makers out into trajectories, the second packs
+those into parquet shards.
 
-### Pipeline
+```bash
+# 400 makers x 25 samples: CPU only, no LLM calls, ~15 min
+python pipeline/gen_rearc_trajectories_v2.py --subfolder arc-agi-1 \
+    --num_samples 25 --rand_seed 0 --max_grid_dim 30 30 \
+    --data_folder $SOLAR_DATA_ROOT/draw0
 
-| Script | Role | Key flags (default) |
+# pack it, round-trip checking 40 rows against the source JSON
+python pipeline/export_release.py --subsets arc_agi1 --verify 40
+```
+
+Three maker sets ship, and `--subfolder` picks one:
+
+| set | tasks | note |
 |---|---|---|
-| `pipeline/gen_rearc_makers_llm.py` | **GENERATE** — an LLM writes a maker per task; the simulation check runs inside the same conversation | `--output_subdir` (`arc-from-rearc`), `--tasks`, `--num_examples` (6), `--parallel` (4), `--attempts` (3), `--trajectory_mode` (`efficient`), `--task_feedback_file`, `--overwrite`, `--dry_run` |
-| `pipeline/verify_grid_makers.py` | **CHECK** — do N fresh samples all reach the target | `--subfolder` (`arc-agi-1`), `--num_samples`, `--tasks`, `--show_fail` |
-| `pipeline/critique_makers_llm.py` | **CHECK** — an LLM replays an episode and judges whether the route is honest | `--subfolder` (`arc-agi-1`), `--parallel` (2), `--out`, `--dry_run`, `--dump_payloads`, `--save_log` |
-| `pipeline/probe_originals.py` | **CHECK** — replay the solution on the task's original ARC pairs | `--subfolder` (`arc-agi-1`), `--arc_dir`, `--samples`, `--out` |
-| `pipeline/critique_to_feedback.py` | **REFINE** — turn verdicts into a `--task_feedback_file` | `--critique` (required), `--out`, `--min_severity` (`medium`), `--verdicts` (`FAIL REVISE`), `--forbid_ops`, `--print_tasks` |
+| `arc-agi-1` | 400 | one per task of the ARC-AGI-1 training split |
+| `arc-1d` | 18 | 1D-ARC families |
+| `handcraft` | 15 | hand-written, same tasks as `arc-agi-1`. Needs `--force_grid_size`: these makers read `max_grid_dim` out of their kwargs and fail without it |
 
-`pipeline/verify_grid_makers.py` reports three gates per task: **A** trajectory
-correctness (ops replayed in ARCLE reach the target), **B** example correctness
-(`derive_operations` also works on each worked example), **C** learnability (the
-test output is inferable from the examples).
+`--num_samples` is the only thing standing between 4,000 trajectories and
+40,000. The makers are generators, so the published dataset is one draw rather
+than a ceiling, and a different `--rand_seed` gives a disjoint one.
 
-### Rollout and release
+A sample reaches disk only if its final grid matches the target, so a rollout
+**drops** what it cannot solve rather than repairing it. The released draw kept
+3,975 of 4,000, with every task yielding at least 6.
 
-| Script | Role | Key flags (default) |
-|---|---|---|
-| `pipeline/gen_rearc_trajectories_v2.py` | Roll makers out into trajectories | `--subfolder` (`arc-agi-1`), `--num_samples` (10), `--num_examples` (3), `--max_grid_dim` (`30 30`), `--force_grid_size`, `--data_folder`, `--tasks`, `--v1`, `--only_failures` |
-| `pipeline/export_release.py` | Pack trajectories into parquet shards | `--data_root`, `--out`, `--subsets` (all three), `--shard_rows`, `--verify`, `--maker_version` |
-| `viz/make_teaser.py` / `viz/make_teaser_gif.py` | Render one trajectory as a figure / GIF | `--root`, `--task` (required), `--out`, `--max_steps`, `--ms`, `--hold`, `--dpi` |
-| `viz/build_handcraft_gallery.py` | one page per task with every hand-written variant on adjacent rows | `--root`, `--out`, `--variants` (`expert half`) |
-| `viz/build_hero_bg.py` | the overview page's backdrop, a mosaic of real grids | `--preview`, `--out`, `--width`, `--height`, `--seed` |
-| `viz/viz_trajectories.py` | Streamlit viewer — run with `streamlit run` | — |
-| `pipeline/utils.py` | Recording format and selection helpers (imported, not run) | — |
+Every recorded tensor is padded to `--max_grid_dim` with fill value **10**
+(colours occupy 0-9); the true extent lives in `grid_dim`, `clip_dim`,
+`ex_in_grid_dim` and `ex_out_grid_dim`.
 
-### Grid size control
-
-`pipeline/gen_rearc_trajectories_v2.py` pads every recorded tensor to `--max_grid_dim`
-with fill value **10** (colors occupy 0–9), and stores the true extent
-separately in `grid_dim` / `clip_dim` / `ex_in_grid_dim` / `ex_out_grid_dim`.
-
-Without `--force_grid_size` the ceiling is applied by *discarding* samples that
-overshoot it. With the flag, the ceiling is passed into the maker so it
-generates within bounds instead — which matters at tight ceilings, where
-rejection alone throws away nearly everything.
+The checks that produced these makers, and every flag of every script, are in
+[`pipeline/README.md`](pipeline/README.md). The figure and gallery tools are in
+[`viz/README.md`](viz/README.md).
 
 ## How the makers were written
 
@@ -209,18 +201,12 @@ kinds of check**:
 | **originals** | does the same solution replay on the task's own original ARC pairs | `pipeline/probe_originals.py` |
 
 **These are four filters, not four stages.** They were added at different points
-and run in different orders and combinations from round to round — the honest
+and ran in different orders and combinations from round to round. The honest
 description is that every maker ended up passing all four, not that it walked a
-fixed 1→2→3→4. Whatever a round found,
-`pipeline/critique_to_feedback.py` turned into per-task feedback and
-regeneration started again with it in the prompt. The loop ran for several rounds
-and each task kept its best maker. Nothing here was generated in one shot.
+fixed 1→2→3→4. Whatever a round found became per-task feedback for the next
+one, and each task kept its best maker. Nothing here was generated in one shot.
 
-The feedback that closed the hardest cases carried no diagnosis — just the
-failing original pair, what the trajectory produced instead, and a couple of
-instances the maker's own `generate()` makes. Naming the cause is the model's
-job. A human writing *"handle the other mirror axis too"* once per task is the
-bottleneck this pipeline removes.
+[`pipeline/README.md`](pipeline/README.md) has the loop in full.
 
 ## Writing your own
 
@@ -230,20 +216,19 @@ A maker subclasses `BaseGridMaker` and implements `parse(**kwargs)`, returning
 then:
 
 ```bash
-python pipeline/probe_originals.py     --subfolder <your_set>   # solves the original pairs?
-python pipeline/verify_grid_makers.py  --subfolder <your_set>   # fresh samples reach the target?
-python pipeline/critique_makers_llm.py --subfolder <your_set>   # is the trajectory honest?
+python pipeline/probe_originals.py    --subfolder <your_set>   # solves the original pairs?
+python pipeline/verify_grid_makers.py --subfolder <your_set>   # fresh samples reach the target?
 ```
 
-Run `pipeline/probe_originals.py` first while iterating: no LLM calls, 400 tasks in
-minutes, and it is the check that catches a `generate()` that has drifted from
-the task. Pipe any output through `pipeline/critique_to_feedback.py` and back into
-`pipeline/gen_rearc_makers_llm.py --task_feedback_file` to close the loop.
+Both run on CPU with no LLM calls. Run `probe_originals.py` first: it is the one
+that catches a `generate()` which has drifted away from the task.
 
 `docs/arcle_reference.md` is the operation reference makers are written
-against, and is also what the generator prompt is built from.
+against, and is also what the generator prompt is built from. The rest of the
+checks, and how to feed their output back into generation, are in
+[`pipeline/README.md`](pipeline/README.md).
 
-## The dataset
+## Download
 
 The rolled-out trajectories are published as a separate dataset in parquet,
 with the loader and schema documented there:

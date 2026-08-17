@@ -16,12 +16,14 @@ This format supports Move/Rotate/Flip trajectories where the object position
 changes between steps, so the model can track the object across operations.
 
 Usage:
-    python gen_rearc_trajectories_v2.py --subfolder arc-from-rearc-v2 \\
-        --num_samples 100 --data_folder ../ARC_Single_llm_v2_obj
+    export SOLAR_DATA_ROOT=<where the rollouts should land>
+    python gen_rearc_trajectories_v2.py --subfolder arc-agi-1 \\
+        --num_samples 100 --data_folder $SOLAR_DATA_ROOT/draw0
 """
 import argparse
 import importlib.util
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -49,7 +51,10 @@ parser.add_argument("--force_grid_size", action="store_true", default=False,
                          "discarding samples that overshoot it. Needs a maker built "
                          "from a gen_rearc_makers.py that supports max_grid_dim.")
 parser.add_argument("--data_folder",   type=str,
-                    default=str(SOLAR_ROOT.parent / "ARC_Single_llm_v2_obj"))
+                    default=str(Path(os.environ.get(
+                        "SOLAR_DATA_ROOT", Path.cwd() / "solar-data")) / "rollout"),
+                    help="output root; episodes land in <data_folder>/whole "
+                         "(default: $SOLAR_DATA_ROOT/rollout)")
 parser.add_argument("--subfolder",     type=str, default="arc-agi-1")
 parser.add_argument("--skip_on_error", action="store_true", default=True)
 parser.add_argument("--v1", action="store_true", default=False,

@@ -27,7 +27,6 @@ import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 
-DATA_ROOT = Path("/hdd_data/yunho")
 
 ARC_COLORS = [
     "#000000", "#0074D9", "#FF4136", "#2ECC40", "#FFDC00", "#AAAAAA",
@@ -175,7 +174,8 @@ def teaser(d: dict, task: str, out_path: Path, max_examples: int = 3,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default=str(DATA_ROOT / "ARC_best10" / "whole"))
+    ap.add_argument("--root", required=True,
+                    help="a rollout directory, e.g. <data_folder>/whole")
     ap.add_argument("--task", default=None)
     ap.add_argument("--file", default=None, help="explicit trajectory json")
     ap.add_argument("--out", default="figure/teaser.png")

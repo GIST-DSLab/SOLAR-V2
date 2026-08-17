@@ -12,7 +12,7 @@ just before the action, then the result with the changed cells ringed — over a
 timeline strip of every operation in the episode, with the worked examples and
 the target kept on screen so the rule stays legible.
 
-    python make_teaser_gif.py --root /hdd_data/yunho/ARC_best10_r3/whole \
+    python make_teaser_gif.py --root <data_folder>/whole \
         --task 05f2a901 --out figure/teaser.gif
 """
 from __future__ import annotations
@@ -279,7 +279,8 @@ def frame(d, ops, step, phase, box, ex_n, task, dpi):
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="/hdd_data/yunho/ARC_best10_r3/whole")
+    ap.add_argument("--root", required=True,
+                    help="a rollout directory, e.g. <data_folder>/whole")
     ap.add_argument("--task", required=True)
     ap.add_argument("--file", default=None)
     ap.add_argument("--out", default="figure/teaser.gif")

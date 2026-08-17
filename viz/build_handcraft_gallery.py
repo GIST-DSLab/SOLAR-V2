@@ -11,8 +11,8 @@ Only variants whose name carries `expert` or `half` are included, and only those
 that actually produced a validated rollout — a maker that emits nothing but
 `Submit` has nothing to look at.
 
-    python viz/build_handcraft_gallery.py --root /hdd_data/yunho/ARC_handcraft_all/whole \
-                                          --out /tmp/handcraft_gallery.html
+    python viz/build_handcraft_gallery.py --root <data_folder>/whole \
+                                          --out handcraft_gallery.html
 """
 from __future__ import annotations
 
@@ -261,8 +261,9 @@ new MutationObserver(redraw).observe(document.documentElement,
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--root", default="/hdd_data/yunho/ARC_handcraft_all/whole")
-    ap.add_argument("--out", default="/tmp/handcraft_gallery.html")
+    ap.add_argument("--root", required=True,
+                    help="a rollout of the handcraft maker set")
+    ap.add_argument("--out", default="handcraft_gallery.html")
     ap.add_argument("--variants", nargs="+", default=["expert", "half"],
                     help="substrings a variant suffix must carry to be included")
     args = ap.parse_args()
