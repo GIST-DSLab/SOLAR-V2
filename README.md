@@ -9,8 +9,8 @@ move → paste → submit), not just an input/output pair.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![ARCLE](https://img.shields.io/badge/arcle-0.2.5-orange.svg)](https://github.com/ConfeitoHS/arcle)
-[![Makers](https://img.shields.io/badge/makers-433-brightgreen.svg)](#repository-layout)
-[![Original pairs](https://img.shields.io/badge/original%20ARC%20pairs-1718%2F1718-brightgreen.svg)](#what-is-being-claimed)
+[![Makers](https://img.shields.io/badge/makers-433-brightgreen.svg)](#layout)
+[![Original pairs](https://img.shields.io/badge/original%20ARC%20pairs-1718%2F1718-brightgreen.svg)](#the-claim)
 
 ### [Browse the trajectories &rarr;](https://qazyunho.github.io/SOLAR-V2/) &nbsp;·&nbsp; [Dataset on Hugging Face &rarr;](https://huggingface.co/datasets/dbsgh797210/SOLAR)
 
@@ -20,12 +20,12 @@ move → paste → submit), not just an input/output pair.
 each task's [RE-ARC](https://github.com/michaelhodel/re-arc) generator rather
 than the original pairs, so any maker can be rolled out for as many fresh
 instances as you want — the published dataset is one draw of them, not their
-limit (see [Data](#data)). Two smaller sets sit beside them:
+limit (see [The dataset](#the-dataset)). Two smaller sets sit beside them:
 `maker/arc-1d` (18) and `maker/handcraft` (15).
 
 ---
 
-## What is being claimed
+## The claim
 
 Getting the right answer is cheap to check and cheap to fake — a maker can copy
 the target grid into place and call it a solution. The property this pipeline
@@ -36,19 +36,9 @@ examples and executes it, rather than reconstructing a memorized output.
 That judgement used to cost a human per task. Here it is made by a
 generate → check → refine loop, and the makers in this repo are its output.
 
-## Prerequisites
+## Setup
 
-| | |
-|---|---|
-| Python | 3.11 (developed and verified on 3.11.15) |
-| Dependencies | `pip install -r requirements.txt` |
-| ARC-AGI-1 data | Only for `pipeline/probe_originals.py`. A clone of [fchollet/ARC-AGI](https://github.com/fchollet/ARC-AGI); point at it with `--arc_dir` or `$SOLAR_ARC_DIR` |
-| `claude` CLI | Only for the two LLM scripts (`pipeline/gen_rearc_makers_llm.py`, `pipeline/critique_makers_llm.py`). They shell out to [Claude Code](https://claude.com/claude-code) — no separate API key |
-
-`requirements.txt` pins `arcle == 0.2.5`; the recording format depends on that
-version's observation dict.
-
-## Installation
+Python 3.11, developed and verified on 3.11.15.
 
 ```bash
 git clone https://github.com/QAZyunho/SOLAR-V2.git solar-traj
@@ -56,18 +46,25 @@ cd solar-traj
 pip install -r requirements.txt
 ```
 
-No build step and no package install — every entry point is a script in the
-repository root, run from the repository root.
+No build step and no package install. Every entry point is a script under
+`pipeline/` or `viz/`, run from the repository root. `requirements.txt` pins
+`arcle == 0.2.5`; the recording format depends on that version's observation
+dict.
 
-## Where rollouts are written
-
-Rollouts do not live in the repository; a full draw is tens of gigabytes. The
-scripts that read or write them take a directory, and default to `./solar-data`:
+Rollouts do not live in the repository, since a full draw is tens of gigabytes.
+The scripts that read or write them take a directory and default to
+`./solar-data`:
 
 ```bash
 export SOLAR_DATA_ROOT=/somewhere/with/space          # or pass --data_root
-export SOLAR_ARC_DIR=/path/to/ARC-AGI/data/training   # probe_originals.py only
 ```
+
+Two things are optional, and only some scripts want them:
+
+| | |
+|---|---|
+| ARC-AGI-1 data | `pipeline/probe_originals.py` only. A clone of [fchollet/ARC-AGI](https://github.com/fchollet/ARC-AGI); point at it with `$SOLAR_ARC_DIR` or `--arc_dir` |
+| `claude` CLI | The two LLM scripts only (`pipeline/gen_rearc_makers_llm.py`, `pipeline/critique_makers_llm.py`). They shell out to [Claude Code](https://claude.com/claude-code), so there is no separate API key |
 
 `--data_root`, `--out`, `--arc_dir` and `--data_folder` each override their
 environment variable.
@@ -77,11 +74,11 @@ environment variable.
 ```bash
 # 1. roll a maker set out into trajectories  (CPU, a few minutes)
 python pipeline/gen_rearc_trajectories_v2.py --subfolder arc-agi-1 --num_samples 10 \
-    --rand_seed 0 --max_grid_dim 30 30 --data_folder /tmp/traj
+    --rand_seed 0 --max_grid_dim 30 30 --data_folder $SOLAR_DATA_ROOT/traj
 
 # 2. look at one
-python viz/make_teaser.py     --root /tmp/traj/whole --task 05f2a901 --out figure/mine.png
-python viz/make_teaser_gif.py --root /tmp/traj/whole --task 05f2a901 --out figure/mine.gif
+python viz/make_teaser.py     --root $SOLAR_DATA_ROOT/traj/whole --task 05f2a901 --out figure/mine.png
+python viz/make_teaser_gif.py --root $SOLAR_DATA_ROOT/traj/whole --task 05f2a901 --out figure/mine.gif
 streamlit run viz/viz_trajectories.py
 
 # 3. check a maker set without any LLM calls
@@ -96,7 +93,7 @@ One flag differs by maker set: the `handcraft` makers read `max_grid_dim` out of
 their kwargs and fail without `--force_grid_size`, while the LLM-written sets run
 either way. The released dataset was rolled out without it.
 
-## Repository layout
+## Layout
 
 ```
 .
@@ -155,7 +152,7 @@ The 15 `handcraft` makers cover tasks `arc-agi-1` also covers, written by hand
 before this pipeline existed. They are kept as the honest control: the same
 task, solved by a person and by a model, in the same action space.
 
-## Command reference
+## Scripts
 
 Defaults below are read from each script's `argparse` block.
 
@@ -197,7 +194,7 @@ overshoot it. With the flag, the ceiling is passed into the maker so it
 generates within bounds instead — which matters at tight ceilings, where
 rejection alone throws away nearly everything.
 
-## How a maker is made
+## How the makers were written
 
 A maker starts as one LLM generation — `generate()`, `sample_colors()` and
 `derive_operations()` for a single task, written from the RE-ARC generator and
@@ -225,7 +222,7 @@ instances the maker's own `generate()` makes. Naming the cause is the model's
 job. A human writing *"handle the other mirror axis too"* once per task is the
 bottleneck this pipeline removes.
 
-## Writing your own maker
+## Writing your own
 
 A maker subclasses `BaseGridMaker` and implements `parse(**kwargs)`, returning
 `(ex_in, ex_out, pr_in, pr_out, desc)` per sample, where `desc` carries
@@ -246,7 +243,7 @@ the task. Pipe any output through `pipeline/critique_to_feedback.py` and back in
 `docs/arcle_reference.md` is the operation reference makers are written
 against, and is also what the generator prompt is built from.
 
-## Data
+## The dataset
 
 The rolled-out trajectories are published as a separate dataset in parquet,
 with the loader and schema documented there:
@@ -260,7 +257,7 @@ ds = load_dataset("dbsgh797210/SOLAR", "arc_agi1", split="train")
 Nothing here depends on it. `pipeline/gen_rearc_trajectories_v2.py` regenerates
 trajectories from the makers on CPU in a few minutes.
 
-## License and attribution
+## License
 
 Apache-2.0 (see [LICENSE](LICENSE)). Built on, and would not exist without:
 
