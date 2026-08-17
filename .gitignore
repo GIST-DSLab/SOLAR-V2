@@ -6,7 +6,7 @@ __pycache__/
 figure/*.png
 !figure/teaser.png
 # Local maker experiments — the published sets are arc-agi-1, arc-1d, handcraft
-maker/arc-best
+maker/arc-best*
 maker/arc-agi1-noref*
 maker/arc-agi1-withverif
 maker/verif-merged

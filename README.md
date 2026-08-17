@@ -270,15 +270,6 @@ makers or `pipeline/probe_originals.py`; all are in the tooling around them.
 
 - **No CI.** There is no `.github/` directory; the badges above are static.
 
-## Browse it
-
-[**qazyunho.github.io/SOLAR-V2**](https://qazyunho.github.io/SOLAR-V2/) steps
-through the episodes: pick a task, walk the actions, watch the selection move.
-The page is one HTML file with no data of its own. The released subsets come
-through the Hub's dataset server, decoded in the browser the same way the card's
-Python snippet does; the family subsets are per-task JSON shards fetched from
-the same dataset repo. Nothing is served from this repository but the page.
-
 ## Data
 
 The rolled-out trajectories are published as a separate dataset in parquet,
