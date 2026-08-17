@@ -12,3 +12,6 @@ maker/arc-agi1-withverif
 maker/verif-merged
 __pycache__/
 *.pyc
+
+# Not published yet
+FUTURE_WORK.md
