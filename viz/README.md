@@ -1,11 +1,15 @@
-# Figures and viewers
+# Figures and gallery pages
 
 Everything that turns a rollout into something you can look at. None of these
-are needed to produce data; they read a rollout directory and write images or
-HTML.
+are needed to produce data.
 
-All of them take `--root <data_folder>/whole`, the directory
-`pipeline/gen_rearc_trajectories_v2.py` writes.
+The trajectory scripts take `--root <data_folder>/whole`, the directory
+`pipeline/gen_rearc_trajectories_v2.py` writes. `build_hero_bg.py` is the
+exception: it reads a `build_preview.py` parquet instead.
+
+To browse episodes rather than render them, use the published viewer at
+[qazyunho.github.io/SOLAR-V2](https://qazyunho.github.io/SOLAR-V2/), which needs
+nothing from this directory.
 
 ---
 
@@ -34,15 +38,6 @@ README is this script's output.
 ```bash
 python viz/make_teaser.py     --root $SOLAR_DATA_ROOT/draw0/whole --task 05f2a901 --out figure/mine.png
 python viz/make_teaser_gif.py --root $SOLAR_DATA_ROOT/draw0/whole --task 05f2a901 --out figure/mine.gif
-```
-
-### `viz_trajectories.py`
-
-A Streamlit viewer for stepping through episodes locally. Run it with
-`streamlit run`, not `python`.
-
-```bash
-streamlit run viz/viz_trajectories.py
 ```
 
 ---

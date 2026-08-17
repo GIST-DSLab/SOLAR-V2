@@ -79,7 +79,6 @@ python pipeline/gen_rearc_trajectories_v2.py --subfolder arc-agi-1 --num_samples
 # 2. look at one
 python viz/make_teaser.py     --root $SOLAR_DATA_ROOT/traj/whole --task 05f2a901 --out figure/mine.png
 python viz/make_teaser_gif.py --root $SOLAR_DATA_ROOT/traj/whole --task 05f2a901 --out figure/mine.gif
-streamlit run viz/viz_trajectories.py
 
 # 3. check a maker set without any LLM calls
 python pipeline/probe_originals.py --subfolder arc-agi-1
@@ -125,13 +124,12 @@ python pipeline/probe_originals.py --subfolder arc-agi-1
 │   ├── generators.py
 │   ├── utils.py
 │   └── verifiers.py
-├── viz/                              figures, GIF, gallery pages, Streamlit viewer
+├── viz/                              figures, GIF, and the gallery pages
 │   ├── README.md
 │   ├── build_handcraft_gallery.py
 │   ├── build_hero_bg.py
 │   ├── make_teaser.py
-│   ├── make_teaser_gif.py
-│   └── viz_trajectories.py
+│   └── make_teaser_gif.py
 ├── .gitignore
 ├── LICENSE
 ├── README.md

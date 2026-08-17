@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render one trajectory as a static teaser figure: rule on top, actions below.
 
-The viewer (`viz_trajectories.py`) is Streamlit, so it can show this but cannot
+The web viewer is HTML, so it can show this but cannot
 export it. This is the same palette and the same grid renderer, laid out as a
 single figure for a README or a paper: the worked example pairs across the top
 establish the rule, the strip below walks the policy's actions one at a time,
