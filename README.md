@@ -59,6 +59,19 @@ pip install -r requirements.txt
 No build step and no package install — every entry point is a script in the
 repository root, run from the repository root.
 
+## Where rollouts are written
+
+Rollouts do not live in the repository; a full draw is tens of gigabytes. The
+scripts that read or write them take a directory, and default to `./solar-data`:
+
+```bash
+export SOLAR_DATA_ROOT=/somewhere/with/space          # or pass --data_root
+export SOLAR_ARC_DIR=/path/to/ARC-AGI/data/training   # probe_originals.py only
+```
+
+`--data_root`, `--out`, `--arc_dir` and `--data_folder` each override their
+environment variable.
+
 ## Quickstart
 
 ```bash
@@ -232,23 +245,6 @@ the task. Pipe any output through `pipeline/critique_to_feedback.py` and back in
 
 `docs/arcle_reference.md` is the operation reference makers are written
 against, and is also what the generator prompt is built from.
-
-## Where the data goes
-
-Rollouts do not live in the repository; a full draw is tens of gigabytes. The
-scripts that read or write them take a directory, and default to `./solar-data`:
-
-```bash
-export SOLAR_DATA_ROOT=/somewhere/with/space   # or pass --data_root
-export SOLAR_ARC_DIR=/path/to/ARC-AGI/data/training   # probe_originals.py only
-```
-
-`--data_root`, `--out`, `--arc_dir` and `--data_folder` all override their
-environment variable.
-
-## Known gaps
-
-- **No CI.** There is no `.github/` directory; the badges above are static.
 
 ## Data
 
