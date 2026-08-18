@@ -1,6 +1,6 @@
 # The maker pipeline
 
-How the 433 makers in this repository were produced, and every flag of the
+How the 415 makers in this repository were produced, and every flag of the
 scripts that produced them. If you only want trajectories out of the makers
 that already exist, the two commands in the [top-level
 README](../README.md#generating-a-dataset) are enough and you do not need this
@@ -229,7 +229,7 @@ planes, `i2` elsewhere. That is what makes 4,000 episodes fit in a few MB.
 |---|---|---|
 | `--data_root` | `$SOLAR_DATA_ROOT`, else `./solar-data` | where the rollout folders are |
 | `--out` | `<data_root>/release` | |
-| `--subsets` | all | `arc_agi1`, `handcraft`, `arc_1d` |
+| `--subsets` | all | `arc_agi1`, `handcraft` |
 | `--shard_rows` | 500 | |
 | `--verify` | 0 | round-trip this many rows per subset against the source JSON |
 | `--maker_version` | off | stamp rows with the per-task generation round from `best_manifest.json` |

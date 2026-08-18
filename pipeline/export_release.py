@@ -14,7 +14,7 @@ name, and the source folder date. `rand_seed` is deliberately absent — see
 release_manifest.json:caveats.
 
     export SOLAR_DATA_ROOT=<where the rollouts landed>
-    python export_release.py --subsets arc_1d --verify 40
+    python export_release.py --subsets handcraft --verify 40
     python export_release.py --verify 40
 """
 from __future__ import annotations
@@ -103,14 +103,6 @@ SUBSETS = {
         rollout="python pipeline/gen_rearc_trajectories_v2.py --subfolder handcraft "
                 "--num_samples 25 --rand_seed 0 --max_grid_dim 15 15 "
                 "--force_grid_size --data_folder <out>",
-    ),
-    "arc_1d": dict(
-        root=DATA_ROOT / "ARC_1d" / "whole",
-        makers="maker/arc-1d",
-        manifest=None,
-        note="18 1D-ARC task families",
-        rollout="python gen_rearc_trajectories_v2.py --subfolder arc-1d "
-                "--num_samples 10 --max_grid_dim 30 30 --data_folder <out>",
     ),
 }
 

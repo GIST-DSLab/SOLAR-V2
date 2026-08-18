@@ -9,7 +9,7 @@ move → paste → submit), not just an input/output pair.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![ARCLE](https://img.shields.io/badge/arcle-0.2.5-orange.svg)](https://github.com/ConfeitoHS/arcle)
-[![Makers](https://img.shields.io/badge/makers-433-brightgreen.svg)](#layout)
+[![Makers](https://img.shields.io/badge/makers-415-brightgreen.svg)](#layout)
 [![Original pairs](https://img.shields.io/badge/original%20ARC%20pairs-1718%2F1718-brightgreen.svg)](#what-counts-as-a-solution)
 
 ### [Browse the trajectories &rarr;](https://qazyunho.github.io/SOLAR-V2/) &nbsp;·&nbsp; [Dataset on Hugging Face &rarr;](https://huggingface.co/datasets/dbsgh797210/SOLAR)
@@ -20,8 +20,8 @@ move → paste → submit), not just an input/output pair.
 each task's [RE-ARC](https://github.com/michaelhodel/re-arc) generator rather
 than the original pairs, so any maker can be rolled out for as many fresh
 instances as you want — the published dataset is one draw of them, not their
-limit (see [Download](#download)). Two smaller sets sit beside them:
-`maker/arc-1d` (18) and `maker/handcraft` (15).
+limit (see [Download](#download)). A smaller set sits beside them:
+`maker/handcraft` (15).
 
 ---
 
@@ -98,8 +98,6 @@ python pipeline/probe_originals.py --subfolder arc-agi-1
 │   ├── teaser.gif
 │   └── teaser.png
 ├── maker/                            keep at the root — makers assume it
-│   ├── arc-1d/                        18  1D-ARC task families, LLM-written
-│   │   └── … 18 task directories
 │   ├── arc-agi-1/                    400  ARC-AGI-1 training tasks, LLM-written
 │   │   └── … 400 task directories
 │   ├── handcraft/                     15  hand-written, same tasks as arc-agi-1
@@ -138,7 +136,7 @@ python pipeline/probe_originals.py --subfolder arc-agi-1
 
 `maker/` and `re-arc/` cannot be moved. Every generated `grid_maker.py`
 resolves the repo root as its own `parents[3]` and puts `<root>/re-arc` on
-`sys.path` itself, so relocating either breaks 433 files that are outputs, not
+`sys.path` itself, so relocating either breaks 415 files that are outputs, not
 sources. Everything else is ours and moves freely.
 
 The 15 `handcraft` makers cover tasks `arc-agi-1` also covers, written by hand
@@ -160,12 +158,11 @@ python pipeline/gen_rearc_trajectories_v2.py --subfolder arc-agi-1 \
 python pipeline/export_release.py --subsets arc_agi1 --verify 40
 ```
 
-Three maker sets ship, and `--subfolder` picks one:
+Two maker sets ship, and `--subfolder` picks one:
 
 | set | tasks | note |
 |---|---|---|
 | `arc-agi-1` | 400 | one per task of the ARC-AGI-1 training split |
-| `arc-1d` | 18 | 1D-ARC families |
 | `handcraft` | 15 | hand-written, same tasks as `arc-agi-1`. Needs `--force_grid_size`: these makers read `max_grid_dim` out of their kwargs and fail without it |
 
 `--num_samples` is the only thing standing between 4,000 trajectories and
