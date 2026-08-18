@@ -92,21 +92,6 @@ python viz/make_teaser_gif.py \
     --out figure/mine.gif
 ```
 
-### Step 3: Check a maker
-
-```bash
-python pipeline/verify_grid_makers.py --subfolder arc-agi-1 --tasks 05f2a901
-```
-
-```
-task            A(traj)    B(ex)   C(learn)
-05f2a901         100% (5)   100% (5)   100% (5)
-```
-
-Fresh instances, not the ones the maker was written on: **A** the ops reach the
-target, **B** they also solve each worked example, **C** the answer is inferable
-from those examples. No LLM calls.
-
 
 ## Layout
 
