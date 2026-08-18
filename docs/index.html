@@ -63,6 +63,10 @@ body{margin:0;background:var(--canvas);color:var(--ink);font-family:var(--text);
 .pill.ghost{background:transparent;color:var(--primary);border:1px solid var(--primary)}
 .pill.small{padding:8px 16px;font-size:14px;letter-spacing:-.224px}
 .pill[disabled]{background:var(--pearl);color:var(--ink-48);cursor:default}
+/* Subset switcher. Without it the four subsets were reachable only from the
+   cards on the overview, so anything but RE-ARC was a page and a scroll away. */
+.tabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 32px}
+.tabs a[aria-current="page"]{cursor:default}
 
 /* tiles — the colour change is the divider; no borders, no radius */
 .tile{padding:var(--section) 22px}
@@ -403,7 +407,8 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <section class="tile light">
   <div class="inner">
     <h2 class="display" id="tasks-title">RE-ARC</h2>
-    <p class="caption" style="margin:0 0 32px" id="tasks-sub"></p>
+    <p class="caption" style="margin:0 0 20px" id="tasks-sub"></p>
+    <div class="tabs" id="subset-tabs"></div>
     <div id="slot-tasks">
       <!-- moved between the two pages by route(), status line and all -->
       <div id="gridwrap">
@@ -464,7 +469,8 @@ const SUBSETS = {
   // Served locally: a 400-task index, then one lazily-loaded shard per task. So
   // episodes here are not independent draws; they are the family's four
   // trajectories, problem first.
-  "demo": {label:"Trajectories for demo pairs", tasks:400, samplesPer:10, episodes:4,
+  "demo": {label:"Trajectories for demo pairs", tab:"Demo pairs",
+           tasks:400, samplesPer:10, episodes:4,
            family:true, local:true, path:"demo",
            blurb:"Every demonstration example carries its own trajectory"},
   // Real ARC-AGI-2 tasks (construction makers). No sampling — each task's train
@@ -472,12 +478,28 @@ const SUBSETS = {
   // the problem, each train pair a demonstration that also carries its own
   // trajectory. Variable episode count. Browsed flat (one family per task, so no
   // sample layer); served locally like `demo`.
-  "arc-agi2": {label:"ARC-AGI-2 training set", tasks:30,
+  "arc-agi2": {label:"ARC-AGI-2 training set", tab:"ARC-AGI-2", tasks:30,
                family:true, local:true, flat:true, path:"arc-agi2",
                blurb:"Real ARC-AGI-2 tasks, every demonstration solved step by step"},
 };
 let SUB = "re-arc";
 const sub = () => SUBSETS[SUB];
+
+/* One link per subset above the task grid, built from SUBSETS so a subset added
+   there shows up here by existing. Until this row, the only door into anything
+   but RE-ARC was the cards on the overview: every nav link points at re-arc, so
+   a reader who clicked Browse tasks first never saw that the others were there. */
+const TABS = document.getElementById("subset-tabs");
+Object.entries(SUBSETS).forEach(([k, v]) => {
+  const a = document.createElement("a");
+  a.href = `#/tasks/${k}`; a.dataset.sub = k; a.textContent = v.tab || v.label;
+  TABS.appendChild(a);
+});
+const paintTabs = () => TABS.querySelectorAll("a").forEach(a => {
+  const on = a.dataset.sub === SUB;
+  a.className = "pill small" + (on ? "" : " ghost");
+  if(on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+});
 
 /* ---------- drawing ---------- */
 function draw(canvas, grid, cell, sel){
@@ -995,6 +1017,7 @@ function route(){
   }else if(page === "tasks"){
     title.textContent = sub().label; cta.href = "#/"; cta.textContent = "Overview";
     document.getElementById("tasks-title").textContent = sub().label;
+    paintTabs();
     document.getElementById("tasks-sub").textContent =
       (sub().family && sub().flat) ? `${sub().blurb}. ${sub().tasks} tasks.`
       : sub().family ? `${sub().blurb}. ${sub().tasks} tasks · ${sub().samplesPer} samples each (problem + 3 demos).`
