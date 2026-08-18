@@ -190,10 +190,10 @@ route as code; replaying that code in ARCLE decides whether it survives; a
 rejection goes back carrying the pair it failed and what it produced instead,
 never a diagnosis; rounds continue until it passes, and each task keeps its best
 maker. What changes from corpus to corpus is only which gates are available to
-run — with a generator you can also demand fresh instances, and with the
-original ARC pairs you can demand the same route replay on those. Real
-ARC-AGI-2 tasks, which have neither, went through the same loop with replay as
-its only gate.
+run, and more of them is strictly better — with a generator you can also demand
+fresh instances, and with the original ARC pairs you can demand the same route
+replay on those. Real ARC-AGI-2 tasks went through the same loop on the gates
+that corpus allows.
 
 The run that produced the makers here had all of them. A maker starts as one LLM
 generation — `generate()`, `sample_colors()` and `derive_operations()` for a

@@ -55,20 +55,18 @@ and no round is trusted to be the last one.
 |---|---|---|
 | where the pairs come from | the task's RE-ARC generator — instances are unlimited | the task's own train and test pairs, and there are a handful |
 | what the model writes | `generate`, `sample_colors`, `derive_operations` | `derive_operations` only; a fixed base supplies the real pairs |
-| replay in ARCLE | yes | yes, and it is the only gate |
+| replay in ARCLE | yes | yes |
 | fresh instances reach the target | yes, `verify_grid_makers.py` | not available — the pairs are fixed |
 | it replays on the original ARC pairs | yes, `probe_originals.py` | those *are* the pairs |
 | a critic reads the route | yes, `critique_makers_llm.py` | not used in the pilot |
 | what a rejection carries back | a per-task feedback file, next round | the per-pair diff, same conversation |
 
-The ARC-AGI-2 pilot is the useful case precisely because so much is missing.
-With no generator there is no generalization gate, and with no verifier there is
-no second opinion on the concept — replay against the task's real O is all the
-loop has, and it is enough to close. It also does not need the model to see O:
-withhold it and the ops still have to produce it, which makes copying
-structurally impossible rather than merely discouraged. Those makers are
-browsable in the [viewer](https://qazyunho.github.io/SOLAR-V2/) as Beta; their
-trajectories are not part of this release.
+A corpus with more gates gets more out of the loop, which is why the makers in
+this repository went through all four: replay says the route works, and the
+other three are what say it is a route worth keeping. The ARC-AGI-2 pilot ran
+the same loop with the gates that corpus allows. Those makers are browsable in
+the [viewer](https://qazyunho.github.io/SOLAR-V2/) as Beta; their trajectories
+are not part of this release.
 
 ---
 
