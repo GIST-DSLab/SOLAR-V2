@@ -29,6 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.collections import LineCollection
 
 
 ARC_COLORS = [
@@ -65,16 +66,26 @@ def render_grid(ax, grid, h, w, title="", sel_mask=None, highlight="#00E5FF",
     if sel_mask is not None:
         mask = np.asarray(sel_mask, dtype=bool)[:h, :w]
         if mask.any():
-            # A full-grid selection tinted every panel the same colour and hid
-            # the actual content, so fill only sparse selections and always
-            # trace the boundary, which reads at any coverage.
-            if mask.mean() < 0.5:
-                overlay = np.zeros((*mask.shape, 4))
-                overlay[mask] = mcolors.to_rgba(highlight, alpha=0.30)
-                ax.imshow(overlay, interpolation="nearest", zorder=2)
-            padded = np.pad(mask.astype(float), 1)
-            ax.contour(padded, levels=[0.5], colors=[highlight], linewidths=1.6,
-                       extent=(-1.5, w + 0.5, h + 0.5, -1.5), zorder=5)
+            # Trace the region's border along the actual cell edges. `contour`
+            # was doing this before and was wrong twice over: it samples at grid
+            # points rather than cell centres, and it interpolates, so a square
+            # selection came out with rounded corners. Emitting the edges that
+            # separate the mask from everything else is exact and crisp.
+            segs = []
+            for r, c in zip(*np.nonzero(mask)):
+                if r == 0 or not mask[r - 1, c]:
+                    segs.append([(c - 0.5, r - 0.5), (c + 0.5, r - 0.5)])
+                if r == h - 1 or not mask[r + 1, c]:
+                    segs.append([(c - 0.5, r + 0.5), (c + 0.5, r + 0.5)])
+                if c == 0 or not mask[r, c - 1]:
+                    segs.append([(c - 0.5, r - 0.5), (c - 0.5, r + 0.5)])
+                if c == w - 1 or not mask[r, c + 1]:
+                    segs.append([(c + 0.5, r - 0.5), (c + 0.5, r + 0.5)])
+            # a dark casing under the bright edge, so the outline survives on
+            # both a black grid and a white one
+            for col, lw_, z in (("#101010", 1.5, 5), (highlight, 0.7, 6)):
+                ax.add_collection(LineCollection(segs, colors=col,
+                                                 linewidths=lw_, zorder=z))
 
     if box:
         BH, BW = box
