@@ -360,8 +360,8 @@ def main() -> None:
     manifest_path.write_text(json.dumps({
         "spec_version": SPEC_VERSION,
         "repo_commit": repo_commit(),
-        "generator": "SOLAR-Generator/gen_rearc_trajectories_v2.py",
-        "exporter": "SOLAR-Generator/export_release.py",
+        "generator": "pipeline/gen_rearc_trajectories_v2.py",
+        "exporter": "pipeline/export_release.py",
         "column_dtypes": COL_DTYPE,
         "subsets": prev,
         "caveats": [

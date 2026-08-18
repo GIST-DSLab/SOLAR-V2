@@ -59,7 +59,7 @@ parser.add_argument("--min_grid_dim", nargs=2, type=int, default=[1, 1],
 parser.add_argument("--parallel",     type=int, default=4,
                     help="Concurrent claude calls (default 4)")
 parser.add_argument("--save_log",     action="store_true",
-                    help="Save full conversation JSON to SOLAR-Generator/conv_logs/<task_id>.json")
+                    help="Save full conversation JSON to conv_logs/<task_id>.json")
 parser.add_argument("--rand_seed",    type=int, default=42)
 parser.add_argument(
     "--trajectory_mode", choices=["efficient", "dsl_faithful"], default="efficient",
@@ -1159,12 +1159,10 @@ def _validate(
         # the top of this file), so a plain import would silently return THAT
         # module instead of this one, and sel_bbox_to_mask below would
         # AttributeError on every single call. Load it by explicit path under a
-        # distinct module name so it can't collide. (The original path here
-        # pointed at SOLAR_ROOT/LDCQ_for_SOLAR/utils.py, which doesn't exist —
-        # LDCQ_for_SOLAR is a sibling of SOLAR_ROOT, not a child, and its actual
-        # utils.py lives at LDCQ_for_SOLAR/utils/utils.py. sel_bbox_to_mask is
-        # already right here in SOLAR-Generator/utils.py, so just use that.)
-        _solar_utils_path = SOLAR_ROOT / "utils.py"
+        # distinct module name so it can't collide. It is this package's own
+        # utils.py, beside this file — an absolute path, since the check has to
+        # work whatever directory the script was started from.
+        _solar_utils_path = Path(__file__).resolve().parent / "utils.py"
         _spec = _ilu2.spec_from_file_location("_solar_utils_for_validate", _solar_utils_path)
         _solar_utils = _ilu2.module_from_spec(_spec)
         _spec.loader.exec_module(_solar_utils)

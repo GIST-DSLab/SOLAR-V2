@@ -248,8 +248,5 @@ Apache-2.0 (see [LICENSE](LICENSE)). Built on, and would not exist without:
   the input generators and verifiers vendored in `re-arc/` (see
   [`re-arc/NOTICE`](re-arc/NOTICE))
 - [ARC-AGI-1](https://github.com/fchollet/ARC-AGI) (Apache-2.0) — the tasks
-- [1D-ARC](https://github.com/khalil-research/1D-ARC) — the 1-D task families
 - [ARCLE](https://github.com/ConfeitoHS/arcle) — the environment these
   trajectories are written in
-- [SOLAR-Generator](https://github.com/GIST-DSLab/SOLAR-Generator) (GIST-DSLab) —
-  the trajectory recording format this builds on
