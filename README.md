@@ -36,7 +36,14 @@ No build step and no package install. Every entry point is a script under
 `arcle == 0.2.5`; the recording format depends on that version's observation
 dict.
 
-Somethings are optional, and only some scripts want them:
+Rollouts do not live in the repository — a full draw is tens of gigabytes. The
+scripts that read or write them take a directory and default to `./solar-data`:
+
+```bash
+export SOLAR_DATA_ROOT=/somewhere/with/space          # or pass --data_folder
+```
+
+Some things are optional, and only some scripts want them:
 
 | | |
 |---|---|
