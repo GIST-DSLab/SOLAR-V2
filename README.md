@@ -1,4 +1,4 @@
-# SOLAR(Synethesized Offline Learning data for Abstraction and Reasoning)
+# SOLAR(Synthesized Offline Learning data for Abstraction and Reasoning)
 
 **Executable ARC solutions.** Every task in this repository ships a
 `grid_maker.py` that samples fresh input grids *and* emits the
@@ -9,8 +9,6 @@ move → paste → submit), not just an input/output pair.
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![ARCLE](https://img.shields.io/badge/arcle-0.2.5-orange.svg)](https://github.com/ConfeitoHS/arcle)
-[![Makers](https://img.shields.io/badge/makers-410-brightgreen.svg)](#layout)
-[![Original pairs](https://img.shields.io/badge/original%20ARC%20pairs-1718%2F1718-brightgreen.svg)](#what-counts-as-a-solution)
 
 ### [Browse the trajectories &rarr;](https://qazyunho.github.io/SOLAR-V2/) &nbsp;·&nbsp; [Dataset on Hugging Face &rarr;](https://huggingface.co/datasets/dbsgh797210/SOLAR)
 
@@ -20,8 +18,7 @@ move → paste → submit), not just an input/output pair.
 each task's [RE-ARC](https://github.com/michaelhodel/re-arc) generator rather
 than the original pairs, so any maker can be rolled out for as many fresh
 instances as you want — the published dataset is one draw of them, not their
-limit (see [Download](#download)). A smaller set sits beside them:
-`maker/handcraft` (10).
+limit (see [Download](#download)).
 
 ---
 
@@ -100,7 +97,7 @@ python pipeline/probe_originals.py --subfolder arc-agi-1
 ├── maker/                            keep at the root — makers assume it
 │   ├── arc-agi-1/                    400  ARC-AGI-1 training tasks, LLM-written
 │   │   └── … 400 task directories
-│   ├── handcraft/                     10  hand-written, tasks arc-agi-1 also covers
+│   ├── handcraft/                     10  hand-written, kept as a control
 │   │   └── … 10 maker directories
 │   ├── __init__.py
 │   ├── base_grid_maker.py
@@ -139,12 +136,6 @@ resolves the repo root as its own `parents[3]` and puts `<root>/re-arc` on
 `sys.path` itself, so relocating either breaks 410 files that are outputs, not
 sources. Everything else is ours and moves freely.
 
-The 10 `handcraft` makers are the ones the published control subset was rolled
-out from: nine ARC-AGI-1 tasks that `arc-agi-1` also covers, written by hand
-before this pipeline existed (one task carries two of them, which solve it
-differently). They are kept as the honest control: the same task, solved by a
-person and by a model, in the same action space.
-
 ## Generating a dataset
 
 Two commands. The first rolls makers out into trajectories, the second packs
@@ -160,12 +151,9 @@ python pipeline/gen_rearc_trajectories_v2.py --subfolder arc-agi-1 \
 python pipeline/export_release.py --subsets arc_agi1 --verify 40
 ```
 
-Two maker sets ship, and `--subfolder` picks one:
-
-| set | tasks | note |
-|---|---|---|
-| `arc-agi-1` | 400 | one per task of the ARC-AGI-1 training split |
-| `handcraft` | 10 | hand-written, over 9 tasks `arc-agi-1` also covers. Needs `--force_grid_size`: these makers read `max_grid_dim` out of their kwargs and fail without it |
+`--subfolder` names the maker set. `arc-agi-1` is the 400 makers this release
+was rolled out from; [`pipeline/README.md`](pipeline/README.md) covers the rest
+of the flags, and what the other set in `maker/` needs.
 
 `--num_samples` is the only thing standing between 4,000 trajectories and
 40,000. The makers are generators, so the published dataset is one draw rather
