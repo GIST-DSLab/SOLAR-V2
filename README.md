@@ -15,23 +15,11 @@ move → paste → submit), not just an input/output pair.
 ![one episode, action by action](figure/teaser.gif)
 
 **400 makers, one per task of the ARC-AGI-1 training split.** Inputs come from
-each task's [RE-ARC](https://github.com/michaelhodel/re-arc) generator rather
-than the original pairs, so any maker can be rolled out for as many fresh
+each task's [RE-ARC](https://github.com/michaelhodel/re-arc) generator, so any maker can be rolled out for as many fresh
 instances as you want — the published dataset is one draw of them, not their
 limit (see [Download](#download)).
 
 ---
-
-## What counts as a solution
-
-Getting the right answer is cheap to check and cheap to fake — a maker can copy
-the target grid into place and call it a solution. The property this pipeline
-exists to enforce is harder: **the trajectory must be one a policy could have
-produced without seeing the answer.** It reads the rule from the worked
-examples and executes it, rather than reconstructing a memorized output.
-
-That judgement used to cost a human per task. Here it is made by a
-generate → check → refine loop, and the makers in this repo are its output.
 
 ## Setup
 
@@ -48,15 +36,7 @@ No build step and no package install. Every entry point is a script under
 `arcle == 0.2.5`; the recording format depends on that version's observation
 dict.
 
-Rollouts do not live in the repository, since a full draw is tens of gigabytes.
-The scripts that read or write them take a directory and default to
-`./solar-data`:
-
-```bash
-export SOLAR_DATA_ROOT=/somewhere/with/space          # or pass --data_root
-```
-
-Two things are optional, and only some scripts want them:
+Somethings are optional, and only some scripts want them:
 
 | | |
 |---|---|
@@ -66,20 +46,59 @@ Two things are optional, and only some scripts want them:
 `--data_root`, `--out`, `--arc_dir` and `--data_folder` each override their
 environment variable.
 
-## Quickstart
+## Quick Start
+
+### Step 1: Generate trajectories
 
 ```bash
-# 1. roll a maker set out into trajectories  (CPU, a few minutes)
-python pipeline/gen_rearc_trajectories_v2.py --subfolder arc-agi-1 --num_samples 10 \
-    --rand_seed 0 --max_grid_dim 30 30 --data_folder $SOLAR_DATA_ROOT/traj
-
-# 2. look at one
-python viz/make_teaser.py     --root $SOLAR_DATA_ROOT/traj/whole --task 05f2a901 --out figure/mine.png
-python viz/make_teaser_gif.py --root $SOLAR_DATA_ROOT/traj/whole --task 05f2a901 --out figure/mine.gif
-
-# 3. check a maker set without any LLM calls
-python pipeline/probe_originals.py --subfolder arc-agi-1
+# one task, 10 episodes — CPU only, no LLM calls, seconds
+python pipeline/gen_rearc_trajectories_v2.py \
+    --subfolder arc-agi-1 \
+    --tasks 05f2a901 \
+    --num_samples 10 \
+    --rand_seed 0 \
+    --max_grid_dim 30 30 \
+    --data_folder solar-data/draw0
 ```
+
+One JSON per episode, under a directory named for the task and the day:
+
+```
+solar-data/draw0/whole/test.05f2a901.s30.26.08.18/05f2a901-rearc-llm_1.json
+```
+
+Drop `--tasks` and all 400 makers roll out.
+
+### Step 2: Visualize a trajectory
+
+```bash
+# a still figure: the worked examples, then the episode step by step
+python viz/make_teaser.py \
+    --root solar-data/draw0/whole \
+    --task 05f2a901 \
+    --out figure/mine.png
+
+# the same episode as a GIF
+python viz/make_teaser_gif.py \
+    --root solar-data/draw0/whole \
+    --task 05f2a901 \
+    --out figure/mine.gif
+```
+
+### Step 3: Check a maker
+
+```bash
+python pipeline/verify_grid_makers.py --subfolder arc-agi-1 --tasks 05f2a901
+```
+
+```
+task            A(traj)    B(ex)   C(learn)
+05f2a901         100% (5)   100% (5)   100% (5)
+```
+
+Fresh instances, not the ones the maker was written on: **A** the ops reach the
+target, **B** they also solve each worked example, **C** the answer is inferable
+from those examples. No LLM calls.
 
 
 ## Layout
