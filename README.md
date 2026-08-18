@@ -184,56 +184,47 @@ The checks that produced these makers, and every flag of every script, are in
 
 ## How the makers were written
 
-The loop is one recipe, and this repository is one run of it. A model writes the
-route as code; replaying that code in ARCLE decides whether it survives; a
-rejection goes back carrying the pair it failed and what it produced instead,
-never a diagnosis; rounds continue until it passes, and each task keeps its best
-maker. What changes from corpus to corpus is only which gates are available to
-run, and more of them is strictly better — with a generator you can also demand
-fresh instances, and with the original ARC pairs you can demand the same route
-replay on those. Real ARC-AGI-2 tasks went through the same loop on the gates
-that corpus allows.
-
-The run that produced the makers here had all of them. A maker starts as one LLM
-generation — `generate()`, `sample_colors()` and `derive_operations()` for a
-single task, written from the RE-ARC generator and verifier plus that task's
-original ARC pairs. It then has to survive **four kinds of check**:
+An LLM writes one maker per task — `generate()`, `sample_colors()` and
+`derive_operations()` — from that task's RE-ARC generator and verifier plus its
+original ARC pairs. What comes back is checked four ways:
 
 | check | what it asks | where |
 |---|---|---|
-| **simulation** | do the ops turn I into O; does the grid revisit a state; is any op removable with O still reached | inside the generating conversation, so a rejection is re-prompted immediately, up to 3 tries |
+| **simulation** | do the ops turn I into O; does the grid revisit a state; is any op removable with O still reached | inside the generating conversation, so a rejection is re-prompted at once, up to 3 tries |
 | **samples** | do N *fresh* instances all reach the target, not just the ones it was written on | `pipeline/verify_grid_makers.py` |
 | **critic** | replaying an episode, does the route match the solver's concept | `pipeline/critique_makers_llm.py` |
 | **originals** | does the same solution replay on the task's own original ARC pairs | `pipeline/probe_originals.py` |
 
-**These are four filters, not four stages.** They were added at different points
-and ran in different orders and combinations from round to round. The honest
-description is that every maker ended up passing all four, not that it walked a
-fixed 1→2→3→4. Whatever a round found became per-task feedback for the next
-one, and each task kept its best maker. Nothing here was generated in one shot.
+A maker that fails a check is written again, and what the check found goes with
+it: the pair it failed, and what its ops produced instead. Naming the cause is
+the model's job. Rounds run until the maker passes, and each task keeps its
+best one — every maker in this repository passes all four checks.
 
-[`pipeline/README.md`](pipeline/README.md) has the recipe, what each corpus
-changes about it, and the loop in full.
+The checks were built at different times and ran in different combinations from
+round to round, so this is a set of filters rather than a fixed sequence. That
+is also what makes it portable: the parts that do the work are a route written
+as code, replay deciding whether it survives, and a rejection carrying evidence
+into the next attempt. Which checks you can run is what a corpus changes — real
+ARC-AGI-2 tasks have no generator, so nothing there can ask for fresh instances,
+and those makers went through the loop without that check.
+[`pipeline/README.md`](pipeline/README.md) has all of it in full.
 
 ## Writing your own
 
 A maker subclasses `BaseGridMaker` and implements `parse(**kwargs)`, returning
 `(ex_in, ex_out, pr_in, pr_out, desc)` per sample, where `desc` carries
 `operations` and `selections`. Start from any file under `maker/arc-agi-1/`,
-then:
+then run the two checks that need no LLM:
 
 ```bash
 python pipeline/probe_originals.py    --subfolder <your_set>   # solves the original pairs?
 python pipeline/verify_grid_makers.py --subfolder <your_set>   # fresh samples reach the target?
 ```
 
-Both run on CPU with no LLM calls. Run `probe_originals.py` first: it is the one
-that catches a `generate()` which has drifted away from the task.
-
-`docs/arcle_reference.md` is the operation reference makers are written
-against, and is also what the generator prompt is built from. The rest of the
-checks, and how to feed their output back into generation, are in
-[`pipeline/README.md`](pipeline/README.md).
+Run `probe_originals.py` first — it is the one that catches a `generate()` that
+has drifted away from the task. `docs/arcle_reference.md` is the operation
+reference makers are written against, and what the generator prompt is built
+from.
 
 ## Download
 
