@@ -185,10 +185,20 @@ The checks that produced these makers, and every flag of every script, are in
 
 ## How the makers were written
 
-A maker starts as one LLM generation — `generate()`, `sample_colors()` and
-`derive_operations()` for a single task, written from the RE-ARC generator and
-verifier plus that task's original ARC pairs. It then has to survive **four
-kinds of check**:
+The loop is one recipe, and this repository is one run of it. A model writes the
+route as code; replaying that code in ARCLE decides whether it survives; a
+rejection goes back carrying the pair it failed and what it produced instead,
+never a diagnosis; rounds continue until it passes, and each task keeps its best
+maker. What changes from corpus to corpus is only which gates are available to
+run — with a generator you can also demand fresh instances, and with the
+original ARC pairs you can demand the same route replay on those. Real
+ARC-AGI-2 tasks, which have neither, went through the same loop with replay as
+its only gate.
+
+The run that produced the makers here had all of them. A maker starts as one LLM
+generation — `generate()`, `sample_colors()` and `derive_operations()` for a
+single task, written from the RE-ARC generator and verifier plus that task's
+original ARC pairs. It then has to survive **four kinds of check**:
 
 | check | what it asks | where |
 |---|---|---|
@@ -203,7 +213,8 @@ description is that every maker ended up passing all four, not that it walked a
 fixed 1→2→3→4. Whatever a round found became per-task feedback for the next
 one, and each task kept its best maker. Nothing here was generated in one shot.
 
-[`pipeline/README.md`](pipeline/README.md) has the loop in full.
+[`pipeline/README.md`](pipeline/README.md) has the recipe, what each corpus
+changes about it, and the loop in full.
 
 ## Writing your own
 

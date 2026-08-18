@@ -11,7 +11,68 @@ from the repository root.
 
 ---
 
-## The loop
+## The recipe
+
+Nothing in this loop is specific to RE-ARC, or to ARC-AGI-1, or to the 410
+makers here. It needs four things, and each corpus supplies them differently:
+
+**An action space with a replay engine.** ARCLE, in our case. This is what makes
+a claimed solution checkable without a human: a route is a list of ops, and
+either replaying it from I lands on O or it does not. Every gate below is built
+on that one mechanical fact.
+
+**A source of pairs.** Either a generator that makes as many as you want, or the
+task's own handful. The recipe does not care which; it only changes what you can
+ask of a candidate afterwards.
+
+**A model that writes the route rather than the answer.** The unit of output is
+code that emits ops — never a grid. A model that has seen O can still paste it
+into place, which is why the gates ask more than "did it reach the target".
+
+**Gates a machine runs, and feedback that carries evidence instead of a
+diagnosis.** A rejected candidate goes back with the pair it failed, what its
+ops produced instead, and nothing else. Naming the cause is the model's job.
+A human writing *"handle the other mirror axis too"* once per task is the
+bottleneck this whole pipeline exists to remove.
+
+```
+            ┌────────►  a model writes a maker  ────────┐
+            │                                           ▼
+      the pair it failed                       replay it in ARCLE
+      and what it produced                             │
+            │                                           ▼
+            │                            the gates that corpus allows
+            └───────────────────────────────────────────┘
+                     rounds until it passes; keep the best per task
+```
+
+The loop ends on gates, not on a round count. Nothing is generated in one shot,
+and no round is trusted to be the last one.
+
+**What changes between corpora is only which gates exist.** Two we have run:
+
+| | ARC-AGI-1 (this repository) | ARC-AGI-2 (pilot) |
+|---|---|---|
+| where the pairs come from | the task's RE-ARC generator — instances are unlimited | the task's own train and test pairs, and there are a handful |
+| what the model writes | `generate`, `sample_colors`, `derive_operations` | `derive_operations` only; a fixed base supplies the real pairs |
+| replay in ARCLE | yes | yes, and it is the only gate |
+| fresh instances reach the target | yes, `verify_grid_makers.py` | not available — the pairs are fixed |
+| it replays on the original ARC pairs | yes, `probe_originals.py` | those *are* the pairs |
+| a critic reads the route | yes, `critique_makers_llm.py` | not used in the pilot |
+| what a rejection carries back | a per-task feedback file, next round | the per-pair diff, same conversation |
+
+The ARC-AGI-2 pilot is the useful case precisely because so much is missing.
+With no generator there is no generalization gate, and with no verifier there is
+no second opinion on the concept — replay against the task's real O is all the
+loop has, and it is enough to close. It also does not need the model to see O:
+withhold it and the ops still have to produce it, which makes copying
+structurally impossible rather than merely discouraged. Those makers are
+browsable in the [viewer](https://qazyunho.github.io/SOLAR-V2/) as Beta; their
+trajectories are not part of this release.
+
+---
+
+## The loop, as it ran for ARC-AGI-1
 
 A maker starts as one LLM generation: `generate()`, `sample_colors()` and
 `derive_operations()` for a single task, written from the RE-ARC generator and
@@ -33,13 +94,11 @@ gen_rearc_makers_llm.py  ──►  maker/<set>/<task_id>/grid_maker.py
 and ran in different orders and combinations from round to round. The honest
 description is that every maker ended up passing all four, not that it walked a
 fixed 1→2→3→4. The loop ran for several rounds and each task kept its best
-maker. Nothing here was generated in one shot.
+maker.
 
 The feedback that closed the hardest cases carried no diagnosis, just the
 failing original pair, what the trajectory produced instead, and a couple of
-instances the maker's own `generate()` makes. Naming the cause is the model's
-job. A human writing *"handle the other mirror axis too"* once per task is the
-bottleneck this pipeline removes.
+instances the maker's own `generate()` makes.
 
 ---
 
