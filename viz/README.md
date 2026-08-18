@@ -15,17 +15,23 @@ nothing from this directory.
 
 ## One trajectory
 
-### `make_teaser.py` / `make_teaser_gif.py`
+### `visualize_trajectory.py` / `visualize_trajectory_gif.py`
 
-A single episode as a still figure or an animated GIF. The GIF in the top-level
-README is this script's output.
+A single episode as a still figure or an animated GIF.
+
+The figure keeps the original SOLAR-Generator layout: one row per demonstration
+pair, input beside output, then the trajectory along the bottom — test input
+first, then one panel per step, each labelled underneath with the op number and
+name. Two differences: the selection an op applies to is outlined on its panel,
+and grids are clipped to `grid_dim`, so the padding a 30x30 recording carries
+is not drawn. The GIF in the top-level README is the other script's output.
 
 | flag | default | |
 |---|---|---|
 | `--root` | required | a rollout directory |
 | `--task` | figure: pick one; GIF: required | task id |
 | `--file` | — | a specific episode JSON, instead of `--task` |
-| `--out` | `figure/teaser.png` / `figure/teaser.gif` | |
+| `--out` | `figure/trajectory.png` / `figure/teaser.gif` | |
 | `--max_steps` | 8 (figure), 12 (GIF) | frames to show |
 | `--max_examples` / `--examples` | 3 (figure) / 2 (GIF) | worked examples drawn |
 | `--min_steps` | 3 | figure: skip episodes shorter than this when picking |
@@ -36,8 +42,8 @@ README is this script's output.
 | `--dpi` | 110 | GIF only |
 
 ```bash
-python viz/make_teaser.py     --root $SOLAR_DATA_ROOT/draw0/whole --task 05f2a901 --out figure/mine.png
-python viz/make_teaser_gif.py --root $SOLAR_DATA_ROOT/draw0/whole --task 05f2a901 --out figure/mine.gif
+python viz/visualize_trajectory.py     --root $SOLAR_DATA_ROOT/draw0/whole --task 05f2a901 --out figure/mine.png
+python viz/visualize_trajectory_gif.py --root $SOLAR_DATA_ROOT/draw0/whole --task 05f2a901 --out figure/mine.gif
 ```
 
 ---

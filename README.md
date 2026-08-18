@@ -80,13 +80,13 @@ Drop `--tasks` and all 400 makers roll out.
 
 ```bash
 # a still figure: the worked examples, then the episode step by step
-python viz/make_teaser.py \
+python viz/visualize_trajectory.py \
     --root solar-data/draw0/whole \
     --task 05f2a901 \
     --out figure/mine.png
 
 # the same episode as a GIF
-python viz/make_teaser_gif.py \
+python viz/visualize_trajectory_gif.py \
     --root solar-data/draw0/whole \
     --task 05f2a901 \
     --out figure/mine.gif
@@ -134,8 +134,8 @@ python viz/make_teaser_gif.py \
 │   ├── README.md
 │   ├── build_handcraft_gallery.py
 │   ├── build_hero_bg.py
-│   ├── make_teaser.py
-│   └── make_teaser_gif.py
+│   ├── visualize_trajectory.py
+│   └── visualize_trajectory_gif.py
 ├── .gitignore
 ├── LICENSE
 ├── README.md

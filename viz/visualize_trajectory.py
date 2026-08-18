@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Render one trajectory as a static teaser figure: rule on top, actions below.
+"""Render one recorded trajectory as a static figure.
 
-The web viewer is HTML, so it can show this but cannot
-export it. This is the same palette and the same grid renderer, laid out as a
-single figure for a README or a paper: the worked example pairs across the top
-establish the rule, the strip below walks the policy's actions one at a time,
-each panel showing the grid the operation is about to be applied to with its
-selection highlighted.
+The layout follows the original SOLAR-Generator visualiser: one row per
+demonstration pair, input beside output, then the trajectory across the bottom
+row — the test input first, then the grid at each step, each panel labelled
+underneath with the ARCLE op number and name applied to it.
+
+Two things are drawn differently. The selection an operation applies to is
+outlined on its panel, so the row reads as a policy's choices rather than as a
+sequence of snapshots; and grids are clipped to their true extent from
+`grid_dim`, so the padding a 30x30 recording carries never reaches the page.
 
 Alignment note: record index i holds the state *before* operation i together
 with the selection used for it, so panel i is honestly "what the agent saw and
 what it chose". The last panel is the state after the final Submit.
 
-    python make_teaser.py --list --min_steps 4 --max_steps 7
-    python make_teaser.py --task 05269061 --out figure/teaser.png
+    python viz/visualize_trajectory.py --root <data_folder>/whole --list
+    python viz/visualize_trajectory.py --root <data_folder>/whole --task 05269061
 """
 from __future__ import annotations
 
@@ -95,9 +98,9 @@ def find_files(root: Path, task: str | None):
     return out
 
 
-def teaser(d: dict, task: str, out_path: Path, max_examples: int = 3,
+def figure(d: dict, task: str, out_path: Path, max_examples: int = 3,
            max_steps: int | None = None, title: str | None = None) -> None:
-    ops = d["operation_name"]
+    ops, op_nums = d["operation_name"], d["operation"]
     n = len(ops)
     shown = n if max_steps is None else min(n, max_steps)
     truncated = shown < n
@@ -108,51 +111,64 @@ def teaser(d: dict, task: str, out_path: Path, max_examples: int = 3,
 
     # +1 for the final state panel, +1 more when we elide the middle
     n_panels = shown + 1 + (1 if truncated else 0)
-    ncols = max(2 * k, n_panels)
+    ncols = max(2, n_panels)
 
-    # one cell size per strip, so panels are comparable within a row
+    # one cell size per row, so panels within a row stay comparable — a
+    # ResizeGrid then reads as the canvas growing, not as a different zoom
     ex_box = (max(max(ex_ind[i][0], ex_outd[i][0]) for i in range(k)),
               max(max(ex_ind[i][1], ex_outd[i][1]) for i in range(k)))
     dims = d["grid_dim"][:shown] + [d["grid_dim"][-1]]
     tr_box = (max(hw[0] for hw in dims), max(hw[1] for hw in dims))
 
-    # Each panel is `cell` wide, so its height follows its box aspect. Deriving
-    # the figure height from that keeps tall grids from leaving a band of dead
-    # space under short ones.
-    cell = 1.35
-    TITLE_IN = 0.42
-    top_h = cell * ex_box[0] / ex_box[1] + TITLE_IN
-    bot_h = cell * tr_box[0] / tr_box[1] + TITLE_IN
-    fig = plt.figure(figsize=(cell * ncols, top_h + bot_h), dpi=200)
-    top, bottom = fig.subfigures(2, 1, height_ratios=[top_h, bot_h])
+    # Panel width is fixed; height follows the box aspect, which is what keeps a
+    # row of tall grids from leaving a band of dead space under a row of short
+    # ones. The op label under each trajectory panel needs its own strip.
+    # A row is `ncols` panels wide whatever it uses, so a demonstration row and
+    # the trajectory row draw at one cell size. Row height is derived from the
+    # width a panel actually gets once margins and wspace are taken out —
+    # deriving it from `cell` alone left a band of white under every row.
+    cell, WSPACE, SIDE = 1.35, 0.18, 0.99
+    EX_TOP, EX_BOT = 0.80, 0.02          # axes band inside a demonstration row
+    TR_TOP, TR_BOT = 0.82, 0.14          # the trajectory row keeps its op labels
+    panel_w = cell * ncols * SIDE / (ncols + (ncols - 1) * WSPACE)
+    ex_h = panel_w * ex_box[0] / ex_box[1] / (EX_TOP - EX_BOT)
+    tr_h = panel_w * tr_box[0] / tr_box[1] / (TR_TOP - TR_BOT)
+    # the first band is empty and holds the suptitle: drawn over the rows it
+    # landed on the first demonstration's own label
+    HEAD = 0.5
+    fig = plt.figure(figsize=(cell * ncols, HEAD + ex_h * k + tr_h), dpi=200)
+    bands = fig.subfigures(k + 2, 1, height_ratios=[HEAD] + [ex_h] * k + [tr_h])
+    rows = bands[1:]
 
-    top.suptitle(
-        title or f"task {task} — the rule, from worked examples",
-        fontsize=11, y=1 - 0.12 * TITLE_IN / top_h,
-    )
-    ax_top = top.subplots(1, ncols, squeeze=False)[0]
+    fig.suptitle(title or f"task {task} — {n} ARCLE actions", fontsize=11)
+
+    # demonstration pairs: input beside output, one pair per row
     for i in range(k):
+        ax = rows[i].subplots(1, ncols, squeeze=False)[0]
+        # the label breaks over two lines: at one panel wide it does not fit on
+        # one, and a single line ran into the next panel's title
         h, w = ex_ind[i]
-        render_grid(ax_top[2 * i], ex_in[i], h, w, f"example {i+1}  in",
+        render_grid(ax[0], ex_in[i], h, w, f"demonstration\ninput {i+1}",
                     box=ex_box, title_size=7.5)
         h, w = ex_outd[i]
-        render_grid(ax_top[2 * i + 1], ex_out[i], h, w, "out", box=ex_box,
-                    title_size=7.5)
-    for j in range(2 * k, ncols):
-        ax_top[j].axis("off")
+        render_grid(ax[1], ex_out[i], h, w, f"demonstration\noutput {i+1}",
+                    box=ex_box, title_size=7.5)
+        for j in range(2, ncols):
+            ax[j].axis("off")
+        rows[i].subplots_adjust(left=(1 - SIDE) / 2, right=(1 + SIDE) / 2,
+                                top=EX_TOP, bottom=EX_BOT, wspace=WSPACE)
 
-    bottom.suptitle(
-        f"the trajectory — {n} ARCLE actions, one panel per action; "
-        f"cyan marks the selection the action is applied to",
-        fontsize=11, y=1 - 0.12 * TITLE_IN / bot_h,
-    )
-    axes = bottom.subplots(1, ncols, squeeze=False)[0]
+    # the trajectory, one panel per step
+    axes = rows[k].subplots(1, ncols, squeeze=False)[0]
     col = 0
     for i in range(shown):
         h, w = d["grid_dim"][i]
         render_grid(axes[col], d["grid"][i], h, w,
-                    title=f"{i+1}. {ops[i]}", sel_mask=d["selection_mask"][i],
-                    title_color="#0b6623", box=tr_box, title_size=7.5)
+                    title="test input" if i == 0 else f"step {i}",
+                    sel_mask=d["selection_mask"][i], box=tr_box, title_size=7.5)
+        axes[col].text(0.5, -0.06, f"{op_nums[i]}  {ops[i]}", ha="center",
+                       va="top", transform=axes[col].transAxes, fontsize=7,
+                       color="#0b6623")
         col += 1
     if truncated:
         axes[col].text(0.5, 0.5, f"…\n+{n - shown}\nactions", ha="center",
@@ -160,10 +176,16 @@ def teaser(d: dict, task: str, out_path: Path, max_examples: int = 3,
         axes[col].axis("off")
         col += 1
     h, w = d["grid_dim"][-1]
-    render_grid(axes[col], d["grid"][-1], h, w, title="output",
-                title_color="#8b0000", box=tr_box, title_size=7.5)
+    # `n`, not `shown`: with a truncated middle the last panel is still the
+    # state after every action, and labelling it with the truncated count lied
+    render_grid(axes[col], d["grid"][-1], h, w, title=f"step {n}",
+                box=tr_box, title_size=7.5)
+    axes[col].text(0.5, -0.06, "final grid", ha="center", va="top",
+                   transform=axes[col].transAxes, fontsize=7, color="#8b0000")
     for j in range(col + 1, ncols):
         axes[j].axis("off")
+    rows[k].subplots_adjust(left=(1 - SIDE) / 2, right=(1 + SIDE) / 2,
+                            top=TR_TOP, bottom=TR_BOT, wspace=WSPACE)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, bbox_inches="tight", facecolor="white")
@@ -178,7 +200,7 @@ def main() -> None:
                     help="a rollout directory, e.g. <data_folder>/whole")
     ap.add_argument("--task", default=None)
     ap.add_argument("--file", default=None, help="explicit trajectory json")
-    ap.add_argument("--out", default="figure/teaser.png")
+    ap.add_argument("--out", default="figure/trajectory.png")
     ap.add_argument("--max_steps", type=int, default=8)
     ap.add_argument("--max_examples", type=int, default=3)
     ap.add_argument("--title", default=None)
@@ -211,7 +233,7 @@ def main() -> None:
             raise SystemExit(f"no trajectory found for task={args.task}")
         task, path = cands[0]
 
-    teaser(json.loads(path.read_text()), task, Path(args.out),
+    figure(json.loads(path.read_text()), task, Path(args.out),
            max_examples=args.max_examples, max_steps=args.max_steps,
            title=args.title)
 
