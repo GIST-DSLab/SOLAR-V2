@@ -21,6 +21,8 @@ class GridMaker(BaseGridMaker):
         max_h, max_w = kwargs['max_grid_dim']
         num_examples = kwargs['num_examples']
 
+        p_colors = [1, 2]
+        
         # randomly generate inputs
         while num < num_samples:
             num += 1
@@ -32,21 +34,13 @@ class GridMaker(BaseGridMaker):
             operations = []
             selections = []
 
-            # 공통
-
-            # 색상 2개 선택
-            p_colors = random.sample(range(1, 10), 2)
-
             j = 0
             # num_examples 만큼 예제 만들기 + 마지막 1개 test case
             while (j < num_examples+1):
-                # 내 구현
-                h = np.random.randint(7, max_h)
+                h = 10
                 w = h
                 rand_grid = np.zeros((h, w), dtype=np.uint8)
 
-                # 두 점이 대각선으로 만나는 지 확인하는 함수
-                
                 # 랜덤으로 2개 찍기
                 points = []
                 x1 = np.random.randint(1, h-2)
@@ -88,7 +82,6 @@ class GridMaker(BaseGridMaker):
 
                 # ARCLE
                 if (j == num_examples):
-
                     operations.append(34)   # Submit
                     selections.append([0, 0, h-1, w-1])
 
@@ -102,8 +95,70 @@ class GridMaker(BaseGridMaker):
                     ex_out.append(answer_grid)
                     j = j + 1
 
-            desc = {'id': f'5c0a986e_{num}',
+            desc = {'id': f'5c0a986e-expert_{num}',
                     'selections': selections,
                     'operations': operations}
             dat.append((ex_in, ex_out, pr_in, pr_out, desc))
+            
+            # 랜덤 궤적 생성
+            for i in range(1):
+                # 보호할 영역 계산 (초기 사각형들)
+                protected_areas = self._get_protected_areas(h, w, num)
+                
+                # 랜덤 branch 지점 선택
+                branch_idx = random.randint(1, len(operations) - 2)  # 예: 1~(N-2)
+                rand_operations = operations[:branch_idx]
+                rand_selections = selections[:branch_idx]
+                
+                # 랜덤 탐색 (보호 영역 피해서)
+                for _ in range(8):  # Submit 제외
+                    rand_x1, rand_y1 = self._get_safe_random_position(h, w, protected_areas)
+                    # 가역적 액션: 지우기(0), 색칠1(1), 색칠2(2)
+                    rand_operations.append(random.choice([0, 1, 2]))
+                    rand_selections.append([rand_x1, rand_y1, 0, 0])
+                
+                # Submit 추가
+                rand_operations.append(34)
+                rand_selections.append([0, 0, h-1, w-1])  # Submit selection
+
+                desc = {'id': f'5c0a986e-random_{num}_{i}',
+                        'selections': rand_selections,
+                        'operations': rand_operations}
+                
+                dat.append((ex_in, ex_out, pr_in, pr_out, desc))
         return dat
+
+    def _get_protected_areas(self, h, w, num):
+        """초기 사각형 위치들을 다시 계산해서 보호할 영역 반환"""
+        # 동일한 seed로 초기 사각형 위치 재생성
+        temp_state = np.random.get_state()
+        np.random.seed(num)
+        
+        x1 = np.random.randint(1, h-2)
+        y1 = np.random.randint(1, w-2)
+        x2, y2 = x1, y1
+
+        while self.is_diagonal_intersect((x1, y1), (x2, y2)) or self.is_diagonal_intersect((x1+1, y1), (x2, y2)) or self.is_diagonal_intersect((x1, y1+1), (x2, y2)):
+            x2 = np.random.randint(1, h-2)
+            y2 = np.random.randint(1, w-2)
+        
+        # 두 사각형 영역 (2x2 각각)
+        protected_areas = set()
+        for dx, dy in [(0, 0), (0, 1), (1, 0), (1, 1)]:
+            protected_areas.add((x1+dx, y1+dy))
+            protected_areas.add((x2+dx, y2+dy))
+        
+        np.random.set_state(temp_state)
+        return protected_areas
+    
+    def _get_safe_random_position(self, h, w, protected_areas, max_attempts=50):
+        """보호 영역을 피해서 안전한 랜덤 위치 반환"""
+        for _ in range(max_attempts):
+            rand_x = random.randint(0, h-1)
+            rand_y = random.randint(0, w-1)
+            
+            if (rand_x, rand_y) not in protected_areas:
+                return rand_x, rand_y
+        
+        # 최대 시도 횟수 초과시 그냥 반환 (매우 드문 경우)
+        return rand_x, rand_y

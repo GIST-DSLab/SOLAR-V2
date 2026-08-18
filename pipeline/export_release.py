@@ -77,7 +77,7 @@ SUBSETS = {
                 "--data_folder <out>",
     ),
     "handcraft": dict(
-        # A control, not new coverage: all 10 base task ids are already in
+        # A control, not new coverage: all 9 base task ids are already in
         # arc_agi1, so hand-written and LLM-written makers meet on the same tasks.
         # The `half` variants only. Rolling out every expert/half variant put ~28%
         # duplicates in the set: across the two, 282 duplicate signature groups
@@ -89,11 +89,13 @@ SUBSETS = {
         episodes=10,
         # 74dd1130-half is a transpose: FlipV, Rotate90, Submit, the same three
         # actions on all 25 rollouts. There is no route to read off it, which is
-        # what this subset is for.
+        # what this subset is for. It is not one of the ten makers this repository
+        # ships; the exclude is here so a re-export of the original rollout
+        # directory reproduces the published subset exactly.
         exclude={"74dd1130-half"},
         label="handcraft",
         manifest=None,
-        note="11 hand-written half-variant makers over 10 ARC-AGI-1 training tasks",
+        note="10 hand-written half-variant makers over 9 ARC-AGI-1 training tasks",
         # --force_grid_size is not optional here: these makers unpack
         # max_grid_dim from kwargs and KeyError without it.
         # 15x15, not the 30x30 the release uses. These makers scale their work

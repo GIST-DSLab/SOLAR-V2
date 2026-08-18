@@ -1,6 +1,6 @@
 # The maker pipeline
 
-How the 415 makers in this repository were produced, and every flag of the
+How the 410 makers in this repository were produced, and every flag of the
 scripts that produced them. If you only want trajectories out of the makers
 that already exist, the two commands in the [top-level
 README](../README.md#generating-a-dataset) are enough and you do not need this
