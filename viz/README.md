@@ -8,7 +8,7 @@ The trajectory scripts take `--root <data_folder>/whole`, the directory
 exception: it reads a `build_preview.py` parquet instead.
 
 To browse episodes rather than render them, use the published viewer at
-[qazyunho.github.io/SOLAR-V2](https://qazyunho.github.io/SOLAR-V2/), which needs
+[gist-dslab.github.io/SOLAR-V2](https://gist-dslab.github.io/SOLAR-V2/), which needs
 nothing from this directory.
 
 ---

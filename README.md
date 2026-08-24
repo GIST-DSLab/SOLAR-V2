@@ -10,7 +10,7 @@ move → paste → submit), not just an input/output pair.
 [![Python](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![ARCLE](https://img.shields.io/badge/arcle-0.2.5-orange.svg)](https://github.com/ConfeitoHS/arcle)
 
-### [Browse the trajectories &rarr;](https://qazyunho.github.io/SOLAR-V2/) &nbsp;·&nbsp; [Dataset on Hugging Face &rarr;](https://huggingface.co/datasets/dbsgh797210/SOLAR)
+### [Browse the trajectories &rarr;](https://gist-dslab.github.io/SOLAR-V2/) &nbsp;·&nbsp; [Dataset on Hugging Face &rarr;](https://huggingface.co/datasets/dbsgh797210/SOLAR)
 
 ![one episode, action by action](figure/teaser.gif)
 
@@ -26,7 +26,7 @@ limit (see [Download](#download)).
 Python 3.11, developed and verified on 3.11.15.
 
 ```bash
-git clone https://github.com/QAZyunho/SOLAR-V2.git solar-traj
+git clone https://github.com/GIST-DSLab/SOLAR-V2.git solar-traj
 cd solar-traj
 pip install -r requirements.txt
 ```

@@ -65,7 +65,7 @@ A corpus with more gates gets more out of the loop, which is why the makers in
 this repository went through all four: replay says the route works, and the
 other three are what say it is a route worth keeping. The ARC-AGI-2 pilot ran
 the same loop with the gates that corpus allows. Those makers are browsable in
-the [viewer](https://qazyunho.github.io/SOLAR-V2/) as Beta; their trajectories
+the [viewer](https://gist-dslab.github.io/SOLAR-V2/) as Beta; their trajectories
 are not part of this release.
 
 ---
