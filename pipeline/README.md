@@ -151,7 +151,7 @@ written on. No LLM calls.
 | `--num_samples` | 5 | fresh instances per task |
 | `--num_examples` | 3 | worked examples per instance |
 | `--max_grid_dim` | `30 30` | |
-| `--rand_seed` | 42 | |
+| `--rand_seed` | 42 | one or more: `--rand_seed 0 1 2` pools three draws |
 | `--tasks` | all | |
 | `--show_fail` | off | print the reason for each failure |
 
@@ -168,12 +168,33 @@ A selection may be a bbox `[r, c, h, w]` (h and w are offsets, so the region is
 `maker/sel_helpers.py` produces for non-rectangular objects. Gate B handles
 both.
 
+**Use several seeds.** One seed is one draw of instances, and a maker can fit
+the draw it was written against — a hardcoded position that happens to hold, an
+object count that never varies within one seed. `--rand_seed 0 1 2` runs three
+independent draws and pools them into the same columns, so that maker's A drops
+below 100% instead of passing. This is the generalisation check; use it, not the
+original ARC pairs, to decide whether a maker needs another round.
+
 ### `probe_originals.py`
 
 Replay the maker's solution on the task's own original ARC pairs. No LLM calls,
-400 tasks in minutes. **Run this one first while iterating** — it is the check
-that catches a `generate()` that has drifted away from the task it is supposed
-to represent.
+400 tasks in minutes. It is the check that catches a `generate()` that has
+drifted away from the task it is supposed to represent.
+
+**RE-ARC is a re-implementation, not the original task, and on a few tasks the
+two disagree.** Running the vendored verifier on the original pairs: it fails to
+reproduce at least one of them on **9 of these 400 tasks** — `e5062a87`,
+`7e0986d6`, `4290ef0e`, `6cf79266`, `97a05b5b`, `a64e4611`, `a8d7556c`,
+`29ec7d0e`, `53b68214`. On `6cf79266` RE-ARC fills a 3x3 block the original
+leaves clipped at the border. A maker written from the generator follows the
+generator, so on such a pair it is *supposed* to differ, and a round of feedback
+demanding it match would send the model after a contradiction.
+
+So this script checks each original pair against the verifier too, and any pair
+the verifier cannot reproduce either is excluded from the maker's score and
+recorded as `UPSTREAM_PAIR_UNVERIFIED` at severity `low` — below
+`critique_to_feedback.py`'s default `--min_severity`, so it never becomes
+regeneration feedback.
 
 | flag | default | |
 |---|---|---|

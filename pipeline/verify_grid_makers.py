@@ -40,7 +40,10 @@ parser.add_argument("--num_samples", type=int, default=5,
                     help="Episodes per task")
 parser.add_argument("--num_examples",type=int, default=3)
 parser.add_argument("--max_grid_dim",nargs=2,  type=int, default=[30, 30])
-parser.add_argument("--rand_seed",   type=int, default=42)
+parser.add_argument("--rand_seed",   type=int, nargs="+", default=[42],
+                    help="one or more seeds; each is a different draw of instances "
+                         "from the maker, so passing several is what catches a "
+                         "maker that only works on the draw it was written against")
 parser.add_argument("--tasks",       nargs="+", default=None)
 parser.add_argument("--show_fail",   action="store_true",
                     help="Print failing ops for A/B failures")
@@ -52,8 +55,6 @@ task_dirs = sorted(MAKER_BASE.iterdir())
 if args.tasks:
     task_dirs = [d for d in task_dirs if d.name in args.tasks]
 
-random.seed(args.rand_seed)
-np.random.seed(args.rand_seed)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -116,10 +117,10 @@ def check_learnability(ex_outs, pr_out):
     return True, "general task (not checked)"
 
 
-def run_task(tid, maker_path):
-    """
-    Returns dict with per-check pass counts.
-    """
+def run_task(tid, maker_path, seed):
+    """One seed's worth of samples. Returns per-check pass counts."""
+    random.seed(seed)
+    np.random.seed(seed)
     spec = importlib.util.spec_from_file_location(f"gm_{tid}", str(maker_path))
     gm_mod = importlib.util.module_from_spec(spec)
     try:
@@ -129,7 +130,7 @@ def run_task(tid, maker_path):
 
     GridMaker = gm_mod.GridMaker
     loader = GridMaker(
-        rand_seed=args.rand_seed,
+        rand_seed=seed,
         num_samples=args.num_samples,
         num_examples=args.num_examples,
     )
@@ -241,21 +242,14 @@ def run_task(tid, maker_path):
 
     env.close()
 
-    def pct(lst):
+    def count(lst):
         valid = [x for x in lst if x is not None]
-        if not valid:
-            return float("nan"), 0
-        return sum(valid) / len(valid) * 100, len(valid)
+        return sum(valid), len(valid)
 
-    a_pct, a_n = pct(results["A"])
-    b_pct, b_n = pct(results["B"])
-    c_pct, c_n = pct(results["C"])
-
-    return {
-        "A_pct": a_pct, "A_n": a_n,
-        "B_pct": b_pct, "B_n": b_n,
-        "C_pct": c_pct, "C_n": c_n,
-    }
+    out = {}
+    for k in ("A", "B", "C"):
+        out[f"{k}_ok"], out[f"{k}_n"] = count(results[k])
+    return out
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -263,8 +257,10 @@ totals = {"A": [], "B": [], "C": []}
 fail_A, fail_B, fail_C = [], [], []
 errors = []
 
+seeds = args.rand_seed
 print(f"Verifying {len(task_dirs)} tasks in '{args.subfolder}' "
-      f"({args.num_samples} samples each)\n")
+      f"({args.num_samples} samples x {len(seeds)} seed"
+      f"{'s' if len(seeds) > 1 else ''}: {' '.join(map(str, seeds))})\n")
 print(f"{'task':<14} {'A(traj)':>8} {'B(ex)':>8} {'C(learn)':>10}")
 print("-" * 44)
 
@@ -274,18 +270,27 @@ for task_dir in task_dirs:
         continue
     tid = task_dir.name
 
-    try:
-        r = run_task(tid, maker_path)
-    except Exception as e:
-        print(f"{tid:<14} ERROR: {str(e)[:80]}")
+    # Every seed draws its own instances; the columns are the pooled result, so
+    # a maker that only holds up on the draw it was written against shows here.
+    r, failed = {f"{k}_{f}": 0 for k in "ABC" for f in ("ok", "n")}, None
+    for seed in seeds:
+        try:
+            part = run_task(tid, maker_path, seed)
+        except Exception as e:
+            failed = str(e)[:80]
+            break
+        if "load_error" in part or "parse_error" in part:
+            failed = (part.get("load_error") or part.get("parse_error"))[:60]
+            break
+        for k in r:
+            r[k] += part[k]
+    if failed is not None:
+        print(f"{tid:<14} ERROR: {failed}")
         errors.append(tid)
         continue
 
-    if "load_error" in r or "parse_error" in r:
-        err = r.get("load_error") or r.get("parse_error")
-        print(f"{tid:<14} ERROR: {err[:60]}")
-        errors.append(tid)
-        continue
+    for k in "ABC":
+        r[f"{k}_pct"] = r[f"{k}_ok"] / r[f"{k}_n"] * 100 if r[f"{k}_n"] else float("nan")
 
     a_str = f"{r['A_pct']:5.0f}% ({r['A_n']})" if r["A_n"] else "  N/A"
     b_str = f"{r['B_pct']:5.0f}% ({r['B_n']})" if r["B_n"] else "  N/A"

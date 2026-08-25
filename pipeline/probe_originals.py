@@ -93,26 +93,36 @@ class OriginalPairLoader(Loader):
                 for i, p in enumerate(self.pairs)]
 
 
-def verifier_reproduces(task: str, pairs: list, rearc_root: Path) -> tuple[int, int]:
-    """How many original pairs the vendored RE-ARC verifier gets right."""
+def verifier_reproduces(task: str, pairs: list, rearc_root: Path) -> list:
+    """Per pair: does the vendored RE-ARC verifier reproduce the original output?
+
+    RE-ARC re-implements each task, and on a few tasks its rule and the original
+    disagree on an edge case — measured over the 400 tasks here, 9 of them differ
+    on at least one original pair (6cf79266, for one: RE-ARC fills a 3x3 block
+    the original leaves clipped at the border). A maker written against the
+    generator reproduces RE-ARC's rule, so on those pairs it is *supposed* to
+    differ from the original, and asking a model to fix it sends it chasing a
+    contradiction. Knowing which pair is which is what keeps that out of the
+    feedback. `None` means the verifier could not be consulted at all.
+    """
     rs = str(rearc_root)
     if rs not in sys.path:
         sys.path.insert(0, rs)
     try:
         import verifiers as V
     except Exception:
-        return (-1, len(pairs))
+        return [None] * len(pairs)
     fn = getattr(V, f"verify_{task}", None)
     if fn is None:
-        return (-1, len(pairs))
-    ok = 0
+        return [None] * len(pairs)
+    out = []
     for p in pairs:
         try:
             got = fn(tuple(tuple(int(x) for x in row) for row in p["input"]))
-            ok += [list(r) for r in got] == p["output"]
+            out.append([list(r) for r in got] == p["output"])
         except Exception:
-            pass
-    return (ok, len(pairs))
+            out.append(False)
+    return out
 
 
 def generate_samples(mod, n: int) -> list:
@@ -132,7 +142,7 @@ def probe(task: str, maker_path: Path, arc_dir: Path, n_samples: int,
     raw = json.loads((arc_dir / f"{task}.json").read_text())
     pairs = raw["train"] + raw["test"]
     rec = {"task_id": task, "verdict": "PASS", "findings": [],
-           "original_pairs": {"ok": 0, "total": len(pairs)}}
+           "original_pairs": {"ok": 0, "total": len(pairs), "divergent": 0}}
 
     try:
         mod = load_module(maker_path)
@@ -180,17 +190,41 @@ def probe(task: str, maker_path: Path, arc_dir: Path, n_samples: int,
     if not failures:
         return rec
 
-    v_ok, v_tot = verifier_reproduces(task, pairs, rearc_root)
-    code = ("UPSTREAM_PAIR_UNVERIFIED" if 0 <= v_ok < v_tot
-            else "FAILS_ORIGINAL_PAIR")
+    # A pair the RE-ARC verifier cannot reproduce either is not this maker's
+    # fault: the generator it was written against models the task differently
+    # from the original there. Those pairs are reported, not held against it.
+    vrep = verifier_reproduces(task, pairs, rearc_root)
+    divergent = [f for f in failures if vrep[f[0]] is False]
+    real = [f for f in failures if vrep[f[0]] is not False]
+    n_div = len(divergent)
+    judged = len(pairs) - n_div
+    rec["original_pairs"]["divergent"] = n_div
+
+    if not real:
+        # every failure was one of those pairs — nothing to regenerate for.
+        rec["findings"].append({
+            "code": "UPSTREAM_PAIR_UNVERIFIED",
+            "severity": "low",
+            "evidence": (f"{n_div} of this task's {len(pairs)} original pairs are "
+                         f"not reproduced by the RE-ARC verifier either "
+                         f"(pairs {', '.join('#' + str(f[0] + 1) for f in divergent)}). "
+                         f"The maker matches the generator's rule; the generator "
+                         f"and the original task disagree there."),
+            "failed_pairs": [f[0] for f in divergent],
+        })
+        return rec
+
+    code = "FAILS_ORIGINAL_PAIR"
     rec["verdict"] = "FAIL" if ok == 0 else "REVISE"
 
-    i, I, O, got, names, err = failures[0]
-    ev = [f"Your solution was replayed on this task's {v_tot} original ARC pairs "
+    i, I, O, got, names, err = real[0]
+    ev = [f"Your solution was replayed on this task's {judged} original ARC pairs "
           f"(the ones the task ships with, not instances your generate() produced). "
-          f"It reproduced {ok} of {v_tot}."]
-    if v_ok >= 0:
-        ev.append(f"The RE-ARC verifier reproduces {v_ok}/{v_tot} of the same pairs.")
+          f"It reproduced {ok} of {judged}."]
+    if n_div:
+        ev.append(f"({n_div} further pair(s) are excluded: the RE-ARC verifier does "
+                  f"not reproduce them either, so the generator and the original "
+                  f"task disagree there and nothing needs fixing for them.)")
     ev += ["", f"First failing original pair (#{i + 1}):", "input:", grid_str(I),
            "expected output:", grid_str(O)]
     if got is not None:
@@ -212,7 +246,7 @@ def probe(task: str, maker_path: Path, arc_dir: Path, n_samples: int,
         "code": code,
         "severity": "high" if ok == 0 else "medium",
         "evidence": "\n".join(ev),
-        "failed_pairs": [f[0] for f in failures],
+        "failed_pairs": [f[0] for f in real],
     })
     return rec
 
@@ -237,13 +271,14 @@ def main() -> None:
     if args.tasks:
         tasks = [t for t in tasks if t in args.tasks]
 
-    recs, n_ok, n_tot, passed = [], 0, 0, 0
+    recs, n_ok, n_tot, n_div, passed = [], 0, 0, 0, 0
     for n, t in enumerate(tasks, 1):
         r = probe(t, base / t / "grid_maker.py", arc, args.samples,
                   Path(args.rearc_root))
         recs.append(r)
         op = r.get("original_pairs", {})
         n_ok += op.get("ok", 0); n_tot += op.get("total", 0)
+        n_div += op.get("divergent", 0)
         passed += int(r.get("verdict") == "PASS" and "error" not in r)
         if n % 50 == 0:
             print(f"  {n}/{len(tasks)}  pairs {n_ok}/{n_tot}", flush=True)
@@ -251,8 +286,12 @@ def main() -> None:
     Path(args.out).write_text(json.dumps(recs, indent=1))
     from collections import Counter
     codes = Counter(f["code"] for r in recs for f in r.get("findings", []))
-    print(f"\ntasks {len(tasks)} | original pairs {n_ok}/{n_tot} "
-          f"({100 * n_ok / max(n_tot, 1):.1f}%) | PASS {passed}/{len(tasks)}")
+    judged = n_tot - n_div
+    print(f"\ntasks {len(tasks)} | original pairs {n_ok}/{judged} "
+          f"({100 * n_ok / max(judged, 1):.1f}%) | PASS {passed}/{len(tasks)}")
+    if n_div:
+        print(f"  {n_div} pair(s) excluded: the RE-ARC verifier does not "
+              f"reproduce them either")
     for c, k in codes.most_common():
         print(f"  {c}: {k}")
     print(f"-> {args.out}")
