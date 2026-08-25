@@ -57,8 +57,8 @@ FINDING_CODES = {
         "though the vendored verifier does",
     "UPSTREAM_PAIR_UNVERIFIED":
         "the trajectory does not reproduce some original ARC pairs, and neither "
-        "does the vendored verifier — the upstream model of this task is itself "
-        "incomplete",
+        "does the vendored verifier — the generator this maker is built on models "
+        "the task differently there, so the maker is following its reference",
 }
 
 
@@ -96,14 +96,12 @@ class OriginalPairLoader(Loader):
 def verifier_reproduces(task: str, pairs: list, rearc_root: Path) -> list:
     """Per pair: does the vendored RE-ARC verifier reproduce the original output?
 
-    RE-ARC re-implements each task, and on a few tasks its rule and the original
-    disagree on an edge case — measured over the 400 tasks here, 9 of them differ
-    on at least one original pair (6cf79266, for one: RE-ARC fills a 3x3 block
-    the original leaves clipped at the border). A maker written against the
-    generator reproduces RE-ARC's rule, so on those pairs it is *supposed* to
-    differ from the original, and asking a model to fix it sends it chasing a
-    contradiction. Knowing which pair is which is what keeps that out of the
-    feedback. `None` means the verifier could not be consulted at all.
+    The generator is the reference: a maker is written from it, draws its
+    instances from it, and the dataset is those draws. RE-ARC re-implements each
+    task rather than shipping it, so on a few tasks its rule and an original pair
+    part ways on an edge case, and there the maker is *supposed* to follow the
+    generator. Telling which pair is which is what keeps a contradiction out of
+    the feedback. `None` means the verifier could not be consulted at all.
     """
     rs = str(rearc_root)
     if rs not in sys.path:

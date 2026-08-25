@@ -181,20 +181,19 @@ Replay the maker's solution on the task's own original ARC pairs. No LLM calls,
 400 tasks in minutes. It is the check that catches a `generate()` that has
 drifted away from the task it is supposed to represent.
 
-**RE-ARC is a re-implementation, not the original task, and on a few tasks the
-two disagree.** Running the vendored verifier on the original pairs: it fails to
-reproduce at least one of them on **9 of these 400 tasks** — `e5062a87`,
-`7e0986d6`, `4290ef0e`, `6cf79266`, `97a05b5b`, `a64e4611`, `a8d7556c`,
-`29ec7d0e`, `53b68214`. On `6cf79266` RE-ARC fills a 3x3 block the original
-leaves clipped at the border. A maker written from the generator follows the
-generator, so on such a pair it is *supposed* to differ, and a round of feedback
-demanding it match would send the model after a contradiction.
+**The reference is RE-ARC.** A maker is written from the generator and the
+verifier, its instances come from the generator, and the dataset is generator
+draws — so the generator's rule is what a maker has to be right about. RE-ARC
+re-implements each task rather than shipping it, and on a few tasks its rule and
+the original pairs part ways on an edge case. There a maker is *supposed* to
+follow the generator, and feedback demanding it match the original would be
+asking it to contradict the data it is built on.
 
-So this script checks each original pair against the verifier too, and any pair
-the verifier cannot reproduce either is excluded from the maker's score and
-recorded as `UPSTREAM_PAIR_UNVERIFIED` at severity `low` — below
-`critique_to_feedback.py`'s default `--min_severity`, so it never becomes
-regeneration feedback.
+So each original pair is checked against the verifier too, and a pair the
+verifier cannot reproduce either is left out of the maker's score and recorded
+at severity `low` — below `critique_to_feedback.py`'s default `--min_severity`,
+so it never reaches the next round. The remaining pairs still catch what this
+check is for: a `generate()` that has drifted off its task.
 
 | flag | default | |
 |---|---|---|

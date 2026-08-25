@@ -193,7 +193,7 @@ original ARC pairs. What comes back is checked four ways:
 | **simulation** | do the ops turn I into O; does the grid revisit a state; is any op removable with O still reached | inside the generating conversation, so a rejection is re-prompted at once, up to 3 tries |
 | **samples** | do N *fresh* instances, drawn under several seeds, all reach the target — not just the ones it was written on | `pipeline/verify_grid_makers.py` |
 | **critic** | replaying an episode, does the route match the solver's concept | `pipeline/critique_makers_llm.py` |
-| **originals** | does the same solution replay on the task's own original ARC pairs. RE-ARC re-implements each task and the two disagree on 9 of the 400, so pairs its verifier cannot reproduce either are excluded rather than blamed on the maker | `pipeline/probe_originals.py` |
+| **originals** | does the same solution replay on the task's own original ARC pairs. The generator is the reference, so where its rule and an original pair part ways that pair is excluded rather than blamed on the maker | `pipeline/probe_originals.py` |
 
 A maker that fails a check is written again, and what the check found goes with
 it: the pair it failed, and what its ops produced instead. Naming the cause is
