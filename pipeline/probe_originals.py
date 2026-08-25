@@ -36,6 +36,12 @@ from arcle.loaders import Loader
 SOLAR_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOLAR_ROOT))
 import utils as solar_utils  # noqa: E402
+# A maker set under maker/ can be a symlink to another disk. Each maker
+# resolves its own root with .resolve(), which follows that link out of the
+# repository, so re-arc never reaches sys.path from there — put it on here,
+# where the root is known. It goes on AFTER the import above: re-arc has a
+# utils.py of its own, and this line would otherwise shadow ours.
+sys.path.insert(0, str(SOLAR_ROOT / "re-arc"))
 
 MAX_GRID_DIM = (30, 30)
 # A clone of fchollet/ARC-AGI. Override with --arc_dir, or set SOLAR_ARC_DIR.

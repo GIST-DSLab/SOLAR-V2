@@ -238,10 +238,11 @@ def import_library_for_task(task, num_samples, max_grid_dim, num_examples, rand_
     # import random grid maker from task folder
     # subfolder can be 'arc-handcraft', 'simple-combo', 'test-train', 'unseen', or None for root maker/
     # task can already include subfolder path (e.g., 'simple-combo/simple-combo-colorfix')
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-
-    # task already includes the full path from maker/ directory
-    grid_maker_path_str = f"{base_dir}/maker/{task}/grid_maker.py"
+    # maker/ sits at the repository root and this file is one level under it,
+    # so the old os.path.dirname(__file__) pointed at pipeline/maker/, which
+    # does not exist.
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    grid_maker_path_str = f"{root}/maker/{task}/grid_maker.py"
 
     spec = importlib.util.spec_from_file_location('grid_maker', grid_maker_path_str)
     grid_maker_path = importlib.util.module_from_spec(spec)

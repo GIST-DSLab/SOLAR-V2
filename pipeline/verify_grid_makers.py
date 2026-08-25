@@ -26,6 +26,12 @@ import gymnasium as gym
 SOLAR_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SOLAR_ROOT))
 import utils as solar_utils
+# A maker set under maker/ can be a symlink to another disk. Each maker
+# resolves its own root with .resolve(), which follows that link out of the
+# repository, so re-arc never reaches sys.path from there — put it on here,
+# where the root is known. It goes on AFTER the import above: re-arc has a
+# utils.py of its own, and this line would otherwise shadow ours.
+sys.path.insert(0, str(SOLAR_ROOT / "re-arc"))
 
 # ── args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()

@@ -39,6 +39,12 @@ SOLAR_ROOT = next(p for p in Path(__file__).resolve().parents if (p / "maker").i
 sys.path.insert(0, str(SOLAR_ROOT))
 
 import utils as solar_utils
+# A maker set under maker/ can be a symlink to another disk. Each maker
+# resolves its own root with .resolve(), which follows that link out of the
+# repository, so re-arc never reaches sys.path from there — put it on here,
+# where the root is known. It goes on AFTER the import above: re-arc has a
+# utils.py of its own, and this line would otherwise shadow ours.
+sys.path.insert(0, str(SOLAR_ROOT / "re-arc"))
 
 # ── args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
@@ -70,11 +76,131 @@ parser.add_argument("--demo_trajectories", action="store_true", default=False,
                          "the N demonstrations fixed as the worked examples for every "
                          "target; each row is tagged role=problem|demo. Opt-in; off "
                          "leaves output byte-identical to before.")
+parser.add_argument("--verify_filter", action="store_true", default=False,
+                    help="re-arc-style augmentation gate: keep only generated instances "
+                         "whose pairs pass the RE-ARC verifier verify_<task>; drop the "
+                         "rest. Off by default (output byte-identical to before).")
+parser.add_argument("--rearc_root", type=str, default=None,
+                    help="Path to re-arc/ holding verifiers.py (default: SOLAR_ROOT/re-arc).")
+parser.add_argument("--rearc_generate", action="store_true", default=False,
+                    help="Augment with the ORIGINAL re-arc generate_<task> (verifier-matched "
+                         "by construction) instead of the maker's own generate(); the only "
+                         "adjustment is capping grids to --max_grid_dim. The maker still "
+                         "supplies derive_operations for the trajectory.")
 args = parser.parse_args()
 
 MAX_GRID_DIM = tuple(args.max_grid_dim)
 H, W = MAX_GRID_DIM
 formatted_time = datetime.now().strftime("%y.%m.%d")
+
+# ── verify-filter helpers (only touched when --verify_filter) ────────────────
+_VERIFIERS = None
+def _get_verifier(tid):
+    """Return verify_<tid> from re-arc/verifiers.py, or None if unavailable."""
+    global _VERIFIERS
+    if _VERIFIERS is None:
+        rr = args.rearc_root or str(SOLAR_ROOT / "re-arc")
+        if rr not in sys.path:
+            sys.path.insert(0, rr)
+        try:
+            import verifiers as _V
+            _VERIFIERS = _V
+        except Exception:
+            _VERIFIERS = False
+    if not _VERIFIERS:
+        return None
+    return getattr(_VERIFIERS, f"verify_{tid}", None)
+
+def _pair_ok(vfn, gin, gout):
+    """True if verify_<task>(gin) reproduces gout."""
+    try:
+        got = vfn(tuple(tuple(int(x) for x in row) for row in np.asarray(gin).tolist()))
+        return [list(r) for r in got] == [list(r) for r in np.asarray(gout).tolist()]
+    except Exception:
+        return False
+
+# ── original-re-arc-generate augmentation (only touched when --rearc_generate) ──
+import random as _random
+try:
+    from arcle.loaders import Loader as _ArcleLoader
+except Exception:
+    _ArcleLoader = object
+
+class _RearcLoader(_ArcleLoader):
+    """Serve re-arc generate_<task> instances (with maker-derived ops) to ARCLE."""
+    def __init__(self, samples):
+        self.samples = samples
+        self._pathlist = [""]
+        self.data = samples
+    def get_path(self, **k):
+        return [""]
+    def parse(self, **k):
+        return self.samples
+
+_GENERATORS = None
+def _get_generator(tid):
+    global _GENERATORS
+    if _GENERATORS is None:
+        rr = args.rearc_root or str(SOLAR_ROOT / "re-arc")
+        if rr not in sys.path:
+            sys.path.insert(0, rr)
+        try:
+            import generators as _G
+            _GENERATORS = _G
+        except Exception:
+            _GENERATORS = False
+    if not _GENERATORS:
+        return None
+    return getattr(_GENERATORS, f"generate_{tid}", None)
+
+def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80):
+    """re-arc generate, resampled until the grid fits max_hw (the only size modification)
+    and — when vfn is given (re-arc-style gate) — until verify reproduces it, per pair."""
+    Hc, Wc = max_hw
+    for _ in range(retries):
+        try:
+            d = genfn(lb, ub)
+        except Exception:
+            continue
+        I = np.array(d["input"], int); O = np.array(d["output"], int)
+        if max(I.shape[0], O.shape[0]) > Hc or max(I.shape[1], O.shape[1]) > Wc:
+            continue
+        if vfn is not None and not _pair_ok(vfn, I, O):
+            continue
+        return I, O
+    return None
+
+def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
+    """Instances from re-arc generate_<task> (size-capped) + maker's derive_operations.
+    With --verify_filter, every pair is resampled until verify reproduces it (re-arc style)."""
+    genfn = _get_generator(tid)
+    derive = getattr(gm_mod, "derive_operations", None)
+    if genfn is None or derive is None:
+        return None
+    vfn = _get_verifier(tid) if args.verify_filter else None
+    _random.seed(args.rand_seed)
+    need = n_examples + 1
+    samples = []
+    for s in range(n_samples):
+        pool, tries = [], 0
+        while len(pool) < need and tries < need * 40:
+            tries += 1
+            lb = _random.random() * 0.8
+            pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw, vfn=vfn)
+            if pr is not None:
+                pool.append(pr)
+        if len(pool) < need:
+            continue
+        ex, (I, O) = pool[:n_examples], pool[n_examples]
+        try:
+            ops, sels = derive(I.tolist(), O.tolist())
+        except Exception:
+            continue
+        ei = [p[0].astype(np.uint8) for p in ex]
+        eo = [p[1].astype(np.uint8) for p in ex]
+        desc = {"operations": ops, "selections": sels, "id": str(s)}
+        samples.append((ei, eo, [I.astype(np.uint8)], [O.astype(np.uint8)], desc))
+    return samples
 
 MAKER_BASE = SOLAR_ROOT / "maker" / args.subfolder
 task_dirs  = sorted(MAKER_BASE.iterdir())
@@ -215,16 +341,24 @@ def run_task(tid: str, maker_path: Path) -> tuple[int, int]:
     spec.loader.exec_module(gm_mod)
     GridMaker = gm_mod.GridMaker
 
-    loader = GridMaker(
-        rand_seed=args.rand_seed,
-        num_samples=args.num_samples,
-        num_examples=args.num_examples,
-        # Makers that understand it generate within the ceiling instead of
-        # letting the oversize filter below throw the sample away. Omit the
-        # kwarg entirely when the flag is off — passing None instead makes every
-        # maker that unpacks it into (max_h, max_w) raise on the first sample.
-        **({"max_grid_dim": MAX_GRID_DIM} if args.force_grid_size else {}),
-    )
+    if args.rearc_generate:
+        samples = _build_rearc_samples(tid, gm_mod, args.num_samples,
+                                       args.num_examples, (H, W))
+        if not samples:
+            tqdm.write(f"  SKIP {tid}: --rearc_generate produced no valid samples")
+            return 0, 0
+        loader = _RearcLoader(samples)
+    else:
+        loader = GridMaker(
+            rand_seed=args.rand_seed,
+            num_samples=args.num_samples,
+            num_examples=args.num_examples,
+            # Makers that understand it generate within the ceiling instead of
+            # letting the oversize filter below throw the sample away. Omit the
+            # kwarg entirely when the flag is off — passing None instead makes every
+            # maker that unpacks it into (max_h, max_w) raise on the first sample.
+            **({"max_grid_dim": MAX_GRID_DIM} if args.force_grid_size else {}),
+        )
 
     # Expand demos into their own targets BEFORE the env is built, so prob_index
     # addresses every one of them.
@@ -245,11 +379,24 @@ def run_task(tid: str, maker_path: Path) -> tuple[int, int]:
     folder.mkdir(exist_ok=True)
 
     correct = total = 0
+    dropped = 0
+    vfn = _get_verifier(tid) if args.verify_filter else None
+    if args.verify_filter and vfn is None:
+        tqdm.write(f"  NOTE {tid}: --verify_filter on but verify_{tid} not found; not filtering")
 
     for i, sample in enumerate(loader.data):
         ex_in_list, ex_out_list, pr_in_list, pr_out_list, desc = sample
         if not pr_in_list or not pr_out_list:
             continue
+
+        # re-arc-style augmentation gate: only keep instances the verifier reproduces
+        # (problem pair AND every worked example). Drop the rest.
+        if vfn is not None:
+            ok = _pair_ok(vfn, pr_in_list[0], pr_out_list[0]) and all(
+                _pair_ok(vfn, ei, eo) for ei, eo in zip(ex_in_list, ex_out_list))
+            if not ok:
+                dropped += 1
+                continue
 
         ops  = desc["operations"]
         sels = desc["selections"]
@@ -374,6 +521,8 @@ def run_task(tid: str, maker_path: Path) -> tuple[int, int]:
         with open(path, "w") as f:
             json.dump(data, f)
 
+    if vfn is not None and dropped:
+        tqdm.write(f"  {tid}: verify_filter dropped {dropped} instance(s); kept {total}")
     return correct, total
 
 
