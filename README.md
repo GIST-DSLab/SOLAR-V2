@@ -153,14 +153,22 @@ Two commands. The first rolls makers out into trajectories, the second packs
 those into parquet shards.
 
 ```bash
-# 400 makers x 25 samples: CPU only, no LLM calls, ~15 min
+# 400 tasks x 25 draws: CPU only, no LLM calls, ~30 min
 python pipeline/gen_rearc_trajectories_v2.py --subfolder arc-agi-1 \
     --num_samples 25 --rand_seed 0 --max_grid_dim 30 30 \
-    --data_folder $SOLAR_DATA_ROOT/draw0
+    --rearc_generate --verify_filter \
+    --data_folder $SOLAR_DATA_ROOT/ARC_rearc_draw1
 
 # pack it, round-trip checking 40 rows against the source JSON
 python pipeline/export_release.py --subsets arc_agi1 --verify 40
 ```
+
+`--rearc_generate` draws every instance from the task's own RE-ARC generator
+rather than from the maker's `generate()`, resampling until it fits
+`--max_grid_dim`; `--verify_filter` keeps only the instances `verify_<task>`
+reproduces. That is how the published draw is made, and it leaves the maker
+responsible for one thing: the operations. Drop both flags and the maker's own
+`generate()` supplies the instances instead.
 
 `--subfolder` names the maker set. `arc-agi-1` is the 400 makers this release
 was rolled out from; [`pipeline/README.md`](pipeline/README.md) covers the rest
@@ -186,17 +194,19 @@ The checks that produced these makers, and every flag of every script, are in
 
 An LLM writes one maker per task — `generate()`, `sample_colors()` and
 `derive_operations()` — from that task's RE-ARC generator and verifier plus its
-original ARC pairs. What comes back is checked four ways:
+original ARC pairs. What comes back is checked five ways:
 
 | check | what it asks | where |
 |---|---|---|
 | **simulation** | do the ops turn I into O; does the grid revisit a state; is any op removable with O still reached | inside the generating conversation, so a rejection is re-prompted at once, up to 3 tries |
 | **samples** | do N *fresh* instances, drawn under several seeds, all reach the target — not just the ones it was written on | `pipeline/verify_grid_makers.py` |
+| **rule** | do the instances its `generate()` produces obey the rule the task's RE-ARC generator implements | `pipeline/probe_generator.py` |
+| **generator instances** | does `derive_operations` solve what the generator itself produces, not only the slice its own `generate()` samples | `pipeline/probe_rearc.py` |
 | **critic** | replaying an episode, does the route match the solver's concept | `pipeline/critique_makers_llm.py` |
 | **originals** | does the same solution replay on the task's own original ARC pairs. The generator is the reference, so where its rule and an original pair part ways that pair is excluded rather than blamed on the maker | `pipeline/probe_originals.py` |
 
 A maker that fails a check is written again, and what the check found goes with
-it: the pair it failed, and what its ops produced instead. Naming the cause is
+it: the instance it failed, and what its ops produced instead. Naming the cause is
 the model's job. Rounds run until the maker passes, and each task keeps its
 best one — every maker in this repository passes all four checks.
 

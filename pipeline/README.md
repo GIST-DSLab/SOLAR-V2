@@ -74,29 +74,37 @@ are not part of this release.
 
 A maker starts as one LLM generation: `generate()`, `sample_colors()` and
 `derive_operations()` for a single task, written from the RE-ARC generator and
-verifier plus that task's original ARC pairs. It then has to survive four kinds
-of check, and whatever a check found was fed back into the next generation.
+verifier plus that task's original ARC pairs. It then has to survive the checks
+below, and whatever a check found was fed back into the next generation.
 
 ```
 gen_rearc_makers_llm.py  ──►  maker/<set>/<task_id>/grid_maker.py
         ▲                              │
         │                              ▼
         │              verify_grid_makers.py   fresh samples reach the target?
+        │              probe_generator.py      do its instances obey the rule?
+        │              probe_rearc.py          does it solve the generator's own?
         │              critique_makers_llm.py  is the route honest?
         │              probe_originals.py      does it replay on the real ARC pairs?
         │                              │
         └──  critique_to_feedback.py ◄─┘
 ```
 
-**These are four filters, not four stages.** They were added at different points
-and ran in different orders and combinations from round to round. The honest
-description is that every maker ended up passing all four, not that it walked a
-fixed 1→2→3→4. The loop ran for several rounds and each task kept its best
-maker.
+**These are filters, not stages.** They were added at different points and ran
+in different orders and combinations from round to round; every maker ended up
+passing all of them, but none walked a fixed 1→2→3→4→5. The loop ran for
+several rounds and each task kept its best maker.
 
-The feedback that closed the hardest cases carried no diagnosis, just the
-failing original pair, what the trajectory produced instead, and a couple of
-instances the maker's own `generate()` makes.
+The last two checks came out of the switch to drawing the release from RE-ARC's
+generator. Once the data is generator draws, a maker's own `generate()` is no
+longer the thing to be right about — its instances have to obey the generator's
+rule (`probe_generator.py`), and its `derive_operations` has to solve what the
+generator produces, not only its own slice (`probe_rearc.py`). Both were run as
+their own rounds: 13 makers and then 15, and a third round of 18 for the tail
+that only appears at 25 draws a task.
+
+The feedback carried no diagnosis, just the instance a check rejected, what the
+trajectory produced instead, and what the verifier says the answer is.
 
 ---
 
@@ -174,6 +182,47 @@ object count that never varies within one seed. `--rand_seed 0 1 2` runs three
 independent draws and pools them into the same columns, so that maker's A drops
 below 100% instead of passing. This is the generalisation check; use it, not the
 original ARC pairs, to decide whether a maker needs another round.
+
+### `probe_generator.py`
+
+Do the instances a maker produces obey the generator's rule? Every other check
+asks whether the trajectory reaches the maker's own target; this one asks
+whether that target is the right one. It samples the maker and checks each
+`(I, O)` against `verify_<task>`. No LLM calls.
+
+| flag | default | |
+|---|---|---|
+| `--subfolder` | `arc-agi-1` | |
+| `--tasks` | all | |
+| `--rand_seed` | `0 1` | one or more; each is an independent draw |
+| `--num_samples` | 2 | instances per seed |
+| `--out` | `probe_generator.json` | |
+
+A `generate()` that drifts makes perfectly self-consistent instances of a task
+nobody asked for, and nothing else in the pipeline notices. Failures come back
+as `GENERATOR_RULE_MISMATCH`.
+
+### `probe_rearc.py`
+
+Does `derive_operations` solve the *generator's* instances? Draws them the way
+the rollout does under `--rearc_generate --verify_filter` — from
+`generate_<task>`, capped to the grid size, kept only when the verifier
+reproduces them — and replays the maker's ops on them. No LLM calls.
+
+| flag | default | |
+|---|---|---|
+| `--subfolder` | `arc-agi-1` | |
+| `--tasks` | all | |
+| `--num_samples` | 5 | instances replayed per task |
+| `--num_examples` | 3 | |
+| `--rand_seed` | 0 | |
+| `--out` | `probe_rearc.json` | |
+
+This is the check that a maker cannot satisfy by sampling narrowly. A
+`derive_operations` written against a narrow `generate()` passes everything
+built on that maker's own instances and still fails here; when the dataset is
+drawn from the generator, that gap is the whole of what is left to be wrong.
+Failures come back as `FAILS_REARC_INSTANCE`.
 
 ### `probe_originals.py`
 
@@ -268,6 +317,9 @@ Executes each maker in ARCLE and records the episode. CPU only, no LLM calls.
 | `--only_failures` | off | retry just the tasks that dropped samples |
 | `--v1` | off | omit the `object_states` fields (older recording format) |
 | `--demo_trajectories` | off | also record a trajectory for each worked example |
+| `--rearc_generate` | off | draw instances from the task's own `generate_<task>` instead of the maker's `generate()`; the maker then supplies only `derive_operations` |
+| `--verify_filter` | off | keep only instances `verify_<task>` reproduces, resampling until enough pass |
+| `--rearc_root` | `<repo>/re-arc` | where `generators.py` and `verifiers.py` live |
 
 **Recording shape.** An episode of N actions has **N+1 states**: only
 `operation` and `operation_name` have length N. Every tensor is padded to
@@ -291,6 +343,22 @@ leave-one-out few-shot split and should not be used as one.
 
 A sample reaches disk only if its final grid matches the target. A rollout
 drops what it cannot solve rather than repairing it.
+
+**How the published draw is made.** With `--rearc_generate --verify_filter` the
+maker's `generate()` is not used at all: every instance comes from RE-ARC's
+generator, is resampled until it fits `--max_grid_dim`, and is kept only when
+the verifier reproduces it. The maker contributes `derive_operations` and
+nothing else, which is why `probe_rearc.py` is the check that matters for this
+path.
+
+```bash
+python pipeline/gen_rearc_trajectories_v2.py --subfolder arc-agi-1 \
+    --num_samples 25 --rand_seed 0 --max_grid_dim 30 30 \
+    --rearc_generate --verify_filter --data_folder $SOLAR_DATA_ROOT/ARC_rearc_draw1
+```
+
+400 tasks at 25 draws each takes about half an hour on CPU and lands 99.8% of
+them; no task falls below 19 of 25, and the release packs 10.
 
 ---
 

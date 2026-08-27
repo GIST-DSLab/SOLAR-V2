@@ -64,7 +64,11 @@ SUBSETS = {
         # ARC_best10 (the 26.07.27 draw) predates the terminal-filler fix in
         # gen_rearc_trajectories_v2.py and ends every episode in Submit,Submit
         # with states and actions the same length. This is the re-roll.
-        root=DATA_ROOT / "ARC_best10_r5" / "whole",
+        # Drawn from RE-ARC's own generator, not from each maker's generate():
+        # see --rearc_generate in gen_rearc_trajectories_v2.py. Named for how it
+        # was made rather than continuing the ARC_best10_r* numbering, which was
+        # the maker-generate() line.
+        root=DATA_ROOT / "ARC_rearc_draw1" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its
