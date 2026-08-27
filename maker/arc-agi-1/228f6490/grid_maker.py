@@ -33,124 +33,97 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
-import random
-from collections import Counter, deque
-
-from maker.sel_helpers import sel_of
-
-
-# ----------------------------------------------------------------------------
-# 1) episode-level colors
-#    Task rule: each "box" (solid rectangle of sqc with a hole shaped like some
-#    loose object) receives that loose object, which slides in from elsewhere.
-#    Structure colors: bgc (canvas) and sqc (box color) -> fixed per episode.
-#    Individual object colors carry no rule information (only shape matching
-#    matters), so they stay random -- but 0 is excluded from object colors so
-#    ARCLE's object-mode Move can actually grab them (0 == "nothing" there).
-# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
+    import random
     cols = list(range(10))
-    bgc = random.choice(cols)
-    sqc = random.choice([c for c in cols if c != bgc])
+    bgc = random.choice(cols)                                   # canvas background
+    sqc = random.choice([c for c in cols if c != bgc])           # colour of every frame/box
     return {"bgc": bgc, "sqc": sqc}
 
 
-# ----------------------------------------------------------------------------
-# 2) generator
-# ----------------------------------------------------------------------------
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc, **kwargs) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc) -> dict:
+    import random
 
     def unifint(lb, ub, bounds):
         a, b = bounds
-        lo = a + int((b - a) * lb)
-        hi = a + int((b - a) * ub)
-        if hi < lo:
-            lo, hi = hi, lo
-        return random.randint(lo, hi)
+        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
 
-    def n4(cells):
-        s = set()
-        for (r, c) in cells:
-            s |= {(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)}
-        return s
+    def dneigh(p):
+        r, c = p
+        return [(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)]
 
-    def n8(cells):
-        s = set()
-        for (r, c) in cells:
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    if dr or dc:
-                        s.add((r + dr, c + dc))
-        return s
+    def dneighs(cells):
+        out = set()
+        for p in cells:
+            out.update(dneigh(p))
+        return out
 
-    def norm(cells):
+    def normalize(cells):
         mr = min(r for r, _ in cells)
         mc = min(c for _, c in cells)
         return frozenset((r - mr, c - mc) for r, c in cells)
 
-    hub = max(6, min(30, int(max_h)))
-    wub = max(6, min(30, int(max_w)))
-    hlb = min(10, hub)
-    wlb = min(10, wub)
-    remcols = [c for c in range(10) if c not in (bgc, sqc, 0)]
+    def shift(cells, off):
+        return set((r + off[0], c + off[1]) for r, c in cells)
 
-    gi = go = None
-    for _attempt in range(100):
-        h = unifint(diff_lb, diff_ub, (hlb, hub))
-        w = unifint(diff_lb, diff_ub, (wlb, wub))
-        gi = [[bgc] * w for _ in range(h)]
-        go = [[bgc] * w for _ in range(h)]
-        inds = {(i, j) for i in range(h) for j in range(w)}
-        forbidden = []
+    def shape_of(cells):
+        rs = [r for r, _ in cells]
+        cs = [c for _, c in cells]
+        return (max(rs) - min(rs) + 1, max(cs) - min(cs) + 1)
 
-        nsq = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 50)))
-        succ = 0
-        tr = 0
-        maxtr = 5 * nsq
-        while tr < maxtr and succ < nsq:
-            tr += 1
-            oh = random.randint(3, min(6, h))
-            ow = random.randint(3, min(6, w))
-            bd = {(i, j) for i in range(oh) for j in range(ow)}
-            bounds = {(i + 1, j + 1) for i in range(oh - 2) for j in range(ow - 2)}
-            if not bounds:
-                continue
-            obj = {random.choice(sorted(bounds))}
-            ncells = random.randint(1, len(bounds))
-            for _k in range(ncells - 1):
-                cands = sorted((bounds - obj) & n4(obj))
-                if not cands:
-                    break
-                obj.add(random.choice(cands))
+    mh = max(10, min(30, int(max_h)))
+    mw = max(10, min(30, int(max_w)))
+    h = unifint(diff_lb, diff_ub, (10, mh))
+    w = unifint(diff_lb, diff_ub, (10, mw))
 
-            sqcands = sorted(ij for ij in inds if ij[0] <= h - oh and ij[1] <= w - ow)
-            if not sqcands:
-                continue
-            loc = random.choice(sqcands)
-            bdplcd = {(i + loc[0], j + loc[1]) for i, j in bd}
-            if not bdplcd <= inds:
-                continue
-            # keep a 1-cell moat around boxes so nothing merges/encloses spuriously
-            tmpinds = inds - bdplcd - n8(bdplcd)
+    remcols = [c for c in range(10) if c != bgc and c != sqc]
 
-            inobjn = norm(obj)
-            ohh = max(r for r, _ in inobjn) + 1
-            oww = max(c for _, c in inobjn) + 1
-            cands2 = sorted(ij for ij in tmpinds if ij[0] <= h - ohh and ij[1] <= w - oww)
-            if not cands2:
+    gi = [[bgc] * w for _ in range(h)]
+    go = [[bgc] * w for _ in range(h)]
+    inds = set((r, c) for r in range(h) for c in range(w))
+
+    nsq = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 50)))
+    succ = 0
+    tr = 0
+    maxtr = 5 * nsq
+    forbidden = []
+
+    while tr < maxtr and succ < nsq:
+        tr += 1
+        oh = random.randint(3, 6)
+        ow = random.randint(3, 6)
+        bd = set((r, c) for r in range(oh) for c in range(ow))
+        bounds = set((r + 1, c + 1) for r in range(oh - 2) for c in range(ow - 2))
+        obj = {random.choice(sorted(bounds))}
+        ncells = random.randint(1, (oh - 2) * (ow - 2))
+        for _ in range(ncells - 1):
+            cands = sorted((bounds - obj) & dneighs(obj))
+            if not cands:
+                break
+            obj.add(random.choice(cands))
+        sqcands = [ij for ij in inds if ij[0] <= h - oh and ij[1] <= w - ow]
+        if not sqcands:
+            continue
+        loc = random.choice(sorted(sqcands))
+        bdplcd = shift(bd, loc)
+        if bdplcd.issubset(inds):
+            tmpinds = inds - bdplcd
+            inobjn = normalize(obj)
+            ih, iw = shape_of(obj)
+            inobjcands = [ij for ij in inds if ij[0] <= h - ih and ij[1] <= w - iw]
+            if not inobjcands:
                 continue
-            loc2 = random.choice(cands2)
-            inobjplcd = {(r + loc2[0], c + loc2[1]) for r, c in inobjn}
+            loc2 = random.choice(sorted(inobjcands))
+            inobjplcd = shift(inobjn, loc2)
             bdnorm = frozenset(bd - obj)
-            if inobjplcd <= tmpinds and bdnorm not in forbidden and inobjn not in forbidden:
+            if inobjplcd.issubset(tmpinds) and bdnorm not in forbidden and inobjn not in forbidden:
                 forbidden.append(bdnorm)
                 forbidden.append(inobjn)
                 succ += 1
-                inds = inds - bdplcd - n8(bdplcd) - inobjplcd - n8(inobjplcd)
+                inds = (inds - (bdplcd | inobjplcd)) - dneighs(inobjplcd)
                 col = random.choice(remcols)
-                oplcd = {(r + loc[0], c + loc[1]) for r, c in obj}
-                for (r, c) in (bdplcd - oplcd):
+                oplcd = shift(obj, loc)
+                for (r, c) in bdplcd - oplcd:
                     gi[r][c] = sqc
                 for (r, c) in bdplcd:
                     go[r][c] = sqc
@@ -159,232 +132,204 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc, **kwargs) -> dict:
                 for (r, c) in inobjplcd:
                     gi[r][c] = col
 
-        # distractor objects (never move)
-        nrem = unifint(diff_lb, diff_ub, (0, len(inds) // 25))
-        succ2 = 0
-        tr = 0
-        maxtr2 = 10 * nrem
-        while tr < maxtr2 and succ2 < nrem:
-            tr += 1
-            oh = random.randint(1, 4)
-            ow = random.randint(1, 4)
-            bounds = {(i, j) for i in range(oh) for j in range(ow)}
-            obj = {random.choice(sorted(bounds))}
-            ncells = random.randint(1, oh * ow)
-            for _k in range(ncells - 1):
-                cands = sorted((bounds - obj) & n4(obj))
-                if not cands:
-                    break
-                obj.add(random.choice(cands))
-            objn = norm(obj)
-            if objn in forbidden:
-                continue
-            ohh = max(r for r, _ in objn) + 1
-            oww = max(c for _, c in objn) + 1
-            cands = sorted(ij for ij in inds if ij[0] <= h - ohh and ij[1] <= w - oww)
+    nremobjs = unifint(diff_lb, diff_ub, (0, len(inds) // 25))
+    succ = 0
+    tr = 0
+    maxtr = 10 * nremobjs
+    while tr < maxtr and succ < nremobjs:
+        tr += 1
+        oh = random.randint(1, 4)
+        ow = random.randint(1, 4)
+        bounds = set((r, c) for r in range(oh) for c in range(ow))
+        obj = {random.choice(sorted(bounds))}
+        ncells = random.randint(1, oh * ow)
+        for _ in range(ncells - 1):
+            cands = sorted((bounds - obj) & dneighs(obj))
             if not cands:
-                continue
-            loc = random.choice(cands)
-            plcd = {(r + loc[0], c + loc[1]) for r, c in objn}
-            if plcd <= inds:
-                succ2 += 1
-                inds = inds - plcd - n8(plcd)
-                col = random.choice(remcols)
-                for (r, c) in plcd:
-                    gi[r][c] = col
-                    go[r][c] = col
+                break
+            obj.add(random.choice(cands))
+        obj = normalize(obj)
+        if obj in forbidden:
+            continue
+        cands = [ij for ij in inds if ij[0] <= h - oh and ij[1] <= w - ow]
+        if not cands:
+            continue
+        loc = random.choice(sorted(cands))
+        plcd = shift(obj, loc)
+        if plcd.issubset(inds):
+            succ += 1
+            inds = (inds - plcd) - dneighs(plcd)
+            col = random.choice(remcols)
+            for (r, c) in plcd:
+                gi[r][c] = col
+                go[r][c] = col
 
-        if succ >= 1:
-            break
-
-    return {
-        "input": tuple(tuple(row) for row in gi),
-        "output": tuple(tuple(row) for row in go),
-    }
+    return {"input": tuple(tuple(r) for r in gi), "output": tuple(tuple(r) for r in go)}
 
 
-# ----------------------------------------------------------------------------
-# 3) derive_operations
-#    Each loose object TRANSLATES into the box hole whose shape it matches.
-#    -> expressed as unit Move chains (grab once, then empty selections),
-#       plus one bgc repair of the vacated footprint when bgc != 0.
-# ----------------------------------------------------------------------------
 def derive_operations(I, O):
+    import numpy as np
+    from collections import Counter
+    try:
+        from maker.sel_helpers import sel_of
+    except Exception:
+        def sel_of(cells):
+            return {"cells": [[int(r), int(c)] for (r, c) in cells]}
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
+    ops, sels = [], []
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # background = the colour the generator paints the canvas with (clear majority here)
+    bgc = int(Counter(I.flatten().tolist()).most_common(1)[0][0])
 
-    # ---- enclosed background regions (holes inside boxes) ----
+    # ---- 8-connected, single-colour components of I -------------------------
     seen = np.zeros((h, w), dtype=bool)
-    holes = []
+    comps = []
     for r0 in range(h):
         for c0 in range(w):
-            if I[r0, c0] != bgc or seen[r0, c0]:
-                continue
-            comp = []
-            dq = deque([(r0, c0)])
-            seen[r0, c0] = True
-            touches = False
-            while dq:
-                rr, cc = dq.popleft()
-                comp.append((rr, cc))
-                if rr == 0 or cc == 0 or rr == h - 1 or cc == w - 1:
-                    touches = True
-                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    nr, nc = rr + dr, cc + dc
-                    if 0 <= nr < h and 0 <= nc < w and not seen[nr, nc] and I[nr, nc] == bgc:
-                        seen[nr, nc] = True
-                        dq.append((nr, nc))
-            if touches:
-                continue
-            cs = set(comp)
-            ring = set()
-            for rr, cc in comp:
-                for dr in (-1, 0, 1):
-                    for dc in (-1, 0, 1):
-                        nr, nc = rr + dr, cc + dc
-                        if 0 <= nr < h and 0 <= nc < w and (nr, nc) not in cs:
-                            ring.add((nr, nc))
-            ringcols = {int(I[x, y]) for x, y in ring}
-            if len(ringcols) != 1:
-                continue                              # not a clean box hole
-            encl = ringcols.pop()
-            fills = {int(O[x, y]) for x, y in comp}
-            if len(fills) != 1 or fills == {bgc}:
-                continue                              # hole is not filled -> not a target
-            holes.append((sorted(comp), encl, fills.pop()))
-
-    if holes:
-        common_encl = Counter(e for _, e, _ in holes).most_common(1)[0][0]
-        holes = [x for x in holes if x[1] == common_encl]
-
-    # ---- objects that vanish (the pieces that slide into the holes) ----
-    seen2 = np.zeros((h, w), dtype=bool)
-    movers = []
-    for r0 in range(h):
-        for c0 in range(w):
-            if I[r0, c0] == bgc or seen2[r0, c0]:
+            if seen[r0, c0]:
                 continue
             col = int(I[r0, c0])
-            comp = []
-            dq = deque([(r0, c0)])
-            seen2[r0, c0] = True
-            while dq:
-                rr, cc = dq.popleft()
-                comp.append((rr, cc))
-                for dr in (-1, 0, 1):
-                    for dc in (-1, 0, 1):
-                        if dr == 0 and dc == 0:
-                            continue
-                        nr, nc = rr + dr, cc + dc
-                        if 0 <= nr < h and 0 <= nc < w and not seen2[nr, nc] and I[nr, nc] == col:
-                            seen2[nr, nc] = True
-                            dq.append((nr, nc))
-            if all(O[x, y] == bgc for x, y in comp):
-                movers.append((sorted(comp), col))
+            stack = [(r0, c0)]
+            seen[r0, c0] = True
+            cells = []
+            while stack:
+                y, x = stack.pop()
+                cells.append((y, x))
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < h and 0 <= nx < w and not seen[ny, nx] and int(I[ny, nx]) == col:
+                            seen[ny, nx] = True
+                            stack.append((ny, nx))
+            comps.append((col, cells))
 
-    def normkey(cells):
+    def norm(cells):
         mr = min(r for r, _ in cells)
         mc = min(c for _, c in cells)
         return frozenset((r - mr, c - mc) for r, c in cells)
 
-    # ---- pair hole <-> object by identical normalized shape (+ color) ----
-    pairs = []
-    used = set()
-    for comp, _encl, fillcol in sorted(holes, key=lambda x: (x[0][0][0], x[0][0][1])):
-        key = normkey(comp)
-        pick = None
-        for idx, (cells, col) in enumerate(movers):
-            if idx in used or col != fillcol:
-                continue
-            if normkey(cells) == key:
-                pick = idx
+    def borders(cells):
+        return any(r == 0 or r == h - 1 or c == 0 or c == w - 1 for r, c in cells)
+
+    def ring_colour(cells):
+        s = set(cells)
+        nb = set()
+        for (y, x) in cells:
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and (ny, nx) not in s:
+                        nb.add((ny, nx))
+        if not nb:
+            return None
+        return Counter(int(I[p]) for p in nb).most_common(1)[0][0]
+
+    # holes = background regions fully enclosed (not touching the border)
+    holes = [cells for (col, cells) in comps if col == bgc and not borders(cells)]
+    if not holes:
+        ops.append(34); sels.append([0, 0, h - 1, w - 1])
+        return ops, sels
+
+    ring = {}
+    for cells in holes:
+        rc = ring_colour(cells)
+        if rc is not None:
+            ring[id(cells)] = rc
+    if not ring:
+        ops.append(34); sels.append([0, 0, h - 1, w - 1])
+        return ops, sels
+
+    # the box colour = the ring colour shared by most enclosed holes
+    sqc = Counter(ring.values()).most_common(1)[0][0]
+    boxholes = [cells for cells in holes if ring.get(id(cells)) == sqc]
+
+    # loose (non-background) pieces, indexed by their normalized shape
+    loose = [(col, cells) for (col, cells) in comps if col != bgc]
+
+    tasks = []
+    for hole in sorted(boxholes, key=lambda cs: (min(r for r, _ in cs), min(c for _, c in cs))):
+        hn = norm(hole)
+        match = None
+        for (col, cells) in loose:
+            if len(cells) == len(hole) and norm(cells) == hn:
+                match = (col, cells)
                 break
-        if pick is None:
-            for idx, (cells, col) in enumerate(movers):
-                if idx in used:
-                    continue
-                if normkey(cells) == key:
-                    pick = idx
-                    break
-        if pick is None:
+        if match is None:
             continue
-        used.add(pick)
-        pairs.append((movers[pick][0], movers[pick][1], comp))
+        col, src = match
+        hr = min(r for r, _ in hole); hc = min(c for _, c in hole)
+        sr = min(r for r, _ in src); sc = min(c for _, c in src)
+        tasks.append((sorted(hole), sorted(src), int(col), hr - sr, hc - sc))
 
-    ops, sels = [], []
-    g = I.copy()
+    grid = I.copy()
+    for (hole, src, col, dr, dc) in tasks:
+        if dr == 0 and dc == 0:
+            continue
 
-    def simulate(grid, src, col, steps):
-        """ARCLE object-mode move: snapshot = grid with src zeroed, object re-pasted."""
-        snap = grid.copy()
-        for (r, c) in src:
-            snap[r, c] = 0
-        cur = list(src)
-        prev = grid
-        ok = True
-        for _op, (dr, dc) in steps:
-            cur = [(r + dr, c + dc) for r, c in cur]
-            ng = snap.copy()
-            for (r, c) in cur:
-                if 0 <= r < h and 0 <= c < w:
-                    ng[r, c] = col
-            if np.array_equal(ng, prev):
-                ok = False
-            prev = ng
-        return ok, prev, cur
+        # build the unit-move chain that carries this piece into its box
+        seq = []
+        if dr:
+            step = (-1, 0) if dr < 0 else (1, 0)
+            seq += [(20 if dr < 0 else 21, step)] * abs(dr)
+        if dc:
+            step = (0, -1) if dc < 0 else (0, 1)
+            seq += [(23 if dc < 0 else 22, step)] * abs(dc)
 
-    for src, col, dst in pairs:
-        sr = min(r for r, _ in src)
-        sc = min(c for _, c in src)
-        dr_tot = min(r for r, _ in dst) - sr
-        dc_tot = min(c for _, c in dst) - sc
+        usable = col != 0 and len(seq) > 0
+        states = []
+        if usable:
+            # ARCLE grabs the object once and re-pastes it over one background
+            # snapshot; simulate to be sure every step visibly changes the grid.
+            snap = grid.copy()
+            for (y, x) in src:
+                snap[y, x] = 0
+            prev = grid
+            off = (0, 0)
+            for (op, (sy, sx)) in seq:
+                off = (off[0] + sy, off[1] + sx)
+                g = snap.copy()
+                for (y, x) in src:
+                    ny, nx = y + off[0], x + off[1]
+                    if 0 <= ny < h and 0 <= nx < w:
+                        g[ny, nx] = col
+                if np.array_equal(g, prev):
+                    usable = False
+                    break
+                states.append(g)
+                prev = g
 
-        vsteps = [((21 if dr_tot > 0 else 20), (1 if dr_tot > 0 else -1, 0))] * abs(dr_tot)
-        hsteps = [((22 if dc_tot > 0 else 23), (0, 1 if dc_tot > 0 else -1))] * abs(dc_tot)
-
-        chosen = None
-        for steps in (vsteps + hsteps, hsteps + vsteps):
-            if not steps:
-                break
-            ok, final, cur = simulate(g, src, col, steps)
-            if ok:
-                chosen = (steps, final, cur)
-                break
-
-        if chosen is not None:
-            steps, final, cur = chosen
-            ops.append(steps[0][0])
-            sels.append(sel_of(src))                     # grab the object itself
-            for op, _d in steps[1:]:
+        if usable:
+            for i, (op, _) in enumerate(seq):
                 ops.append(op)
-                sels.append(sel_of([]))                  # empty -> keep same object grabbed
-            g = final
-            # only the ORIGINAL footprint is left at 0; the path was restored by ARCLE
-            hole_left = sorted(set(src) - set(cur))
-            repair = [(r, c) for (r, c) in hole_left if g[r, c] != bgc]
-            if repair:
+                sels.append(sel_of(src) if i == 0 else sel_of([]))   # grab once, then continue
+            grid = states[-1]
+            dst = set((y + dr, x + dc) for (y, x) in src)
+            vacated = [p for p in src if p not in dst]
+            if bgc != 0 and vacated:
                 ops.append(int(bgc))
-                sels.append(sel_of(repair))
-                for (r, c) in repair:
-                    g[r, c] = bgc
+                sels.append(sel_of(vacated))
+                for (y, x) in vacated:
+                    grid[y, x] = bgc
         else:
-            # degenerate case (no visible change possible per step): paint directly
+            # colour 0 pieces are invisible to ARCLE's object layer (the grab keeps
+            # only nonzero cells), so a Move here is physically a no-op: paint the
+            # piece into its box and clear the spot it came from instead.
             ops.append(int(col))
-            sels.append(sel_of(dst))
-            for (r, c) in dst:
-                g[r, c] = col
-            leftover = [(r, c) for (r, c) in src if (r, c) not in set(dst) and g[r, c] != bgc]
-            if leftover:
-                ops.append(int(bgc))
-                sels.append(sel_of(leftover))
-                for (r, c) in leftover:
-                    g[r, c] = bgc
+            sels.append(sel_of(hole))
+            for (y, x) in hole:
+                grid[y, x] = col
+            ops.append(int(bgc))
+            sels.append(sel_of(src))
+            for (y, x) in src:
+                grid[y, x] = bgc
 
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])   # bbox = whole grid rectangle (submit)
+    sels.append([0, 0, h - 1, w - 1])   # full-grid rectangle: submit
     return ops, sels
 
 
@@ -428,7 +373,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

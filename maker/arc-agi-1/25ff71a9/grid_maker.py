@@ -3,6 +3,8 @@ ARC Task: 25ff71a9 (RE-ARC) — LLM-generated grid_maker
 """
 from __future__ import annotations
 
+import inspect
+
 import sys
 import random
 from pathlib import Path
@@ -31,75 +33,49 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-def sample_colors() -> dict:
-    # Force bgc=0 so ARCLE object mode (nonzero = object) cleanly captures only fgc cells.
-    cols = [c for c in range(1, 10)]
-    bgc = 0
-    fgc = random.choice(cols)
+import random
+from collections import Counter
+
+import numpy as np
+
+from maker.sel_helpers import sel_of
+
+
+def sample_colors(num_examples=None) -> dict:
+    cols = list(range(10))
+    bgc = random.choice(cols)
+    # fgc must be non-zero: ARCLE's Move treats 0 as "nothing" and would not
+    # grab a zero-coloured object.
+    fgc = random.choice([c for c in cols if c != bgc and c != 0])
     return {"bgc": bgc, "fgc": fgc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc) -> dict:
-    def unifint(lb, ub, bounds):
-        a, b = bounds
-        if a >= b:
-            return a
-        r = random.uniform(lb, ub)
-        return int(round(a + r * (b - a)))
-
-    h = max(2, unifint(diff_lb, diff_ub, (2, max_h)))
-    w = max(2, unifint(diff_lb, diff_ub, (2, max_w)))
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, fgc: int) -> dict:
+    h = unifint(diff_lb, diff_ub, (2, max_h))
+    w = unifint(diff_lb, diff_ub, (2, max_w))
     nc = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 2 - 1)))
-
-    bounds_set = {(i, j) for i in range(h) for j in range(w)}
-    start = random.choice(list(bounds_set))
-    shp = {start}
-
-    def nbrs(p):
-        r, c = p
-        return {(r + dr, c + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1)
-                if not (dr == 0 and dc == 0)}
-
-    for _ in range(nc - 1):
-        cands = set()
-        for p in shp:
-            cands |= nbrs(p)
-        cands = (cands & bounds_set) - shp
-        if not cands:
+    c = canvas(bgc, (h, w))
+    bounds = asindices(c)
+    ch = choice(totuple(bounds))
+    shp = {ch}
+    bounds = remove(ch, bounds)
+    for j in range(nc - 1):
+        cands = totuple((bounds - shp) & mapply(neighbors, shp))
+        if len(cands) == 0:
             break
-        shp.add(random.choice(list(cands)))
-
-    min_r = min(p[0] for p in shp)
-    min_c = min(p[1] for p in shp)
-    shp_n = {(p[0] - min_r, p[1] - min_c) for p in shp}
-    oh = max(p[0] for p in shp_n) + 1
-    ow = max(p[1] for p in shp_n) + 1
-
-    # Keep object off the last row so MoveD stays fully in bounds:
-    #   loci + oh - 1 <= h - 2  →  loci <= h - oh - 1
-    if h - oh - 1 < 0:
-        # Object too tall — clip bottom rows so it fits in h-1 rows
-        shp_n = {p for p in shp_n if p[0] < h - 1}
-        if not shp_n:
-            shp_n = {(0, 0)}
-        oh = max(p[0] for p in shp_n) + 1
-        ow = max(p[1] for p in shp_n) + 1
-    max_loci = max(0, h - oh - 1)
-    max_locj = max(0, w - ow)
-    loci = random.randint(0, max_loci)
-    locj = random.randint(0, max_locj)
-
-    gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * w for _ in range(h)]
-    for r, c in shp_n:
-        gi[r + loci][c + locj] = fgc
-        go[r + loci + 1][c + locj] = fgc
-
-    return {"input": gi, "output": go}
+        shp.add(choice(cands))
+    shp = normalize(shp)
+    oh, ow = shape(shp)
+    loci = randint(0, h - oh)
+    locj = randint(0, w - ow)
+    loc = (loci, locj)
+    plcd = shift(shp, loc)
+    gi = fill(c, fgc, plcd)
+    go = fill(c, fgc, shift(plcd, (1, 0)))
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    import numpy as np
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
@@ -107,22 +83,55 @@ def derive_operations(I, O):
 
     ops, sels = [], []
 
-    # Background color = most common cell in I
-    vals, counts = np.unique(I, return_counts=True)
-    bgc = int(vals[np.argmax(counts)])
+    # Background: the generator paints the whole canvas with bgc and then places a
+    # single 8-connected blob covering strictly less than half the cells, so the
+    # majority colour of I is always the background.
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # Find bbox of non-bgc cells (the single object to move down)
-    mask = (I != bgc)
-    if mask.any():
-        rows = np.where(mask.any(axis=1))[0]
-        cols = np.where(mask.any(axis=0))[0]
-        r0, r1 = int(rows.min()), int(rows.max())
-        c0, c1 = int(cols.min()), int(cols.max())
+    # The single object = every non-background cell (one 8-connected blob).
+    src = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != bgc]
 
-        # MoveD once — object shifts down 1 row.
-        # Generator guarantees r1 <= hi - 2, so this stays in bounds.
-        ops.append(21)
-        sels.append([r0, c0, r1 - r0, c1 - c0])
+    if not src:
+        ops.append(34)
+        sels.append([0, 0, ho - 1, wo - 1])
+        return ops, sels
+
+    fgc = int(I[src[0][0], src[0][1]])
+
+    # Destination after sliding the object down by one row (ARCLE clips the part
+    # that leaves the grid, exactly like the generator's bounded fill).
+    dst_all = [(r + 1, c) for (r, c) in src]
+    dst_on = [(r, c) for (r, c) in dst_all if r < hi]
+
+    src_set = set(src)
+    hole = sorted(src_set - set(dst_on))  # the object's top edge, vacated by the slide
+
+    if fgc == 0:
+        # 0 is "nothing" to ARCLE's object ops, so temporarily give the object a
+        # visible colour, slide it, then restore it to 0.
+        tmp = next(t for t in range(1, 10) if t != bgc)
+        ops.append(tmp)
+        sels.append(sel_of(src))
+
+        ops.append(21)  # MoveD — grab the object and shift it down one row
+        sels.append(sel_of(src))
+
+        if bgc != 0 and hole:
+            ops.append(int(bgc))
+            sels.append(sel_of(hole))
+
+        if dst_on:
+            ops.append(0)
+            sels.append(sel_of(dst_on))
+    else:
+        ops.append(21)  # MoveD — grab the object and shift it down one row
+        sels.append(sel_of(src))
+
+        # ARCLE leaves the object's original footprint at 0; repair only the part
+        # the object no longer covers (its path is restored automatically).
+        if bgc != 0 and hole:
+            ops.append(int(bgc))
+            sels.append(sel_of(hole))
 
     ops.append(34)
     sels.append([0, 0, ho - 1, wo - 1])
@@ -144,49 +153,108 @@ class GridMaker(BaseGridMaker):
         dataset = []
 
         for _sn in range(num_samples):
-            pr_in:  List[NDArray] = []
-            pr_out: List[NDArray] = []
-            ex_in:  List[NDArray] = []
-            ex_out: List[NDArray] = []
-            ops:  List[int]       = []
-            sels: List[List[int]] = []
+            # Episode-level retry: if 10 attempts at some instance all fail, that's
+            # transient (bad luck with the generator's randomness) — retry the WHOLE
+            # episode from scratch (fresh colors/instance plan) up to 5 times, rather
+            # than silently continuing with a partial episode (fewer examples than
+            # requested, or a missing test instance with operations=[]/selections=[]
+            # quietly appended as if it were a normal sample).
+            for _episode_attempt in range(5):
+                pr_in:  List[NDArray] = []
+                pr_out: List[NDArray] = []
+                ex_in:  List[NDArray] = []
+                ex_out: List[NDArray] = []
+                ops:  List[int]       = []
+                sels: List[List[int]] = []
 
-            # sample color roles once per episode → consistent across all instances
-            colors = sample_colors()
-
-            j = 0
-            while j < num_examples + 1:
-                ok = False
-                for _ in range(10):
-                    try:
-                        r = generate(
-                            random.uniform(0.2, 0.5),
-                            random.uniform(0.5, 0.8),
-                            max_h, max_w,
-                            **colors,
-                        )
-                        I = np.array(r["input"],  dtype=np.uint8)
-                        O = np.array(r["output"], dtype=np.uint8)
-                        # enforce max_grid_dim — skip oversized grids
-                        if I.shape[0] > max_h or I.shape[1] > max_w:
-                            continue
-                        if O.shape[0] > max_h or O.shape[1] > max_w:
-                            continue
-                        ok = True
-                        break
-                    except (IndexError, ValueError, KeyError):
-                        continue
-                if not ok:
-                    j += 1
-                    continue
-                if j == num_examples:
-                    pr_in.append(I)
-                    pr_out.append(O)
-                    ops, sels = derive_operations(I, O)
+                # sample color roles once per episode → consistent across all instances
+                # sample_colors() may optionally accept num_examples (to pre-plan
+                # per-instance categories) — call it either way for compatibility
+                # with grid_makers generated before this parameter existed.
+                if "num_examples" in inspect.signature(sample_colors).parameters:
+                    colors = sample_colors(num_examples=num_examples)
                 else:
-                    ex_in.append(I)
-                    ex_out.append(O)
-                j += 1
+                    colors = sample_colors()
+
+                # Plans are consumed by INDEX, not mutated: retries for instance j
+                # must receive the same variant. category_plan is retained as a
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
+                instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
+                if category_plan is not None and instance_plan is not None:
+                    raise ValueError(
+                        "sample_colors must return only one of category_plan/instance_plan"
+                    )
+                if category_plan is not None and len(category_plan) != num_examples + 1:
+                    # A wrong plan length is a deterministic bug in sample_colors(),
+                    # not bad luck — retrying the episode won't fix it. Fail loudly
+                    # instead of clamping the index and silently reusing an entry.
+                    raise ValueError(
+                        f"category_plan length {len(category_plan)} != "
+                        f"num_examples+1 ({num_examples + 1}) for task 25ff71a9"
+                    )
+                if instance_plan is not None:
+                    if len(instance_plan) != num_examples + 1:
+                        raise ValueError(
+                            f"instance_plan length {len(instance_plan)} != "
+                            f"num_examples+1 ({num_examples + 1}) for task 25ff71a9"
+                        )
+                    if any(not isinstance(entry, dict) for entry in instance_plan):
+                        raise ValueError("every instance_plan entry must be a kwargs dict")
+                    if instance_plan[-1] not in instance_plan[:-1]:
+                        raise ValueError(
+                            "instance_plan test variant must appear among the examples"
+                        )
+
+                try:
+                    j = 0
+                    while j < num_examples + 1:
+                        ok = False
+                        for _ in range(10):
+                            try:
+                                call_kwargs = dict(colors)
+                                if instance_plan is not None:
+                                    call_kwargs.update(instance_plan[j])
+                                elif category_plan is not None:
+                                    call_kwargs["category"] = category_plan[j]
+                                r = generate(
+                                    random.uniform(0.2, 0.5),
+                                    random.uniform(0.5, 0.8),
+                                    max_h, max_w,
+                                    **call_kwargs,
+                                )
+                                I = np.array(r["input"],  dtype=np.uint8)
+                                O = np.array(r["output"], dtype=np.uint8)
+                                # enforce max_grid_dim — skip oversized grids
+                                if I.shape[0] > max_h or I.shape[1] > max_w:
+                                    continue
+                                if O.shape[0] > max_h or O.shape[1] > max_w:
+                                    continue
+                                ok = True
+                                break
+                            except (IndexError, ValueError, KeyError):
+                                continue
+                        if not ok:
+                            raise RuntimeError(
+                                f"Failed to generate instance {j} after 10 attempts "
+                                f"for task 25ff71a9"
+                            )
+                        if j == num_examples:
+                            pr_in.append(I)
+                            pr_out.append(O)
+                            ops, sels = derive_operations(I, O)
+                        else:
+                            ex_in.append(I)
+                            ex_out.append(O)
+                        j += 1
+                    break  # episode complete
+                except RuntimeError:
+                    continue
+            else:
+                raise RuntimeError(
+                    f"Failed to build a complete episode for task 25ff71a9 "
+                    f"after 5 attempts"
+                )
 
             dataset.append((ex_in, ex_out, pr_in, pr_out, {
                 "id":         f"25ff71a9-rearc-llm_{_sn + 1}",

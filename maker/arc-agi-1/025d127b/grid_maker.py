@@ -3,6 +3,8 @@ ARC Task: 025d127b (RE-ARC) — LLM-generated grid_maker
 """
 from __future__ import annotations
 
+import inspect
+
 import sys
 import random
 from pathlib import Path
@@ -31,189 +33,207 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
 import random
+import numpy as np
+from collections import Counter, deque
+
+from maker.sel_helpers import sel_of
 
 
-def sample_colors():
-    return {"bgc": 0}
-
-
-def generate(diff_lb, diff_ub, max_h, max_w, bgc):
-    def unifint(lb, ub, bounds):
-        a, b = bounds
-        low = round(a * (1 - lb) + b * lb)
-        high = round(a * (1 - ub) + b * ub)
-        if low > high:
-            low, high = high, low
-        low = max(a, low)
-        high = min(b, high)
-        if low > high:
-            return low
-        return random.randint(low, high)
-
-    def connect(a, b):
-        if a == b:
-            return {a}
-        dr, dc = b[0] - a[0], b[1] - a[1]
-        if dr == 0:
-            step = 1 if dc > 0 else -1
-            return {(a[0], a[1] + i * step) for i in range(abs(dc) + 1)}
-        if dc == 0:
-            step = 1 if dr > 0 else -1
-            return {(a[0] + i * step, a[1]) for i in range(abs(dr) + 1)}
-        if abs(dr) == abs(dc):
-            sr = 1 if dr > 0 else -1
-            sc = 1 if dc > 0 else -1
-            return {(a[0] + i * sr, a[1] + i * sc) for i in range(abs(dr) + 1)}
-        return set()
-
+# ----------------------------------------------------------------------------
+# 1. Episode-level colors
+#    The rule ("every 4-connected piece of an object except the right-most one
+#    slides one cell to the right") does not depend on which colors are used,
+#    only on background vs. foreground.  Still, fix bgc AND the foreground
+#    palette once per episode so every instance shares one color scheme.
+# ----------------------------------------------------------------------------
+def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    h = unifint(diff_lb, diff_ub, (5, max_h))
-    w = unifint(diff_lb, diff_ub, (5, max_w))
+    bgc = random.choice(cols)
     remcols = [c for c in cols if c != bgc]
-    numcols = unifint(diff_lb, diff_ub, (1, min(9, len(remcols))))
-    ccols = random.sample(remcols, numcols)
+    remcols = random.sample(remcols, len(remcols))     # fixed shuffled palette
+    return {"bgc": bgc, "ccols": remcols}
+
+
+# ----------------------------------------------------------------------------
+# 2. Generator (RE-ARC 025d127b) with 30 -> max_h/max_w and injected colors
+# ----------------------------------------------------------------------------
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, ccols=None) -> dict:
+    cols = interval(0, 10, 1)
+    if bgc is None:
+        bgc = choice(cols)
+    if ccols is None:
+        ccols = [c for c in cols if c != bgc]
+
+    mh = max(5, int(max_h))
+    mw = max(5, int(max_w))
+
+    h = unifint(diff_lb, diff_ub, (5, mh))
+    w = unifint(diff_lb, diff_ub, (5, mw))
+
+    numcols = unifint(diff_lb, diff_ub, (1, len(ccols)))
+    ccols_used = list(ccols)[:numcols]
+
     nobjs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 20)))
-
-    gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * w for _ in range(h)]
-    used = set()
-
     succ = 0
     tr = 0
     maxtr = 5 * nobjs
+    gi = canvas(bgc, (h, w))
+    go = canvas(bgc, (h, w))
+    inds = asindices(gi)
     while succ < nobjs and tr < maxtr:
         tr += 1
-        oh = random.randint(3, 6)
-        ow = random.randint(3, 6)
-        if h - oh < 0 or w - ow < 0:
+        oh = randint(3, 6)
+        ow = randint(3, 6)
+        cands = sfilter(inds, lambda ij: ij[0] <= h - oh and ij[1] <= w - ow)
+        if len(cands) == 0:
             continue
-        cands = [(i, j) for i in range(h - oh + 1) for j in range(w - ow + 1)]
-        if not cands:
-            continue
-        r0, c0 = random.choice(cands)
-
+        loc = choice(totuple(cands))
         topl = connect((0, 0), (0, ow - 1))
         leftl = connect((1, 0), (oh - 2, oh - 3))
         rightl = connect((1, ow), (oh - 2, ow + oh - 3))
         botl = connect((oh - 1, oh - 2), (oh - 1, oh - 3 + ow))
-
         inobj = topl | leftl | rightl | botl
-        rm = max(c for _, c in inobj)
-
-        topl_shifted = {(r, c + 1) for r, c in topl}
-        leftl_shifted = {(r, c + 1) for r, c in leftl}
-        diag2 = connect((1, ow + 1), (oh - 3, ow + oh - 3))
-        outobj_raw = topl_shifted | botl | leftl_shifted | diag2 | {(oh - 2, ow + oh - 3)}
-        outobj = {(r, c) for r, c in outobj_raw if c <= rm}
-
+        outobj = shift(topl, (0, 1)) | botl | shift(leftl, (0, 1)) | \
+            connect((1, ow + 1), (oh - 3, ow + oh - 3)) | {(oh - 2, ow + oh - 3)}
+        outobj = sfilter(outobj, lambda ij: ij[1] <= rightmost(inobj))
         fullobj = inobj | outobj
-        fullobj_g = {(r + r0, c + c0) for r, c in fullobj}
-        inobj_g = {(r + r0, c + c0) for r, c in inobj}
-        outobj_g = {(r + r0, c + c0) for r, c in outobj}
-
-        if not all(0 <= r < h and 0 <= c < w for r, c in fullobj_g):
-            continue
-        if fullobj_g & used:
-            continue
-
-        col = random.choice(ccols)
-        for r, c in inobj_g:
-            gi[r][c] = col
-        for r, c in outobj_g:
-            go[r][c] = col
-
-        for r, c in fullobj_g:
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    used.add((r + dr, c + dc))
-        succ += 1
-
-    return {"input": gi, "output": go}
+        inobj = shift(inobj, loc)
+        outobj = shift(outobj, loc)
+        fullobj = shift(fullobj, loc)
+        if fullobj.issubset(inds):
+            inds = (inds - fullobj) - mapply(neighbors, fullobj)
+            succ += 1
+            col = choice(ccols_used)
+            gi = fill(gi, col, inobj)
+            go = fill(go, col, outobj)
+    return {'input': gi, 'output': go}
 
 
+# ----------------------------------------------------------------------------
+# 3. derive_operations
+#
+# Rule (measured from I, matches the verifier exactly):
+#   * an "object" = diagonally-connected same-color blob (the parallelogram
+#     outline the generator draws: top line, two diagonals, bottom line).
+#   * split that object into its 4-CONNECTED same-color pieces.
+#   * the piece that reaches the largest column (bottom line + the last cell of
+#     the right diagonal, which sits directly above it) stays where it is.
+#   * EVERY other piece slides exactly one cell to the RIGHT.
+#
+#   Piece sizes/counts vary with the object's oh/ow (3..6 each), so everything
+#   below is measured from I, never hardcoded.
+#
+#   A slide is emitted as a real MoveR on the piece's own cells, then the one
+#   vacated column of that piece is repaired with a single Color(bgc).
+#   Exception: ARCLE's object buffer keeps only NON-ZERO cells, so a piece whose
+#   color is 0 cannot be carried by Move at all; such a piece is drawn at its
+#   new place with Color0 and its old trace cleared with Color(bgc).
+# ----------------------------------------------------------------------------
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ops, sels = [], []
+    ho, wo = O.shape
 
-    unique, counts = np.unique(I, return_counts=True)
-    bgc = int(unique[np.argmax(counts)])
+    # background = the color the generator paints the canvas with; objects cover
+    # at most ~25% of the grid here, so the majority color is reliably bgc.
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    visited = np.zeros_like(I, dtype=bool)
-
-    def flood_8(sr, sc, color):
-        cells = []
-        stack = [(sr, sc)]
-        while stack:
-            r, c = stack.pop()
-            if r < 0 or r >= hi or c < 0 or c >= wi:
-                continue
-            if visited[r, c]:
-                continue
-            if int(I[r, c]) != color:
-                continue
-            visited[r, c] = True
-            cells.append((r, c))
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    if dr == 0 and dc == 0:
-                        continue
-                    stack.append((r + dr, c + dc))
-        return cells
-
-    def flood_4_within(cells_set, sr, sc):
-        result = []
-        stack = [(sr, sc)]
-        local = set()
-        while stack:
-            r, c = stack.pop()
-            if (r, c) in local:
-                continue
-            if (r, c) not in cells_set:
-                continue
-            local.add((r, c))
-            result.append((r, c))
-            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                stack.append((r + dr, c + dc))
-        return result, local
-
+    # ---- 4-connected same-color pieces of the foreground -------------------
+    seen = np.zeros((hi, wi), dtype=bool)
+    comps = []
     for r in range(hi):
         for c in range(wi):
-            if visited[r, c] or int(I[r, c]) == bgc:
+            if seen[r, c] or I[r, c] == bgc:
                 continue
-            color = int(I[r, c])
-            cells = flood_8(r, c, color)
-            cells_set = set(cells)
-            sub_visited_local = set()
-            sub_parts = []
-            for cell in cells:
-                if cell in sub_visited_local:
-                    continue
-                sub_cells, sub_vis = flood_4_within(cells_set, cell[0], cell[1])
-                sub_visited_local |= sub_vis
-                sub_parts.append(sub_cells)
+            col = int(I[r, c])
+            seen[r, c] = True
+            q = deque([(r, c)])
+            cells = []
+            while q:
+                rr, cc = q.popleft()
+                cells.append((rr, cc))
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nr, nc = rr + dr, cc + dc
+                    if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] \
+                            and int(I[nr, nc]) == col:
+                        seen[nr, nc] = True
+                        q.append((nr, nc))
+            comps.append({"color": col, "cells": sorted(cells)})
 
-            if not sub_parts:
-                continue
-            max_right = max(max(cc for _, cc in sp) for sp in sub_parts)
-            keep_idx = next(i for i, sp in enumerate(sub_parts)
-                            if max(cc for _, cc in sp) == max_right)
+    n = len(comps)
 
-            for i, sp in enumerate(sub_parts):
-                if i == keep_idx:
-                    continue
-                rows = [rr for rr, _ in sp]
-                cols_sp = [cc for _, cc in sp]
-                rr0, rr1 = min(rows), max(rows)
-                cc0, cc1 = min(cols_sp), max(cols_sp)
-                ops.append(22)  # MoveR
-                sels.append([rr0, cc0, rr1 - rr0, cc1 - cc0])
+    # ---- group pieces into whole objects (same color + diagonal touch) ------
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    owner = {}
+    for i, cp in enumerate(comps):
+        for cell in cp["cells"]:
+            owner[cell] = i
+    for i, cp in enumerate(comps):
+        for (r, c) in cp["cells"]:
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    j = owner.get((r + dr, c + dc))
+                    if j is not None and j != i and comps[j]["color"] == cp["color"]:
+                        union(i, j)
+
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    objects = []
+    for _, idxs in groups.items():
+        anchor = min(min(comps[i]["cells"]) for i in idxs)
+        objects.append((anchor, idxs))
+    objects.sort()                                  # reading order of objects
+
+    ops, sels = [], []
+
+    for _, idxs in objects:
+        # the anchor piece: the one extending furthest right -> it does NOT move
+        keeper = max(idxs, key=lambda i: (max(c for _, c in comps[i]["cells"]),
+                                          -min(r for r, _ in comps[i]["cells"])))
+        movers = [i for i in idxs if i != keeper]
+        movers.sort(key=lambda i: min(comps[i]["cells"]))
+
+        for i in movers:
+            cells = comps[i]["cells"]
+            col = comps[i]["color"]
+            dst = [(r, c + 1) for (r, c) in cells]
+            hole = sorted(set(cells) - set(dst))     # the column it vacates
+
+            if col != 0:
+                # slide this piece one cell right
+                ops.append(22)
+                sels.append(sel_of(cells))
+                if bgc != 0 and hole:
+                    ops.append(bgc)
+                    sels.append(sel_of(hole))
+            else:
+                # color 0 is invisible to ARCLE's object buffer -> draw it
+                fresh = sorted(set(dst) - set(cells))
+                if fresh:
+                    ops.append(0)
+                    sels.append(sel_of(fresh))
+                if hole:
+                    ops.append(bgc)
+                    sels.append(sel_of(hole))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])   # full-grid rectangle: submit
     return ops, sels
 
 
@@ -232,49 +252,108 @@ class GridMaker(BaseGridMaker):
         dataset = []
 
         for _sn in range(num_samples):
-            pr_in:  List[NDArray] = []
-            pr_out: List[NDArray] = []
-            ex_in:  List[NDArray] = []
-            ex_out: List[NDArray] = []
-            ops:  List[int]       = []
-            sels: List[List[int]] = []
+            # Episode-level retry: if 10 attempts at some instance all fail, that's
+            # transient (bad luck with the generator's randomness) — retry the WHOLE
+            # episode from scratch (fresh colors/instance plan) up to 5 times, rather
+            # than silently continuing with a partial episode (fewer examples than
+            # requested, or a missing test instance with operations=[]/selections=[]
+            # quietly appended as if it were a normal sample).
+            for _episode_attempt in range(5):
+                pr_in:  List[NDArray] = []
+                pr_out: List[NDArray] = []
+                ex_in:  List[NDArray] = []
+                ex_out: List[NDArray] = []
+                ops:  List[int]       = []
+                sels: List[List[int]] = []
 
-            # sample color roles once per episode → consistent across all instances
-            colors = sample_colors()
-
-            j = 0
-            while j < num_examples + 1:
-                ok = False
-                for _ in range(10):
-                    try:
-                        r = generate(
-                            random.uniform(0.2, 0.5),
-                            random.uniform(0.5, 0.8),
-                            max_h, max_w,
-                            **colors,
-                        )
-                        I = np.array(r["input"],  dtype=np.uint8)
-                        O = np.array(r["output"], dtype=np.uint8)
-                        # enforce max_grid_dim — skip oversized grids
-                        if I.shape[0] > max_h or I.shape[1] > max_w:
-                            continue
-                        if O.shape[0] > max_h or O.shape[1] > max_w:
-                            continue
-                        ok = True
-                        break
-                    except (IndexError, ValueError, KeyError):
-                        continue
-                if not ok:
-                    j += 1
-                    continue
-                if j == num_examples:
-                    pr_in.append(I)
-                    pr_out.append(O)
-                    ops, sels = derive_operations(I, O)
+                # sample color roles once per episode → consistent across all instances
+                # sample_colors() may optionally accept num_examples (to pre-plan
+                # per-instance categories) — call it either way for compatibility
+                # with grid_makers generated before this parameter existed.
+                if "num_examples" in inspect.signature(sample_colors).parameters:
+                    colors = sample_colors(num_examples=num_examples)
                 else:
-                    ex_in.append(I)
-                    ex_out.append(O)
-                j += 1
+                    colors = sample_colors()
+
+                # Plans are consumed by INDEX, not mutated: retries for instance j
+                # must receive the same variant. category_plan is retained as a
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
+                instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
+                if category_plan is not None and instance_plan is not None:
+                    raise ValueError(
+                        "sample_colors must return only one of category_plan/instance_plan"
+                    )
+                if category_plan is not None and len(category_plan) != num_examples + 1:
+                    # A wrong plan length is a deterministic bug in sample_colors(),
+                    # not bad luck — retrying the episode won't fix it. Fail loudly
+                    # instead of clamping the index and silently reusing an entry.
+                    raise ValueError(
+                        f"category_plan length {len(category_plan)} != "
+                        f"num_examples+1 ({num_examples + 1}) for task 025d127b"
+                    )
+                if instance_plan is not None:
+                    if len(instance_plan) != num_examples + 1:
+                        raise ValueError(
+                            f"instance_plan length {len(instance_plan)} != "
+                            f"num_examples+1 ({num_examples + 1}) for task 025d127b"
+                        )
+                    if any(not isinstance(entry, dict) for entry in instance_plan):
+                        raise ValueError("every instance_plan entry must be a kwargs dict")
+                    if instance_plan[-1] not in instance_plan[:-1]:
+                        raise ValueError(
+                            "instance_plan test variant must appear among the examples"
+                        )
+
+                try:
+                    j = 0
+                    while j < num_examples + 1:
+                        ok = False
+                        for _ in range(10):
+                            try:
+                                call_kwargs = dict(colors)
+                                if instance_plan is not None:
+                                    call_kwargs.update(instance_plan[j])
+                                elif category_plan is not None:
+                                    call_kwargs["category"] = category_plan[j]
+                                r = generate(
+                                    random.uniform(0.2, 0.5),
+                                    random.uniform(0.5, 0.8),
+                                    max_h, max_w,
+                                    **call_kwargs,
+                                )
+                                I = np.array(r["input"],  dtype=np.uint8)
+                                O = np.array(r["output"], dtype=np.uint8)
+                                # enforce max_grid_dim — skip oversized grids
+                                if I.shape[0] > max_h or I.shape[1] > max_w:
+                                    continue
+                                if O.shape[0] > max_h or O.shape[1] > max_w:
+                                    continue
+                                ok = True
+                                break
+                            except (IndexError, ValueError, KeyError):
+                                continue
+                        if not ok:
+                            raise RuntimeError(
+                                f"Failed to generate instance {j} after 10 attempts "
+                                f"for task 025d127b"
+                            )
+                        if j == num_examples:
+                            pr_in.append(I)
+                            pr_out.append(O)
+                            ops, sels = derive_operations(I, O)
+                        else:
+                            ex_in.append(I)
+                            ex_out.append(O)
+                        j += 1
+                    break  # episode complete
+                except RuntimeError:
+                    continue
+            else:
+                raise RuntimeError(
+                    f"Failed to build a complete episode for task 025d127b "
+                    f"after 5 attempts"
+                )
 
             dataset.append((ex_in, ex_out, pr_in, pr_out, {
                 "id":         f"025d127b-rearc-llm_{_sn + 1}",

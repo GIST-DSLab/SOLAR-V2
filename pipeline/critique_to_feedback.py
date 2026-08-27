@@ -48,6 +48,8 @@ CODE_MEANING = {
     # emitted by probe_originals.py, not by the LLM critic
     "FAILS_ORIGINAL_PAIR":       "the trajectory does not reproduce the task's own original ARC pairs, though the vendored verifier does — so the rule it implements holds on the instances generate() samples but not on the task as written",
     "UPSTREAM_PAIR_UNVERIFIED":  "the trajectory does not reproduce some original ARC pairs, and neither does the vendored RE-ARC verifier — the generator models the task differently there, and it is the reference, so nothing needs fixing for those pairs",
+    # emitted by probe_rearc.py
+    "FAILS_REARC_INSTANCE":      "derive_operations did not solve instances drawn from the task's own RE-ARC generator and confirmed by its verifier — the rule it implements covers what your generate() samples, not what the task's generator produces",
     # emitted by probe_generator.py
     "GENERATOR_RULE_MISMATCH":   "the instances generate() produces do not follow the rule the task's RE-ARC generator implements: the verifier maps the same input to a different output. Re-read the generator and make generate() sample from its rule, and derive_operations solve that rule",
     "CONCEPT_NOT_LEGIBLE":       "the answer and rule are right but the ops hide the rule — a valid but opaque route (growing-bbox doubling, or redraw where an object-unit Move of the object's exact shape is the concept). Re-derive so the concept is visible: select the object's true shape and Move it, or stamp the base unit at each period offset",
@@ -90,7 +92,18 @@ def build_feedback(rec: dict) -> str:
     # would tell the generator the opposite of what happened.
     wrong_answer = {"FAILS_ORIGINAL_PAIR", "UPSTREAM_PAIR_UNVERIFIED"}
     wrong_rule = {"GENERATOR_RULE_MISMATCH"}
-    if any(f["code"] in wrong_rule for f in findings):
+    narrow_rule = {"FAILS_REARC_INSTANCE"}
+    if any(f["code"] in narrow_rule for f in findings):
+        lines = [
+            "Your previous attempt at this task was replayed on instances drawn from "
+            "the task's own RE-ARC generator — not on instances its generate() "
+            "produced — and it did not solve them. That is where the data comes "
+            "from, so derive_operations has to hold over everything the generator "
+            "produces, not only over the slice your generate() samples.",
+            "",
+            "Findings on the previous attempt:",
+        ]
+    elif any(f["code"] in wrong_rule for f in findings):
         lines = [
             "Your previous attempt at this task built instances that do not follow the "
             "rule the task's RE-ARC generator implements: given the same input, the "
@@ -121,7 +134,15 @@ def build_feedback(rec: dict) -> str:
         meaning = CODE_MEANING.get(f["code"], "")
         lines.append(f"{i}. {f['code']} ({f['severity']}) — {meaning}.")
         lines.append(f"   Reviewer: {f['evidence'].strip()}")
-    if any(f["code"] in wrong_rule for f in findings):
+    if any(f["code"] in narrow_rule for f in findings):
+        lines += [
+            "",
+            "Re-read the generator for this task and work out what it varies that "
+            "your derive_operations does not handle — object counts, positions, "
+            "sizes, colours, orientations. Detect those from I and O rather than "
+            "assuming the shapes your own generate() happened to sample.",
+        ]
+    elif any(f["code"] in wrong_rule for f in findings):
         lines += [
             "",
             "Re-read the generator and the verifier for this task and work out where "

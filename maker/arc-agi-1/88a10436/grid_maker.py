@@ -35,43 +35,70 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from collections import Counter, deque
+from collections import Counter
 from maker.sel_helpers import sel_of
 
 
+# ----------------------------------------------------------------------------
+# 1) episode-level colors
+#    Roles: bgc (canvas), fgc (the single-cell markers), ccols_pool (the colours
+#    the stamped shape is painted from).  The rule itself ("replace every marker
+#    dot by the big shape, centred on the dot") is colour independent, but the
+#    marker role must stay stable across the episode, so bgc/fgc are fixed here.
+#    No discrete structural variants exist (one uniform rule), so no plan needed.
+# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    # bgc fixed to 0 so Copy/Paste treats background as transparent:
-    # only the object's own cells get stamped onto the markers.
-    bgc = 0
-    fgc = random.choice([c for c in range(1, 10)])
-    ccols_pool = [c for c in range(1, 10) if c != fgc]
-    return {"bgc": bgc, "fgc": fgc, "ccols_pool": ccols_pool}
+    cols = list(range(10))
+    bgc, fgc = random.sample(cols, 2)
+    pool = [c for c in cols if c != bgc and c != fgc]
+    random.shuffle(pool)
+    return {"bgc": bgc, "fgc": fgc, "ccols_pool": pool}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc=0, fgc=1, ccols_pool=None) -> dict:
-    if ccols_pool is None:
-        ccols_pool = [c for c in range(1, 10) if c != fgc]
+# ----------------------------------------------------------------------------
+# 2) generator (RE-ARC generate_88a10436 with max_h/max_w and injected colours)
+# ----------------------------------------------------------------------------
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc, ccols_pool) -> dict:
+    hlo = min(8, max_h)
+    hhi = max(hlo, max_h)
+    wlo = min(8, max_w)
+    whi = max(wlo, max_w)
+    h = unifint(diff_lb, diff_ub, (hlo, hhi))
+    w = unifint(diff_lb, diff_ub, (wlo, whi))
 
-    hub = max(8, max_h)
-    wub = max(8, max_w)
-    h = unifint(diff_lb, diff_ub, (8, hub))
-    w = unifint(diff_lb, diff_ub, (8, wub))
     objh = unifint(diff_lb, diff_ub, (0, 2))
     objw = unifint(diff_lb, diff_ub, (0 if objh > 0 else 1, 2))
     objh = objh * 2 + 1
     objw = objw * 2 + 1
+    while objh > h:
+        objh -= 2
+    while objw > w:
+        objw -= 2
+    if objh == 1 and objw == 1:                 # never a 1x1 "shape"
+        if w >= 3:
+            objw = 3
+        elif h >= 3:
+            objh = 3
+
     bb = asindices(canvas(-1, (objh, objw)))
     sp = (objh // 2, objw // 2)
     obj = {sp}
     bb = remove(sp, bb)
     ncells = unifint(diff_lb, diff_ub, (max(objh, objw), objh * objw))
     for k in range(ncells - 1):
-        obj.add(choice(totuple((bb - obj) & mapply(dneighbors, obj))))
+        cands = totuple((bb - obj) & mapply(dneighbors, obj))
+        if len(cands) == 0:
+            break
+        obj.add(choice(cands))
     while height(obj) != objh or width(obj) != objw:
-        obj.add(choice(totuple((bb - obj) & mapply(dneighbors, obj))))
+        cands = totuple((bb - obj) & mapply(dneighbors, obj))
+        if len(cands) == 0:
+            break
+        obj.add(choice(cands))
+    ncells = max(1, len(obj))
 
-    ncols = unifint(diff_lb, diff_ub, (1, min(8, len(ccols_pool))))
-    ccols = sample(ccols_pool, ncols)
+    ncols = unifint(diff_lb, diff_ub, (1, len(ccols_pool)))
+    ccols = ccols_pool[:ncols]
     obj = {(choice(ccols), ij) for ij in obj}
     obj = normalize(obj)
 
@@ -79,9 +106,11 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc=0, fgc=1, ccols_pool=None) -> d
     go = canvas(bgc, (h, w))
     loci = randint(0, h - objh)
     locj = randint(0, w - objw)
-    plcd = shift(obj, (loci, locj))
+    loc = (loci, locj)
+    plcd = shift(obj, loc)
     gi = paint(gi, plcd)
     go = paint(go, plcd)
+
     inds = (asindices(gi) - toindices(plcd)) - mapply(neighbors, toindices(plcd))
     nobjs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // (2 * ncells))))
     maxtrials = 4 * nobjs
@@ -99,58 +128,93 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc=0, fgc=1, ccols_pool=None) -> d
             succ += 1
             inds = (inds - plcdi) - mapply(dneighbors, plcdi)
         tr += 1
+
     return {'input': gi, 'output': go}
 
 
+# ----------------------------------------------------------------------------
+# 3) derive_operations
+#    Rule: the one multi-cell component is a stamp; every isolated single cell
+#    is a marker.  Each marker is replaced by a copy of the stamp placed so the
+#    stamp's bbox-centre cell lands exactly on the marker.  The stamp may
+#    contain colour 0 and the background may be non-zero, so Copy/Paste is
+#    unsafe (0 is "nothing" to the clipboard, and the stamp's bbox holes must
+#    NOT be repainted -- another copy's cell can legally sit in one).  We paint
+#    each stamp copy, one Color op per colour of that copy.
+# ----------------------------------------------------------------------------
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
 
+    ops, sels = [], []
+
+    # background = the canvas colour the generator fills before placing anything
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # 4-connected components of non-background cells
+    # --- 4-connected non-background components -------------------------------
     seen = np.zeros((hi, wi), dtype=bool)
     comps = []
     for r in range(hi):
         for c in range(wi):
-            if I[r, c] == bgc or seen[r, c]:
-                continue
-            q = deque([(r, c)])
-            seen[r, c] = True
-            cells = []
-            while q:
-                cr, cc = q.popleft()
-                cells.append((cr, cc))
-                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    nr, nc = cr + dr, cc + dc
-                    if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] and I[nr, nc] != bgc:
-                        seen[nr, nc] = True
-                        q.append((nr, nc))
-            comps.append(cells)
+            if I[r, c] != bgc and not seen[r, c]:
+                stack = [(r, c)]
+                seen[r, c] = True
+                cells = []
+                while stack:
+                    rr, cc = stack.pop()
+                    cells.append((rr, cc))
+                    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        nr, nc = rr + dr, cc + dc
+                        if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] \
+                                and I[nr, nc] != bgc:
+                            seen[nr, nc] = True
+                            stack.append((nr, nc))
+                comps.append(sorted(cells))
+    if not comps:
+        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+        return ops, sels
 
-    # the multicolor template is the largest component; markers are single cells
-    main = max(comps, key=len)
-    markers = sorted([cc[0] for cc in comps if len(cc) == 1])
-
-    rs = [r for r, _ in main]
-    cs = [c for _, c in main]
+    # --- the stamp = the single multi-cell component -------------------------
+    stamp = max(comps, key=len)
+    rs = [r for r, _ in stamp]
+    cs = [c for _, c in stamp]
     r0, c0 = min(rs), min(cs)
     oh = max(rs) - r0 + 1
     ow = max(cs) - c0 + 1
+    ar, ac = oh // 2, ow // 2          # anchor cell inside the stamp's bbox
 
-    ops, sels = [], []
-    # CopyI of the template's full bbox rectangle (background included by intent;
-    # bgc==0 so background cells are transparent and never overwrite anything)
-    ops.append(28); sels.append([r0, c0, oh - 1, ow - 1])
+    pattern = [(r - r0 - ar, c - c0 - ac, int(I[r, c])) for (r, c) in stamp]
+    colour_order = []
+    for _, _, col in pattern:
+        if col not in colour_order:
+            colour_order.append(col)
 
+    # --- markers = the isolated single cells, in reading order ---------------
+    markers = sorted([cl[0] for cl in comps if len(cl) == 1])
+
+    G = I.copy()                        # working grid, kept in sync with ARCLE
     for (mr, mc) in markers:
-        pr = mr - oh // 2
-        pc = mc - ow // 2
-        ops.append(30); sels.append([pr, pc, 0, 0])
+        by_col = {}
+        for dr, dc, col in pattern:
+            rr, cc = mr + dr, mc + dc
+            if 0 <= rr < hi and 0 <= cc < wi:
+                by_col.setdefault(col, []).append((rr, cc))
+        for col in colour_order:
+            cells = by_col.get(col, [])
+            # skip cells that ALREADY hold this colour right now (no-op cells)
+            cells = [(rr, cc) for (rr, cc) in cells if G[rr, cc] != col]
+            if not cells:
+                continue
+            ops.append(int(col))
+            sels.append(sel_of(cells))
+            for (rr, cc) in cells:
+                G[rr, cc] = col
 
-    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    # full-grid rectangle: submitting the whole canvas
+    ops.append(34)
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -194,7 +258,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

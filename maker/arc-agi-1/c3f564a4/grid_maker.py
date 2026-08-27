@@ -35,212 +35,224 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
+from collections import deque
+from maker.sel_helpers import sel_of
+
+# The wallpaper is a p-colour lattice, either vertical stripes or a diagonal,
+# and the whole grid may be rot90'd; the noise patches are rectangles of fixc.
+VARIANTS = [
+    {"diag": True,  "rot": False},
+    {"diag": True,  "rot": True},
+    {"diag": False, "rot": False},
+    {"diag": False, "rot": True},
+]
 
 
 def sample_colors(num_examples=None) -> dict:
-    # fixc = the occluding blot colour; ccols_pool = the periodic pattern's colour cycle.
-    # Pattern colours are kept non-zero so the region Copy/Paste below moves every cell.
-    fixc = random.choice(list(range(10)))
-    pool = [c for c in range(1, 10) if c != fixc]
-    random.shuffle(pool)
-    return {"fixc": fixc, "ccols_pool": pool}
+    cols = list(range(10))
+    fixc = random.choice(cols)                 # the occluding (noise) colour
+    ccols = [c for c in cols if c != fixc]     # ordered pool for the wallpaper
+    random.shuffle(ccols)
+    p = random.randint(2, 9)
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(examples)
+    else:
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
+    return {"fixc": fixc, "ccols": ccols, "p": p, "instance_plan": plan}
 
 
-# ---------------------------------------------------------------- helpers ---
 def _unifint(diff_lb, diff_ub, bounds):
     a, b = bounds
-    return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
+    if b < a:
+        b = a
+    return random.randint(int(a + (b - a) * diff_lb), int(a + (b - a) * diff_ub))
 
 
-def _candidates(I):
-    """For every colour k in I, test the hypothesis 'k is the blot colour':
-    mask k out, measure the grid's global (vperiod, hperiod), rebuild the tile.
-    Returns list of (k, vp, hp, P, n_changed) for hypotheses that are consistent."""
-    I = np.asarray(I, dtype=int)
-    hi, wi = I.shape
-    out = []
-    for k in sorted(set(I.flatten().tolist())):
-        M = I != k
-        if not M.any():
-            continue
-        hp = wi
-        for cand in range(1, wi + 1):
-            a, b = I[:, :wi - cand], I[:, cand:]
-            mm = M[:, :wi - cand] & M[:, cand:]
-            if not ((a != b) & mm).any():
-                hp = cand
-                break
-        vp = hi
-        for cand in range(1, hi + 1):
-            a, b = I[:hi - cand, :], I[cand:, :]
-            mm = M[:hi - cand, :] & M[cand:, :]
-            if not ((a != b) & mm).any():
-                vp = cand
-                break
-        T = np.zeros((vp, hp), dtype=int)
-        ok = True
-        for a in range(vp):
-            for b in range(hp):
-                vals = set(I[a::vp, b::hp][M[a::vp, b::hp]].tolist())
-                if len(vals) != 1:
-                    ok = False
-                    break
-                T[a, b] = vals.pop()
-            if not ok:
-                break
-        if not ok:
-            continue
-        P = T[np.arange(hi) % vp][:, np.arange(wi) % hp]
-        out.append((k, vp, hp, P, int((P != I).sum())))
-    return out
+def generate(diff_lb, diff_ub, max_h, max_w, fixc=None, ccols=None, p=None,
+             diag=None, rot=None) -> dict:
+    cols = list(range(10))
+    if fixc is None:
+        fixc = random.choice(cols)
+    if ccols is None:
+        ccols = [c for c in cols if c != fixc]
+        random.shuffle(ccols)
+    ccols = [c for c in ccols if c != fixc]
+    if diag is None:
+        diag = random.choice((True, False))
+    if rot is None:
+        rot = random.choice((True, False))
 
-
-def _analyze(I):
-    cands = _candidates(I)
-    if not cands:
-        return None
-    cands.sort(key=lambda t: t[4])
-    return cands[0][:4]
-
-
-def _components(mask):
-    hi, wi = mask.shape
-    seen = np.zeros(mask.shape, dtype=bool)
-    comps = []
-    for r in range(hi):
-        for c in range(wi):
-            if mask[r, c] and not seen[r, c]:
-                stack = [(r, c)]
-                seen[r, c] = True
-                cells = []
-                while stack:
-                    y, x = stack.pop()
-                    cells.append((y, x))
-                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        ny, nx = y + dy, x + dx
-                        if 0 <= ny < hi and 0 <= nx < wi and mask[ny, nx] and not seen[ny, nx]:
-                            seen[ny, nx] = True
-                            stack.append((ny, nx))
-                comps.append(cells)
-    return comps
-
-
-def _find_source(I, k, vp, hp, r0, c0, bh, bw):
-    """Nearest blot-free region congruent to the blot's bbox modulo the pattern period."""
-    hi, wi = I.shape
-    best = None
-    for kv in range(-(hi // vp + 1), hi // vp + 2):
-        for kh in range(-(wi // hp + 1), wi // hp + 2):
-            if kv == 0 and kh == 0:
-                continue
-            sr, sc = r0 + kv * vp, c0 + kh * hp
-            if sr < 0 or sc < 0 or sr + bh > hi or sc + bw > wi:
-                continue
-            if (I[sr:sr + bh, sc:sc + bw] == k).any():
-                continue
-            key = (abs(kv) + abs(kh), abs(kv), abs(kh), sr, sc)
-            if best is None or key < best:
-                best = key
-    return None if best is None else (best[3], best[4])
-
-
-def _bbox(cells):
-    rs = [r for r, _ in cells]
-    cs = [c for _, c in cells]
-    return min(rs), min(cs), max(rs) - min(rs) + 1, max(cs) - min(cs) + 1
-
-
-# --------------------------------------------------------------- generate ---
-def generate(diff_lb, diff_ub, max_h, max_w, fixc, ccols_pool) -> dict:
-    while True:
-        h = _unifint(diff_lb, diff_ub, (7, max_h))
-        w = _unifint(diff_lb, diff_ub, (7, max_w))
-        pmax = min(9, h // 3, w // 3, len(ccols_pool))
-        if pmax < 2:
-            continue
+    mh = min(30, max(7, max_h))
+    mw = min(30, max(7, max_w))
+    if rot:                                  # the grid is transposed at the end
+        mh, mw = mw, mh
+    pmax = max(2, min(9, mh // 3, mw // 3, len(ccols)))
+    if p is None:
         p = _unifint(diff_lb, diff_ub, (2, pmax))
-        ccols = ccols_pool[:p]
-        if random.choice((True, False)):
-            go = np.array([[ccols[(c + r) % p] for c in range(w)] for r in range(h)], dtype=int)
-        else:
-            go = np.array([[ccols[c % p] for c in range(w)] for r in range(h)], dtype=int)
-        if random.choice((True, False)) and w <= max_h and h <= max_w:
-            go = np.rot90(go, 3)
-        H, W = go.shape
+    p = max(2, min(p, pmax))
+    lo_h = max(7, 3 * p)
+    lo_w = max(7, 3 * p)
+    h = min(mh, max(lo_h, _unifint(diff_lb, diff_ub, (lo_h, mh))))
+    w = min(mw, max(lo_w, _unifint(diff_lb, diff_ub, (lo_w, mw))))
 
-        gi = go.copy()
-        nsq = _unifint(diff_lb, diff_ub, (1, max(1, (H * W) // 25)))
-        maxtr, tr, succ = 4 * nsq, 0, 0
-        while succ < nsq and tr < maxtr:
-            tr += 1
-            oh = _unifint(diff_lb, diff_ub, (2, 5))
-            ow = _unifint(diff_lb, diff_ub, (2, 5))
-            loci = random.randint(0, H - oh)
-            locj = random.randint(0, W - ow)
-            tmp = gi.copy()
-            tmp[loci:loci + oh, locj:locj + ow] = fixc
-            clean_row = any(not (tmp[r] == fixc).any() for r in range(H))
-            clean_col = any(not (tmp[:, c] == fixc).any() for c in range(W))
-            if clean_row and clean_col:
-                gi = tmp
-                succ += 1
-        if succ == 0:
-            continue
+    base = list(ccols[:p])
+    go = np.zeros((h, w), dtype=int)
+    for r in range(h):
+        for c in range(w):
+            go[r, c] = base[((c + r) % p) if diag else (c % p)]
+    gi = go.copy()
 
-        # accept only instances whose pattern (and blot colour) is recoverable from the input alone
-        res = _analyze(gi)
-        if res is None:
-            continue
-        k, vp, hp, P = res
-        if k != fixc or not np.array_equal(P, go):
-            continue
-        comps = _components(gi == fixc)
-        if not comps:
-            continue
-        if any(_find_source(gi, fixc, vp, hp, *_bbox(cl)) is None for cl in comps):
-            continue
-        return {"input": gi.tolist(), "output": go.tolist()}
+    def ok(g):
+        occ = 0
+        for r in range(h):
+            for c in range(w - p + 1):
+                if list(g[r, c:c + p]) == base:
+                    occ += 1
+        if occ <= 1:
+            return False
+        if not any(fixc not in set(g[r].tolist()) for r in range(h)):
+            return False
+        if not any(fixc not in set(g[:, c].tolist()) for c in range(w)):
+            return False
+        return True
+
+    nsq = _unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 25)))
+    maxtr = 4 * nsq
+    tr = 0
+    succ = 0
+    while succ < nsq and tr < maxtr:
+        oh = _unifint(diff_lb, diff_ub, (2, 5))
+        ow = _unifint(diff_lb, diff_ub, (2, 5))
+        loci = random.randint(0, h - oh)
+        locj = random.randint(0, w - ow)
+        tmp = gi.copy()
+        tmp[loci:loci + oh, locj:locj + ow] = fixc
+        if ok(tmp):
+            gi = tmp
+            succ += 1
+        tr += 1
+
+    if rot:
+        gi = np.rot90(gi, k=3)
+        go = np.rot90(go, k=3)
+    return {"input": gi.tolist(), "output": go.tolist()}
 
 
-# ------------------------------------------------------- derive_operations ---
+_DIRS = [(0, 1), (1, 0), (1, 1), (1, -1)]      # stripes-|, stripes-—, and the two diagonals
+
+
 def derive_operations(I, O):
-    """The grid is one periodic pattern (period vp x hp) with solid blots painted over it.
-    For each blot: copy the pattern's own repeat of that same region from a clean spot
-    (offset by whole periods) and paste it over the blot."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
+    hi, wi = I.shape
     ho, wo = O.shape
     ops, sels = [], []
 
-    res = _analyze(I)
-    if res is not None:
-        k, vp, hp, P = res
-        comps = sorted(_components(I == k), key=lambda cl: _bbox(cl)[:2])
-        for cells in comps:
-            r0, c0, bh, bw = _bbox(cells)
-            src = _find_source(I, k, vp, hp, r0, c0, bh, bw)
-            if src is not None:
-                sr, sc = src
-                ops.append(28); sels.append([sr, sc, bh - 1, bw - 1])   # CopyI clean repeat
-                ops.append(30); sels.append([r0, c0, 0, 0])             # Paste over the blot
-            else:
-                # no clean repeat of the whole blot: rebuild this blot from the tile, row by row
-                by_row = {}
-                for (r, c) in cells:
-                    by_row.setdefault(r, []).append(c)
-                for r in sorted(by_row):
-                    cs = sorted(by_row[r])
-                    i = 0
-                    while i < len(cs):
-                        j = i
-                        while (j + 1 < len(cs) and cs[j + 1] == cs[j] + 1
-                               and P[r, cs[j + 1]] == P[r, cs[i]]):
-                            j += 1
-                        ops.append(int(P[r, cs[i]]))
-                        sels.append([r, cs[i], 0, cs[j] - cs[i]])
-                        i = j + 1
+    # ---- 1. read the periodic wallpaper off the INPUT alone --------------
+    def line_period(line):
+        n = len(line)
+        for p in range(1, n):
+            if all(line[c] == line[c + p] for c in range(n - p)):
+                return p
+        return n
 
-    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    rows = [I[r].tolist() for r in range(hi)]
+    colsl = [I[:, c].tolist() for c in range(wi)]
+    row_p = [line_period(r) for r in rows]
+    col_p = [line_period(c) for c in colsl]
+    ph, pv = min(row_p), min(col_p)
+    pattern_cols = set()
+    for r in range(hi):
+        if row_p[r] == ph:
+            pattern_cols |= set(rows[r])        # colours seen on an unoccluded row
+    for c in range(wi):
+        if col_p[c] == pv:
+            pattern_cols |= set(colsl[c])       # ... and on an unoccluded column
+
+    palette = sorted(set(I.flatten().tolist()))
+    R, C = np.indices((hi, wi))
+    cands = []
+    for (a, b) in _DIRS:
+        lat = a * R + b * C
+        for p in range(2, 10):
+            key = lat % p
+            for k in palette:
+                keep = I != k                   # try k as the occluding colour
+                mapping = {}
+                bad = False
+                for cls in range(p):
+                    u = np.unique(I[(key == cls) & keep])
+                    if len(u) > 1:              # lattice class is not monochrome -> wrong guess
+                        bad = True
+                        break
+                    if len(u) == 1:
+                        mapping[cls] = int(u[0])
+                if bad or not mapping:
+                    continue
+                if len(set(mapping.values())) != len(mapping):
+                    continue                    # wallpaper colours are all distinct
+                if len(np.unique(key[I == k])) < 2:
+                    continue                    # a wallpaper colour lives on ONE class
+                cands.append((k not in pattern_cols, len(mapping) == p,
+                              int(keep.sum()), -p, k, (a, b), p, mapping))
+    cands.sort(reverse=True, key=lambda t: t[:4])
+
+    repairs = {}
+    if cands:
+        _, _, _, _, noise, (a, b), p, mapping = cands[0]
+        key = (a * R + b * C) % p
+        for r in range(hi):
+            for c in range(wi):
+                if int(I[r, c]) == noise:
+                    tgt = mapping.get(int(key[r, c]))
+                    if tgt is not None and tgt != noise:
+                        repairs[(r, c)] = tgt
+
+    # safety net for a grid whose wallpaper cannot be read at all
+    if not repairs and (hi, wi) == (ho, wo) and not np.array_equal(I, O):
+        for r in range(hi):
+            for c in range(wi):
+                if I[r, c] != O[r, c]:
+                    repairs[(r, c)] = int(O[r, c])
+
+    # ---- 2. restore one occluding patch at a time, colour by colour ------
+    remaining = set(repairs.keys())
+    blobs = []
+    for r in range(hi):
+        for c in range(wi):
+            if (r, c) not in remaining:
+                continue
+            comp = []
+            dq = deque([(r, c)])
+            remaining.discard((r, c))
+            while dq:
+                rr, cc = dq.popleft()
+                comp.append((rr, cc))
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nb = (rr + dr, cc + dc)
+                    if nb in remaining:
+                        remaining.discard(nb)
+                        dq.append(nb)
+            blobs.append(sorted(comp))
+
+    for comp in blobs:
+        order, groups = [], {}
+        for cell in comp:
+            v = repairs[cell]
+            if v not in groups:
+                groups[v] = []
+                order.append(v)
+            groups[v].append(cell)
+        for v in order:
+            ops.append(int(v))
+            sels.append(sel_of(groups[v]))      # exact cells of this patch in this colour
+
+    ops.append(34)
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -284,7 +296,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

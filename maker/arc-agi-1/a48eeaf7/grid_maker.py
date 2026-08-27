@@ -34,185 +34,253 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-import numpy as np
-from collections import Counter
-
-from maker.sel_helpers import sel_of
 
 
-# ---------------------------------------------------------------- colors
 def sample_colors(num_examples=None) -> dict:
-    """bgc / sqc / dotc are the three colors the RE-ARC generator samples.
-
-    dotc is kept non-zero: the dots are the objects that get MOVED, and ARCLE's
-    object buffer only holds non-zero cells (a 0-colored object would be a NOOP).
-    """
+    """bgc / sqc / dotc are all sampled by the original generator -> fix them per episode."""
     cols = list(range(10))
-    dotc = random.choice([c for c in cols if c != 0])
-    rest = [c for c in cols if c != dotc]
-    bgc, sqc = random.sample(rest, 2)
+    bgc, sqc, dotc = random.sample(cols, 3)
     return {"bgc": bgc, "sqc": sqc, "dotc": dotc}
 
 
-# ---------------------------------------------------------------- generator
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int, sqc: int, dotc: int) -> dict:
-    hlo, hhi = 8, max(8, max_h)
-    wlo, whi = 8, max(8, max_w)
-    h = unifint(diff_lb, diff_ub, (hlo, hhi))
-    w = unifint(diff_lb, diff_ub, (wlo, whi))
-    ih = unifint(diff_lb, diff_ub, (2, h // 2))
-    iw = unifint(diff_lb, diff_ub, (2, w // 2))
-    loci = randint(2, h - ih - 2)
-    locj = randint(2, w - iw - 2)
-    gi = canvas(bgc, (h, w))
-    go = canvas(bgc, (h, w))
-    sq = backdrop(frozenset({(loci, locj), (loci + ih - 1, locj + iw - 1)}))
-    A = [(x, locj - 1) for x in interval(loci, loci + ih, 1)]
-    Ap = [(x, randint(0, locj - 2)) for x in interval(loci, loci + ih, 1)]
-    B = [(x, locj + iw) for x in interval(loci, loci + ih, 1)]
-    Bp = [(x, randint(locj + iw + 1, w - 1)) for x in interval(loci, loci + ih, 1)]
-    C = [(loci - 1, x) for x in interval(locj, locj + iw, 1)]
-    Cp = [(randint(0, loci - 2), x) for x in interval(locj, locj + iw, 1)]
-    D = [(loci + ih, x) for x in interval(locj, locj + iw, 1)]
-    Dp = [(randint(loci + ih + 1, h - 1), x) for x in interval(locj, locj + iw, 1)]
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, sqc=None, dotc=None) -> dict:
+    if bgc is None or sqc is None or dotc is None:
+        cols = list(range(10))
+        bgc, sqc, dotc = random.sample(cols, 3)
+
+    def unifint(lb, ub):
+        if ub < lb:
+            ub = lb
+        return random.randint(lb + int((ub - lb) * diff_lb), lb + int((ub - lb) * diff_ub))
+
+    hub = max(8, min(30, int(max_h)))
+    wub = max(8, min(30, int(max_w)))
+    h = unifint(8, hub)
+    w = unifint(8, wub)
+    ih = unifint(2, h // 2)
+    iw = unifint(2, w // 2)
+    loci = random.randint(2, h - ih - 2)
+    locj = random.randint(2, w - iw - 2)
+
+    gi = [[bgc] * w for _ in range(h)]
+    go = [[bgc] * w for _ in range(h)]
+    for r in range(loci, loci + ih):
+        for c in range(locj, locj + iw):
+            gi[r][c] = sqc
+            go[r][c] = sqc
+
+    A = [(x, locj - 1) for x in range(loci, loci + ih)]
+    Ap = [(x, random.randint(0, locj - 2)) for x in range(loci, loci + ih)]
+    B = [(x, locj + iw) for x in range(loci, loci + ih)]
+    Bp = [(x, random.randint(locj + iw + 1, w - 1)) for x in range(loci, loci + ih)]
+    C = [(loci - 1, x) for x in range(locj, locj + iw)]
+    Cp = [(random.randint(0, loci - 2), x) for x in range(locj, locj + iw)]
+    D = [(loci + ih, x) for x in range(locj, locj + iw)]
+    Dp = [(random.randint(loci + ih + 1, h - 1), x) for x in range(locj, locj + iw)]
+
     srarr = Ap + Bp + Cp + Dp
     dearr = A + B + C + D
-    inds = interval(0, len(srarr), 1)
-    num = unifint(diff_lb, diff_ub, (1, len(srarr)))
-    locs = sample(inds, num)
-    srarr = [e for j, e in enumerate(srarr) if j in locs]
-    dearr = [e for j, e in enumerate(dearr) if j in locs]
-    gi = fill(gi, sqc, sq)
-    go = fill(go, sqc, sq)
-    for s, d in zip(srarr, dearr):
-        gi = fill(gi, dotc, {s})
-        go = fill(go, dotc, {d})
-    ncorn = unifint(diff_lb, diff_ub, (0, 4))
-    fullinds = asindices(gi)
-    if ncorn > 0:
-        go = fill(go, dotc, {(loci - 1, locj - 1)})
-        cands = shoot((loci - 2, locj - 2), (-1, -1)) & fullinds
-        locc = choice(totuple(cands))
-        gi = fill(gi, dotc, {locc})
-    if ncorn > 1:
-        go = fill(go, dotc, {(loci - 1, locj + iw)})
-        cands = shoot((loci - 2, locj + iw + 1), (-1, 1)) & fullinds
-        locc = choice(totuple(cands))
-        gi = fill(gi, dotc, {locc})
-    if ncorn > 2:
-        go = fill(go, dotc, {(loci + ih, locj - 1)})
-        cands = shoot((loci + ih + 1, locj - 2), (1, -1)) & fullinds
-        locc = choice(totuple(cands))
-        gi = fill(gi, dotc, {locc})
-    if ncorn > 3:
-        go = fill(go, dotc, {(loci + ih, locj + iw)})
-        cands = shoot((loci + ih + 1, locj + iw + 1), (1, 1)) & fullinds
-        locc = choice(totuple(cands))
-        gi = fill(gi, dotc, {locc})
-    rotf = choice((identity, rot90, rot180, rot270))
-    gi = rotf(gi)
-    go = rotf(go)
-    return {'input': gi, 'output': go}
+    num = unifint(1, len(srarr))
+    locs = set(random.sample(range(len(srarr)), num))
+    for j in sorted(locs):
+        sr, sc = srarr[j]
+        dr, dc = dearr[j]
+        gi[sr][sc] = dotc
+        go[dr][dc] = dotc
+
+    ncorn = unifint(0, 4)
+
+    def ray(start, d):
+        pts = []
+        r, c = start
+        while 0 <= r < h and 0 <= c < w:
+            pts.append((r, c))
+            r += d[0]
+            c += d[1]
+        return pts
+
+    corner_defs = [
+        ((loci - 1, locj - 1), (loci - 2, locj - 2), (-1, -1)),
+        ((loci - 1, locj + iw), (loci - 2, locj + iw + 1), (-1, 1)),
+        ((loci + ih, locj - 1), (loci + ih + 1, locj - 2), (1, -1)),
+        ((loci + ih, locj + iw), (loci + ih + 1, locj + iw + 1), (1, 1)),
+    ]
+    for k in range(min(4, ncorn)):
+        tgt, st, d = corner_defs[k]
+        go[tgt[0]][tgt[1]] = dotc
+        pts = ray(st, d)
+        if pts:
+            rr, cc = random.choice(pts)
+            gi[rr][cc] = dotc
+
+    def rot90cw(g):
+        return [list(row) for row in zip(*g[::-1])]
+
+    for _ in range(random.choice([0, 1, 2, 3])):
+        gi = rot90cw(gi)
+        go = rot90cw(go)
+
+    return {"input": gi, "output": go}
 
 
-# ---------------------------------------------------------------- operations
 def derive_operations(I, O):
-    """Every dot slides to the nearest cell of the ring one step outside the
-    solid rectangle.  That is a pure translation of a 1-cell object -> Move ops
-    (grab once, then empty selections), then repair the vacated footprint when
-    the background is non-zero."""
+    """Every scattered dot travels to the nearest cell of the ring (outbox) that
+    surrounds the solid rectangle.  Each dot is SLID there with Move ops (grab once,
+    then empty selections), and its vacated cell is repaired with one Color(bgc).
+    When the dot colour is 0 ARCLE cannot grab it (object buffer keeps only nonzero
+    cells), so those dots are erased at the source and drawn at the destination."""
+    import numpy as np
+    from collections import Counter
+    from maker.sel_helpers import sel_of
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
-    ho, wo = O.shape
 
     ops, sels = [], []
+    g = I.copy()
 
-    # background = the canvas color the generator fills before placing anything
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # ---- colour roles -------------------------------------------------------
+    cnt = Counter(I.flatten().tolist())
+    bgc = cnt.most_common(1)[0][0]
+    others = [c for c in cnt if c != bgc]
 
-    fg_colors = [int(c) for c in np.unique(I).tolist() if int(c) != bgc]
+    def bbox_of(color):
+        cells = [(int(r), int(c)) for r, c in zip(*np.where(I == color))]
+        rs = [p[0] for p in cells]
+        cs = [p[1] for p in cells]
+        return cells, (min(rs), max(rs), min(cs), max(cs))
 
-    # the block: the non-bg color whose cells fill their whole bounding box,
-    # largest such (mirrors fgpartition -> rectangles -> argmax by size)
-    box_color, box_bounds, best = None, None, -1
-    for c in fg_colors:
-        rs, cs = np.where(I == c)
-        r0, r1 = int(rs.min()), int(rs.max())
-        c0, c1 = int(cs.min()), int(cs.max())
-        if len(rs) == (r1 - r0 + 1) * (c1 - c0 + 1) and len(rs) > best:
-            best = len(rs)
-            box_color = c
-            box_bounds = (r0, r1, c0, c1)
-    if box_color is None:
-        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    best = None
+    for c in others:
+        cells, (r0, r1, c0, c1) = bbox_of(c)
+        if len(cells) == (r1 - r0 + 1) * (c1 - c0 + 1) and len(cells) >= 4:
+            if best is None or len(cells) > best[0]:
+                best = (len(cells), c, (r0, r1, c0, c1))
+    if best is None and others:
+        c = max(others, key=lambda x: cnt[x])
+        cells, box = bbox_of(c)
+        best = (len(cells), c, box)
+    if best is None:
+        ops.append(34)
+        sels.append(sel_of([(r, c) for r in range(h) for c in range(w)]))
         return ops, sels
 
-    dot_colors = [c for c in fg_colors if c != box_color]
-    if not dot_colors:
-        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    sqc = best[1]
+    r0, r1, c0, c1 = best[2]
+    dot_cols = [c for c in others if c != sqc]
+    if not dot_cols:
+        ops.append(34)
+        sels.append(sel_of([(r, c) for r in range(h) for c in range(w)]))
         return ops, sels
-    dot_color = dot_colors[0]
+    dotc = dot_cols[0]
 
-    r0, r1, c0, c1 = box_bounds
-
-    # ring one cell outside the block
-    ring = []
+    # ---- the ring (outbox) around the rectangle ----------------------------
+    ring = set()
     for r in range(r0 - 1, r1 + 2):
-        for c in range(c0 - 1, c1 + 2):
-            if r0 <= r <= r1 and c0 <= c <= c1:
-                continue
-            if 0 <= r < h and 0 <= c < w:
-                ring.append((r, c))
+        ring.add((r, c0 - 1))
+        ring.add((r, c1 + 1))
+    for c in range(c0 - 1, c1 + 2):
+        ring.add((r0 - 1, c))
+        ring.add((r1 + 1, c))
+    ring = sorted(p for p in ring if 0 <= p[0] < h and 0 <= p[1] < w)
 
-    dots = [(int(r), int(c)) for r, c in zip(*np.where(I == dot_color))]
+    sources = [(int(r), int(c)) for r, c in zip(*np.where(I == dotc))]
 
-    def nearest(rd, cd):
-        return min(ring, key=lambda p: (abs(p[0] - rd) + abs(p[1] - cd), p[0], p[1]))
+    def nearest(src):
+        return min(ring, key=lambda p: (abs(p[0] - src[0]) + abs(p[1] - src[1]), p[0], p[1]))
 
-    def side_key(rt, ct, rd, cd):
-        if r0 <= rt <= r1 and ct == c0 - 1:
-            grp = 0                      # left edge
-        elif r0 <= rt <= r1 and ct == c1 + 1:
-            grp = 1                      # right edge
-        elif c0 <= ct <= c1 and rt == r0 - 1:
-            grp = 2                      # top edge
-        elif c0 <= ct <= c1 and rt == r1 + 1:
-            grp = 3                      # bottom edge
-        else:
-            grp = 4                      # corners
-        return (grp, rt, ct, rd, cd)
+    pairs = [(s, nearest(s)) for s in sources]
 
-    plan = []
-    for (rd, cd) in dots:
-        rt, ct = nearest(rd, cd)
-        if (rt, ct) == (rd, cd):
-            continue
-        plan.append((side_key(rt, ct, rd, cd), (rd, cd), (rt, ct)))
-    plan.sort(key=lambda e: e[0])
+    corners = {(r0 - 1, c0 - 1): 0, (r0 - 1, c1 + 1): 1,
+               (r1 + 1, c0 - 1): 2, (r1 + 1, c1 + 1): 3}
 
-    for _, (rd, cd), (rt, ct) in plan:
-        dr = rt - rd
-        dc = ct - cd
-        grabbed = False
-        vop = 20 if dr < 0 else 21
-        for _ in range(abs(dr)):
-            ops.append(vop)
-            sels.append(sel_of([]) if grabbed else sel_of([(rd, cd)]))
-            grabbed = True
-        hop = 23 if dc < 0 else 22
-        for _ in range(abs(dc)):
-            ops.append(hop)
-            sels.append(sel_of([]) if grabbed else sel_of([(rd, cd)]))
-            grabbed = True
-        # ARCLE leaves the grabbed cell's original footprint at 0
-        if bgc != 0:
+    def order_key(item):
+        (sr, sc), (tr, tc) = item
+        if (tr, tc) in corners:
+            return (1, corners[(tr, tc)], tr, tc)
+        if tr == r0 - 1:
+            return (0, 0, tc, tr)      # top edge, left -> right
+        if tc == c1 + 1:
+            return (0, 1, tr, tc)      # right edge, top -> bottom
+        if tr == r1 + 1:
+            return (0, 2, tc, tr)      # bottom edge, left -> right
+        return (0, 3, tr, tc)          # left edge, top -> bottom
+
+    pairs.sort(key=order_key)
+
+    # ---- emitters -----------------------------------------------------------
+    def paint(cells, color):
+        cells = [(r, c) for (r, c) in cells if int(g[r, c]) != int(color)]
+        if not cells:
+            return
+        ops.append(int(color))
+        sels.append(sel_of(cells))
+        for (r, c) in cells:
+            g[r, c] = color
+
+    def slide(src, tgt):
+        """Grab the dot once, then walk it with empty selections. Returns False if
+        the object cannot be grabbed (colour 0) or a step would be invisible."""
+        sr, sc = src
+        tr, tc = tgt
+        color = int(g[sr, sc])
+        if color == 0:
+            return False
+        dr, dc = tr - sr, tc - sc
+        steps = []
+        if dr:
+            steps += [(20 if dr < 0 else 21, (-1 if dr < 0 else 1, 0))] * abs(dr)
+        if dc:
+            steps += [(22 if dc > 0 else 23, (0, 1 if dc > 0 else -1))] * abs(dc)
+        if not steps:
+            return True
+        snap = g.copy()
+        snap[sr, sc] = 0                      # ARCLE zeroes the grabbed cell
+        prev = g
+        cur = (sr, sc)
+        frames = []
+        for op, d in steps:
+            nxt = (cur[0] + d[0], cur[1] + d[1])
+            ng = snap.copy()
+            if 0 <= nxt[0] < h and 0 <= nxt[1] < w:
+                ng[nxt[0], nxt[1]] = color
+            if np.array_equal(ng, prev):
+                return False                  # invisible step -> use the paint fallback
+            frames.append((op, ng))
+            prev = ng
+            cur = nxt
+        for i, (op, ng) in enumerate(frames):
+            ops.append(op)
+            sels.append(sel_of([src]) if i == 0 else sel_of([]))
+        g[:, :] = frames[-1][1]
+        # the only 0 left is the dot's original footprint
+        if cur != (sr, sc) and int(g[sr, sc]) != int(bgc):
             ops.append(int(bgc))
-            sels.append(sel_of([(rd, cd)]))
+            sels.append(sel_of([(sr, sc)]))
+            g[sr, sc] = bgc
+        return True
+
+    for src, tgt in pairs:
+        if src == tgt:
+            continue
+        if not slide(src, tgt):
+            # dot colour is 0 (ungrabbable): erase it where it is, draw it on the ring
+            paint([src], bgc)
+            paint([tgt], dotc)
+
+    # ---- last-resort consistency guard (should never fire) ------------------
+    if not np.array_equal(g, O):
+        leftovers = {}
+        for r in range(h):
+            for c in range(w):
+                if int(g[r, c]) != int(O[r, c]):
+                    leftovers.setdefault(int(O[r, c]), []).append((r, c))
+        for color, cells in leftovers.items():
+            paint(cells, color)
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])   # full-grid rectangle: submit
+    sels.append(sel_of([(r, c) for r in range(h) for c in range(w)]))
     return ops, sels
 
 
@@ -256,7 +324,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
