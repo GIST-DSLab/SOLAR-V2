@@ -33,38 +33,35 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-import numpy as np
+# ----------------------------------------------------------------- variants
+# The only discrete structure is WHICH WAY the 5-cell arrow points, i.e. on
+# which side of the object its mirrored copy is laid down.  sgn picks the
+# arrow's handedness (left/right before the whole-grid rotation), rot_idx the
+# rotation.  These four entries already realise all four visible directions:
+#   (sgn +1, rot 0) -> right   (sgn -1, rot 0) -> left
+#   (sgn +1, rot 1) -> down    (sgn +1, rot 3) -> up
+from maker.sel_helpers import sel_of
 from collections import Counter
+import numpy as np
+import random
 
-
-# ---------------------------------------------------------------- variants
-# Discrete structure = which way the 5-cell arrow points (= which side the
-# mirrored copy goes).  rot_idx picks the whole-grid rotation, sgn picks the
-# arrow's handedness.  (rot_idx 0/1) x (sgn +-1) already covers all four
-# resulting directions (right, left, and their rotations down/up).
 CORE_VARIANTS = [
-    {"rot_idx": 0, "sgn": 1},
-    {"rot_idx": 0, "sgn": -1},
-    {"rot_idx": 1, "sgn": 1},
-    {"rot_idx": 1, "sgn": -1},
+    {"sgn": 1,  "rot_idx": 0},
+    {"sgn": -1, "rot_idx": 0},
+    {"sgn": 1,  "rot_idx": 1},
+    {"sgn": 1,  "rot_idx": 3},
 ]
-EXTRA_VARIANTS = [
-    {"rot_idx": 2, "sgn": 1},
-    {"rot_idx": 2, "sgn": -1},
-    {"rot_idx": 3, "sgn": 1},
-    {"rot_idx": 3, "sgn": -1},
+VARIANTS = CORE_VARIANTS + [
+    {"sgn": -1, "rot_idx": 1},
+    {"sgn": -1, "rot_idx": 3},
+    {"sgn": 1,  "rot_idx": 2},
+    {"sgn": -1, "rot_idx": 2},
 ]
-VARIANTS = CORE_VARIANTS + EXTRA_VARIANTS
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc = random.choice(cols)
-    # objc must be non-zero: the mirrored copy is produced with CopyI/Paste,
-    # and 0 is "transparent" for those ops.
-    objc = random.choice([c for c in cols if c != bgc and c != 0])
-    indc = random.choice([c for c in cols if c not in (bgc, objc)])
+    bgc, objc, indc = sample(cols, 3)
 
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(CORE_VARIANTS):
@@ -79,7 +76,9 @@ def sample_colors(num_examples=None) -> dict:
 
 
 def _is_arrow_like(cells):
-    """3x3 bbox, 5 cells, 4 of them on the box perimeter, exactly 1 on a corner."""
+    """3x3 bbox, 5 cells, centre present (4 on the box), exactly 1 on a corner —
+    the marker's signature.  A second object with it would make the instance
+    ambiguous, so the generator never draws one."""
     cells = set(cells)
     if len(cells) != 5:
         return False
@@ -88,45 +87,43 @@ def _is_arrow_like(cells):
     r0, c0 = min(rs), min(cs)
     if max(rs) - r0 != 2 or max(cs) - c0 != 2:
         return False
-    if (r0 + 1, c0 + 1) not in cells:          # centre present -> 4 on the box
+    if (r0 + 1, c0 + 1) not in cells:
         return False
     corners = {(r0, c0), (r0, c0 + 2), (r0 + 2, c0), (r0 + 2, c0 + 2)}
     return len(cells & corners) == 1
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, indc,
-             rot_idx=None, sgn=None) -> dict:
-    if rot_idx is None or sgn is None:
+             sgn=None, rot_idx=None) -> dict:
+    if sgn is None or rot_idx is None:
         v = random.choice(VARIANTS)
-        rot_idx, sgn = v["rot_idx"], v["sgn"]
+        sgn, rot_idx = v["sgn"], v["rot_idx"]
 
     objL = frozenset({(0, 0), (1, 0), (1, 1), (1, 2), (2, 1)})
     objR = vmirror(objL)
 
-    # a 90/270 rotation swaps the final dimensions
+    # a 90/270 rotation swaps the final grid dimensions
     if rot_idx % 2 == 1:
         h_lim, w_lim = max_w, max_h
     else:
         h_lim, w_lim = max_h, max_w
+    h_lim, w_lim = min(30, h_lim), min(30, w_lim)
 
     h = unifint(diff_lb, diff_ub, (5, max(5, h_lim)))
-    wub = min(14, (w_lim - 1) // 2)
-    wpre = unifint(diff_lb, diff_ub, (4, max(4, wub)))
-    w = 2 * wpre + 1
+    wub = max(3, min(14, (w_lim - 1) // 2))
+    w = 2 * unifint(diff_lb, diff_ub, (3, wub)) + 1
 
     obj = objL if sgn == -1 else objR
 
     objh = unifint(diff_lb, diff_ub, (1, max(1, h - 3)))
-    # widest odd objw whose mirrored copy still fits fully inside the canvas
-    uub = max(1, min(w // 6, (w // 3 - 1) // 2))
-    objw = 2 * unifint(diff_lb, diff_ub, (1, uub)) + 1
+    objw = 2 * unifint(diff_lb, diff_ub, (1, max(1, w // 6))) + 1
 
     gi = canvas(bgc, (h, w))
     gi = fill(gi, indc, shift(obj, (h - 3, w // 2 - 1)))
 
+    c = canvas(-1, (objh, objw))
+    inds = asindices(c)
     for _attempt in range(64):
-        c = canvas(-1, (objh, objw))
-        inds = asindices(c)
         sp = choice(totuple(inds))
         objx = {sp}
         numcd = unifint(diff_lb, diff_ub, (0, (objh * objw) // 2))
@@ -138,22 +135,20 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, indc,
                 break
             objx.add(choice(cand))
         guard = 0
-        while width(objx) != objw and guard < 500:
+        while width(objx) != objw and guard < 1000:
             cand = totuple((inds - objx) & mapply(neighbors, objx))
             if len(cand) == 0:
                 break
             objx.add(choice(cand))
             guard += 1
-        if width(objx) != objw:
-            continue
         objx = normalize(objx)
-        # the arrow must stay the unique arrow-shaped object
-        if not _is_arrow_like(objx):
+        # the arrow has to stay the only arrow-shaped object on the canvas
+        if width(objx) == objw and not _is_arrow_like(objx):
             break
     else:
         objx = normalize(frozenset({(0, j) for j in range(objw)}))
-
     oh, ow = shape(objx)
+
     loci = randint(0, max(0, h - 3 - oh))
     locj = w // 2 - ow // 2
     plcd = shift(objx, (loci, locj))
@@ -168,15 +163,51 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, indc,
     return {'input': gi, 'output': go}
 
 
+# ------------------------------------------------------------ derive helpers
+def _edge_direction(cells):
+    """The arrow points to the side of its 3x3 box that holds 2 of its cells."""
+    rs = [r for r, _ in cells]
+    cs = [c for _, c in cells]
+    t, b, l, rr = min(rs), max(rs), min(cs), max(cs)
+    hits = []
+    if sum(1 for r, _ in cells if r == b) == 2:
+        hits.append((1, 0))
+    if sum(1 for r, _ in cells if r == t) == 2:
+        hits.append((-1, 0))
+    if sum(1 for _, c in cells if c == rr) == 2:
+        hits.append((0, 1))
+    if sum(1 for _, c in cells if c == l) == 2:
+        hits.append((0, -1))
+    return hits
+
+
+def _copy_cells(cells, d):
+    """Mirror `cells` inside their own bbox across the axis perpendicular to d,
+    then lay the result down one object-size further along d."""
+    rs = [r for r, _ in cells]
+    cs = [c for _, c in cells]
+    r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
+    oh, ow = r1 - r0 + 1, c1 - c0 + 1
+    dr, dc = d
+    out = set()
+    for (r, c) in cells:
+        if dr != 0:                       # vertical move -> mirror up/down
+            out.add((r0 + r1 - r + dr * oh, c))
+        else:                             # horizontal move -> mirror left/right
+            out.add((r, c0 + c1 - c + dc * ow))
+    return out, (r0 + dr * oh, c0 + dc * ow, oh, ow)
+
+
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
+    ops, sels = [], []
+
+    diff = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != O[r, c]]
 
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    # ---- split the foreground into its two colour groups (as in I only) ----
     groups = {}
     for r in range(hi):
         for c in range(wi):
@@ -184,49 +215,49 @@ def derive_operations(I, O):
             if v != bgc:
                 groups.setdefault(v, set()).add((r, c))
 
-    arrow_col = None
-    for col, cells in groups.items():
-        if _is_arrow_like(cells):
-            arrow_col = col
-            break
-    main_col = [c for c in groups if c != arrow_col][0]
-    arrow = groups[arrow_col]
+    # the object that gets duplicated is the one the new cells are made of
+    main_col = int(O[diff[0][0], diff[0][1]]) if diff else None
+    if main_col not in groups:
+        if not groups:
+            return [34], [[0, 0, ho - 1, wo - 1]]
+        main_col = max(groups, key=lambda k: len(groups[k]))
+    others = [k for k in groups if k != main_col]
     main = groups[main_col]
+    arrow = groups[others[0]] if others else set()
 
-    # ---- read the direction off the arrow: the side holding 2 of its cells --
-    ar = [r for r, _ in arrow]
-    ac = [c for _, c in arrow]
-    at, ab, al, arr = min(ar), max(ar), min(ac), max(ac)
-    n_top = sum(1 for r, _ in arrow if r == at)
-    n_bot = sum(1 for r, _ in arrow if r == ab)
-    n_left = sum(1 for _, c in arrow if c == al)
-    n_right = sum(1 for _, c in arrow if c == arr)
-    if n_bot == 2:
-        dr, dc = 1, 0
-    elif n_top == 2:
-        dr, dc = -1, 0
-    elif n_right == 2:
-        dr, dc = 0, 1
-    else:
-        dr, dc = 0, -1
+    # direction: read it off the arrow; keep the reading that actually
+    # reproduces the new cells when the arrow shape is ambiguous
+    cands = (_edge_direction(arrow) if arrow else []) or \
+        [(1, 0), (-1, 0), (0, 1), (0, -1)]
+    d, cells, box = None, None, None
+    for cand in cands:
+        cc, bb = _copy_cells(main, cand)
+        on = {(r, c) for (r, c) in cc if 0 <= r < hi and 0 <= c < wi}
+        if not diff or on == set(diff):
+            d, cells, box = cand, cc, bb
+            break
+    if d is None:
+        d, cells, box = cands[0], *_copy_cells(main, cands[0])
 
-    # ---- the copy is the main object mirrored across the axis perpendicular
-    #      to that direction, laid down exactly one object-size along it ------
-    mr = [r for r, _ in main]
-    mc = [c for _, c in main]
-    r0, c0 = min(mr), min(mc)
-    oh = max(mr) - r0 + 1
-    ow = max(mc) - c0 + 1
-    dst_r = r0 + oh * dr
-    dst_c = c0 + ow * dc
-    flip_op = 27 if dc == 0 else 26   # vertical move -> up/down mirror
+    dst_r, dst_c, oh, ow = box
+    on_grid = sorted((r, c) for (r, c) in cells if 0 <= r < hi and 0 <= c < wi)
+    fits = 0 <= dst_r and dst_r + oh <= hi and 0 <= dst_c and dst_c + ow <= wi
+    src_r, src_c = dst_r - d[0] * oh, dst_c - d[1] * ow
 
-    ops, sels = [], []
-    # bbox selections below are intentionally the FULL rectangles: we duplicate
-    # the whole object region (background included) and mirror that region.
-    ops.append(28); sels.append([r0, c0, oh - 1, ow - 1])        # CopyI source
-    ops.append(30); sels.append([dst_r, dst_c, 0, 0])            # Paste copy
-    ops.append(flip_op); sels.append([dst_r, dst_c, oh - 1, ow - 1])  # mirror it
+    if main_col != 0 and fits:
+        # duplicate the object's whole region, then mirror that region in place.
+        # both bbox selections are FULL rectangles on purpose (background
+        # included) — that is exactly what is copied / mirrored.
+        ops.append(28); sels.append([src_r, src_c, oh - 1, ow - 1])   # CopyI
+        ops.append(30); sels.append([dst_r, dst_c, 0, 0])             # Paste
+        mirrored = {(dst_r + (r - src_r), dst_c + (c - src_c)) for (r, c) in main}
+        if mirrored != set(cells):     # a self-mirroring shape needs no flip
+            ops.append(27 if d[1] == 0 else 26)
+            sels.append([dst_r, dst_c, oh - 1, ow - 1])
+    elif on_grid:
+        # 0 is transparent to Copy/Paste, and a copy running off the canvas
+        # cannot be pasted — draw the mirrored object directly instead.
+        ops.append(main_col); sels.append(sel_of(on_grid))
 
     ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
@@ -272,7 +303,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -36,117 +36,228 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter
-from maker.sel_helpers import sel_of
+
+try:
+    from maker.sel_helpers import sel_of
+except Exception:                                    # pragma: no cover
+    def sel_of(cells):
+        return {"cells": [[int(r), int(c)] for r, c in cells]}
 
 
+# ----------------------------------------------------------------------------
+# 1. colours: the rule needs a stable background and a stable "joint dot" colour
+#    (the colour that marks where two snake segments must be welded together).
+#    The individual segment colours are irrelevant to the rule, so they stay
+#    random inside generate().
+# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    # bgc = canvas colour, dotc = the connector-marker colour (fixed role for whole episode).
-    # Segment body colours carry no rule information (only their position/pattern matters),
-    # so they stay random per instance.  All foreground colours are kept non-zero so that
-    # ARCLE object ops (Move) never treat a real object cell as "empty".
-    bgc = random.choice(list(range(10)))
-    dotc = random.choice([c for c in range(1, 10) if c != bgc])
+    cols = list(range(10))
+    bgc, dotc = random.sample(cols, 2)
     return {"bgc": bgc, "dotc": dotc}
 
 
+# ----------------------------------------------------------------------------
+# 2. generator (RE-ARC 234bbc79, hardcoded 30s replaced by max_h / max_w)
+# ----------------------------------------------------------------------------
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, dotc) -> dict:
-    hub = max(5, min(30, max_h))
-    wub = max(6, min(20, max_w - 4))
+    def unifint(lo, hi):
+        if hi < lo:
+            hi = lo
+        a = lo + int((hi - lo) * diff_lb)
+        b = lo + int((hi - lo) * diff_ub)
+        a = max(lo, min(hi, a))
+        b = max(lo, min(hi, b))
+        if b < a:
+            a, b = b, a
+        return random.randint(a, b)
+
+    cols = list(range(10))
+    remcols = [c for c in cols if c not in (bgc, dotc)]
+    hmax = max(5, min(30, int(max_h)))
+    wmax = min(20, int(max_w))
+    wlo = min(6, wmax)
+
     while True:
-        h = unifint(diff_lb, diff_ub, (5, hub))
-        w = unifint(diff_lb, diff_ub, (6, wub))
-        remcols = [c for c in range(1, 10) if c != bgc and c != dotc]
-        if len(remcols) == 0:
+        h = unifint(5, hmax)
+        w = unifint(wlo, wmax)
+        if w < 2:
             continue
-        go = canvas(bgc, (h, w))
-        ncols = unifint(diff_lb, diff_ub, (1, min(8, len(remcols))))
-        ccols = sample(remcols, ncols)
-        spi = randint(0, h - 1)
+
+        # ---- draw the snake on a (h, w) canvas -----------------------------
+        go = [[bgc] * w for _ in range(h)]
+        ncols = unifint(1, 8)
+        ccols = random.sample(remcols, min(ncols, len(remcols)))
+        spi = random.randint(0, h - 1)
         snek = [(spi, 0)]
-        go = fill(go, dotc, {(spi, 0)})
+        go[spi][0] = dotc
         while True:
-            previ, prevj = snek[-1]
-            if prevj == w - 1:
-                if choice((True, False, False)):
-                    break
-            options = []
-            if previ < h - 1:
-                if go[previ + 1][prevj] == bgc:
-                    options.append((previ + 1, prevj))
-            if previ > 0:
-                if go[previ - 1][prevj] == bgc:
-                    options.append((previ - 1, prevj))
-            if prevj < w - 1:
-                options.append((previ, prevj + 1))
-            if len(options) == 0:
+            pi, pj = snek[-1]
+            if pj == w - 1 and random.choice((True, False, False)):
                 break
-            loc = choice(options)
+            options = []
+            if pi < h - 1 and go[pi + 1][pj] == bgc:
+                options.append((pi + 1, pj))
+            if pi > 0 and go[pi - 1][pj] == bgc:
+                options.append((pi - 1, pj))
+            if pj < w - 1:
+                options.append((pi, pj + 1))
+            if not options:
+                break
+            loc = random.choice(options)
             snek.append(loc)
-            go = fill(go, dotc, {loc})
-        objs = []
-        cobj = []
+            go[loc[0]][loc[1]] = dotc
+
+        # ---- cut the snake into segments at rightward steps ----------------
+        objs, cobj = [], []
         for idx, cel in enumerate(snek):
-            if len(cobj) > 2 and width(frozenset(cobj)) > 1 and snek[idx - 1] == add(cel, (0, -1)):
+            if (len(cobj) > 2
+                    and (max(j for _, j in cobj) - min(j for _, j in cobj)) > 0
+                    and snek[idx - 1] == (cel[0], cel[1] - 1)):
                 objs.append(cobj)
                 cobj = [cel]
             else:
                 cobj.append(cel)
-        if len(objs) == 0:
+        if not objs:
             continue
         objs[-1] = objs[-1] + cobj
         nobjs = len(objs)
         if nobjs < 2:
             continue
-        # keep enough room so that every segment (plus >=1 blank column between them)
-        # really fits inside the input canvas
-        maxkeep = max_w - 1 - w
-        if maxkeep < 2:
-            continue
-        ntokeep = unifint(diff_lb, diff_ub, (2, min(nobjs, maxkeep)))
-        ntorem = nobjs - ntokeep
-        for k in range(ntorem):
-            idx = randint(0, len(objs) - 2)
+        ntokeep = unifint(2, nobjs)
+        for _ in range(nobjs - ntokeep):
+            if len(objs) < 3:
+                break
+            idx = random.randint(0, len(objs) - 2)
             objs = objs[:idx] + [objs[idx] + objs[idx + 1]] + objs[idx + 2:]
+        if len(objs) < 2:
+            continue
+
+        # ---- colour segments; mark inner endpoints with dotc ---------------
         inobjs = []
         for idx, obj in enumerate(objs):
-            col = choice(ccols)
-            go = fill(go, col, set(obj))
-            centerpart = recolor(col, set(obj[1:-1]))
-            leftpart = {(dotc if idx > 0 else col, obj[0])}
-            rightpart = {(dotc if idx < len(objs) - 1 else col, obj[-1])}
-            inobj = centerpart | leftpart | rightpart
-            inobjs.append(inobj)
-        spacings = [1 for idx in range(len(inobjs) - 1)]
-        fullw = unifint(diff_lb, diff_ub, (w + len(inobjs) + 1, max_w))
-        for k in range(fullw - w - len(inobjs) - 1):
-            idx = randint(0, len(spacings) - 1)
-            spacings[idx] += 1
+            col = random.choice(ccols)
+            for (i, j) in obj:
+                go[i][j] = col
+            cells = {}
+            for (i, j) in obj[1:-1]:
+                cells[(i, j)] = col
+            cells[obj[0]] = dotc if idx > 0 else col
+            cells[obj[-1]] = dotc if idx < len(objs) - 1 else col
+            inobjs.append(cells)
+
+        # ---- scatter the segments left-to-right on a wider canvas ----------
+        spacings = [1] * (len(inobjs) - 1)
+        fullw = unifint(w, max(w, int(max_w)))
+        for _ in range(fullw - w - len(inobjs) - 1):
+            if not spacings:
+                break
+            spacings[random.randint(0, len(spacings) - 1)] += 1
         lspacings = [0] + spacings
-        gi = canvas(bgc, (h, fullw))
+        gi = [[bgc] * fullw for _ in range(h)]
         ofs = 0
         ok = True
-        for i, (lsp, obj) in enumerate(zip(lspacings, inobjs)):
-            obj = set(obj)
+        for i, (lsp, cells) in enumerate(zip(lspacings, inobjs)):
+            rs = [r for r, _ in cells]
+            cs = [c for _, c in cells]
+            oh = max(rs) - min(rs) + 1
+            ow = max(cs) - min(cs) + 1
             if i == 0:
-                ulc = ulcorner(obj)
+                ulc = (min(rs), min(cs))
             else:
-                if h - height(obj) < 0:
+                if h - oh < 0:
                     ok = False
                     break
-                ulci = randint(0, h - height(obj))
-                ulcj = ofs + lsp
-                ulc = (ulci, ulcj)
-            ofs += width(obj) + lsp
-            plcd = shift(normalize(obj), ulc)
-            gi = paint(gi, plcd)
+                ulc = (random.randint(0, h - oh), ofs + lsp)
+            ofs += ow + lsp
+            if ulc[1] + ow > fullw:
+                ok = False
+                break
+            for (r, c), v in cells.items():
+                gi[ulc[0] + r - min(rs)][ulc[1] + c - min(cs)] = v
         if not ok:
             continue
-        if ofs > fullw:
-            continue
-        # background must stay the dominant colour so it is detectable from the input alone
-        if colorcount(gi, bgc) * 2 <= h * fullw:
-            continue
-        return {'input': gi, 'output': go}
+
+        W = max(j for _, j in snek) + 1
+        gout = [row[:W] for row in go]
+        return {"input": gi, "output": gout}
+
+
+# ----------------------------------------------------------------------------
+# 3. derive_operations
+#    Rule: the grid holds the pieces of one snake, scattered left to right.
+#    Each piece carries "dot" cells at the ends that must be welded.  Keep the
+#    leftmost piece where it is; slide every other piece so that its left dot
+#    lands one column right of the growing snake's free dot; then repaint each
+#    weld with the colour of the segment it belongs to; finally crop away the
+#    now empty right part of the canvas.
+# ----------------------------------------------------------------------------
+def _components(grid, bgc):
+    h, w = grid.shape
+    seen = np.zeros((h, w), bool)
+    comps = []
+    for r in range(h):
+        for c in range(w):
+            if grid[r, c] != bgc and not seen[r, c]:
+                stack = [(r, c)]
+                seen[r, c] = True
+                cells = []
+                while stack:
+                    x, y = stack.pop()
+                    cells.append((x, y))
+                    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nx, ny = x + dx, y + dy
+                        if 0 <= nx < h and 0 <= ny < w and not seen[nx, ny] and grid[nx, ny] != bgc:
+                            seen[nx, ny] = True
+                            stack.append((nx, ny))
+                comps.append(cells)
+    return comps
+
+
+def _build_plan(I, O, bgc, dotc, comps):
+    hi, wi = I.shape
+    ho, wo = O.shape
+    n = len(comps)
+    if n < 2 or hi != ho or wo > wi:
+        return None
+    dots = []
+    for k, cells in enumerate(comps):
+        d = sorted([(r, c) for (r, c) in cells if I[r, c] == dotc], key=lambda p: (p[1], p[0]))
+        need = 1 if (k == 0 or k == n - 1) else 2
+        if len(d) != need:
+            return None
+        dots.append(d)
+    offs = [(0, 0)]
+    tail = dots[0][-1]
+    for k in range(1, n):
+        head = dots[k][0]
+        o = (tail[0] - head[0], tail[1] + 1 - head[1])
+        offs.append(o)
+        if k < n - 1:
+            t = dots[k][-1]
+            tail = (t[0] + o[0], t[1] + o[1])
+    occupied = {}
+    for k, cells in enumerate(comps):
+        dr, dc = offs[k]
+        for (r, c) in cells:
+            p = (r + dr, c + dc)
+            if p in occupied or not (0 <= p[0] < hi) or not (0 <= p[1] < wi):
+                return None
+            occupied[p] = int(I[r, c])
+    if min(c for _, c in occupied) != 0:
+        return None
+    if max(c for _, c in occupied) + 1 != wo:
+        return None
+    for p, v in occupied.items():
+        if v == dotc:
+            if int(O[p[0], p[1]]) == bgc:
+                return None
+        elif int(O[p[0], p[1]]) != v:
+            return None
+    for r in range(ho):
+        for c in range(wo):
+            if (int(O[r, c]) != bgc) != ((r, c) in occupied):
+                return None
+    return comps, dots, offs, occupied
 
 
 def derive_operations(I, O):
@@ -154,146 +265,145 @@ def derive_operations(I, O):
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
-
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    # --- connected components (4-conn) of non-background cells = the snake segments ---
-    seen = np.zeros((hi, wi), dtype=bool)
-    comps = []
-    for r0 in range(hi):
-        for c0 in range(wi):
-            if I[r0, c0] != bgc and not seen[r0, c0]:
-                stack = [(r0, c0)]
-                seen[r0, c0] = True
-                cur = []
-                while stack:
-                    r, c = stack.pop()
-                    cur.append((r, c))
-                    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        nr, nc = r + dr, c + dc
-                        if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] and I[nr, nc] != bgc:
-                            seen[nr, nc] = True
-                            stack.append((nr, nc))
-                comps.append(sorted(cur))
-    comps.sort(key=lambda cl: min(c for _, c in cl))
-    n = len(comps)
-
-    def build(dotc, strict):
-        if n < 2:
-            return None
-        infos = []
-        for cid, comp in enumerate(comps):
-            dots = [p for p in comp if I[p[0], p[1]] == dotc]
-            body = [p for p in comp if I[p[0], p[1]] != dotc]
-            if not body:
-                return None
-            bcols = set(int(I[r, c]) for r, c in body)
-            if len(bcols) != 1:
-                return None
-            need = 1 if (cid == 0 or cid == n - 1) else 2
-            if len(dots) != need:
-                return None
-            entry = min(dots, key=lambda p: p[1]) if cid > 0 else None
-            exit_ = max(dots, key=lambda p: p[1]) if cid < n - 1 else None
-            if entry is not None and exit_ is not None and entry[1] >= exit_[1]:
-                return None
-            # the entry marker is the segment's leftmost cell, the exit marker its rightmost
-            if entry is not None and entry[1] != min(c for _, c in comp):
-                return None
-            if exit_ is not None and exit_[1] != max(c for _, c in comp):
-                return None
-            infos.append({'cells': comp, 'dots': dots, 'col': bcols.pop(),
-                          'entry': entry, 'exit': exit_})
-        # chain: segment i's entry marker lands one column right of segment i-1's exit marker
-        offs = [(0, 0)]
-        for i in range(1, n):
-            pr, pc = infos[i - 1]['exit']
-            odr, odc = offs[i - 1]
-            tr, tc = pr + odr, pc + odc + 1
-            er, ec = infos[i]['entry']
-            offs.append((tr - er, tc - ec))
-        W = 0
-        for i, inf in enumerate(infos):
-            dr, dc = offs[i]
-            for r, c in inf['cells']:
-                nr, nc = r + dr, c + dc
-                if not (0 <= nr < hi and 0 <= nc < wi):
-                    return None
-                if nc + 1 > W:
-                    W = nc + 1
-        if W >= wi:
-            return None
-        if strict:
-            pred = np.full((hi, W), bgc, dtype=int)
-            for i, inf in enumerate(infos):
-                dr, dc = offs[i]
-                dset = set(inf['dots'])
-                for r, c in inf['cells']:
-                    pred[r + dr, c + dc] = inf['col'] if (r, c) in dset else int(I[r, c])
-            if pred.shape != O.shape or not np.array_equal(pred, O):
-                return None
-        return infos, offs, W
-
-    # marker colour: present in the input, gone from the output (every marker gets welded)
-    pal_i = set(int(v) for v in np.unique(I)) - {bgc}
-    pal_o = set(int(v) for v in np.unique(O))
     counts = Counter(I.flatten().tolist())
-    cands = sorted(pal_i - pal_o, key=lambda c: counts[c])
-    cands += sorted(pal_i & pal_o, key=lambda c: counts[c])
+    present = sorted(counts)
 
-    res = None
-    for c in cands:
-        res = build(c, True)
-        if res is not None:
-            break
-    if res is None:
-        for c in cands:
-            res = build(c, False)
-            if res is not None:
+    plan = None
+    for bgc in sorted(present, key=lambda c: -counts[c]):
+        comps = _components(I, bgc)
+        if len(comps) < 2:
+            continue
+        comps.sort(key=lambda cells: (min(c for _, c in cells), min(r for r, _ in cells)))
+        # the joint colour occurs once or twice in EVERY piece, and is the
+        # rarest such colour overall
+        cand = [c for c in present if c != bgc and
+                all(sum(1 for (r, cc) in cells if I[r, cc] == c) in (1, 2) for cells in comps)]
+        cand.sort(key=lambda c: counts[c])
+        order = cand + [c for c in present if c != bgc and c not in cand]
+        for dotc in order:
+            p = _build_plan(I, O, bgc, dotc, [list(x) for x in comps])
+            if p is not None:
+                plan = (bgc, dotc) + p
                 break
-    if res is None:
-        return [34], [[0, 0, ho - 1, wo - 1]]
-
-    infos, offs, W = res
+        if plan is not None:
+            break
 
     ops, sels = [], []
+    cur = I.copy()
 
-    # 1. slide every segment (left to right) onto the tail of the assembled snake
-    for i in range(1, n):
-        cells = infos[i]['cells']
-        dr, dc = offs[i]
-        steps = []
-        if dr != 0:
-            steps += [20 if dr < 0 else 21] * abs(dr)
-        if dc != 0:
-            steps += [23 if dc < 0 else 22] * abs(dc)
-        if not steps:
-            continue
-        for k, op in enumerate(steps):
-            ops.append(op)
-            # first step grabs the object; the rest carry an empty selection so ARCLE
-            # keeps the same object grabbed and restores everything it glides over
-            sels.append(sel_of(cells) if k == 0 else sel_of([]))
-        dst = set((r + dr, c + dc) for r, c in cells)
-        hole = sorted(set(cells) - dst)
-        if bgc != 0 and hole:
-            ops.append(int(bgc))
-            sels.append(sel_of(hole))
+    def color_op(col, cells):
+        col = int(col)
+        cells = [(int(r), int(c)) for (r, c) in cells if int(cur[r, c]) != col]
+        if not cells:
+            return
+        cells.sort()
+        ops.append(col)
+        sels.append(sel_of(cells))
+        for (r, c) in cells:
+            cur[r, c] = col
 
-    # 2. weld the joints: each segment's marker cells take that segment's own colour
-    for i in range(n):
-        dr, dc = offs[i]
-        pts = sorted((r + dr, c + dc) for r, c in infos[i]['dots'])
-        ops.append(int(infos[i]['col']))
-        sels.append(sel_of(pts))
+    if plan is None:                       # defensive fallback (should not run)
+        if (hi, wi) != (ho, wo):
+            ops.append(33)
+            sels.append([0, 0, ho - 1, wo - 1])   # full rectangle kept
+            cur = cur[:ho, :wo].copy()
+        groups = {}
+        for r in range(ho):
+            for c in range(wo):
+                if int(cur[r, c]) != int(O[r, c]):
+                    groups.setdefault(int(O[r, c]), []).append((r, c))
+        for col in sorted(groups):
+            color_op(col, groups[col])
+        ops.append(34)
+        sels.append([0, 0, ho - 1, wo - 1])
+        return ops, sels
 
-    # 3. crop the canvas down to the assembled snake's width
-    #    (bbox = the exact full rectangle rows 0..hi-1, cols 0..W-1)
-    ops.append(33)
-    sels.append([0, 0, hi - 1, W - 1])
+    bgc, dotc, comps, dots, offs, occupied = plan
+    n = len(comps)
 
+    grab = {"obj": None, "snap": None, "off": (0, 0)}
+
+    def move_op(op, grab_cells):
+        if grab_cells is not None:
+            obj, snap = {}, cur.copy()
+            for (r, c) in grab_cells:
+                if int(cur[r, c]) != 0:
+                    obj[(r, c)] = int(cur[r, c])
+                snap[r, c] = 0
+            grab["obj"], grab["snap"], grab["off"] = obj, snap, (0, 0)
+            sels.append(sel_of(sorted(grab_cells)))
+        else:
+            sels.append(sel_of([]))          # keep the same object grabbed
+        d = {20: (-1, 0), 21: (1, 0), 22: (0, 1), 23: (0, -1)}[op]
+        o = (grab["off"][0] + d[0], grab["off"][1] + d[1])
+        grab["off"] = o
+        new = grab["snap"].copy()
+        for (r, c), v in grab["obj"].items():
+            nr, nc = r + o[0], c + o[1]
+            if 0 <= nr < hi and 0 <= nc < wi:
+                new[nr, nc] = v
+        cur[:, :] = new
+        ops.append(op)
+
+    for k in range(1, n):
+        src = sorted(comps[k])
+        dr, dc = offs[k]
+        dest = [(r + dr, c + dc) for (r, c) in src]
+        dest_set = set(dest)
+        # cells still to be drawn by later segments (used only to drop an
+        # entirely superfluous background repair, never to shrink a selection)
+        future = set()
+        for j in range(k + 1, n):
+            oj = offs[j]
+            for (r, c) in comps[j]:
+                future.add((r + oj[0], c + oj[1]))
+        # the right part of the canvas is cropped away at the end
+        vacated = [p for p in src if p not in dest_set and p[1] < wo]
+
+        has_zero = any(int(I[r, c]) == 0 for (r, c) in src)
+        if has_zero:
+            # ARCLE's object ops treat colour 0 as transparent, so a Move would
+            # destroy this segment's 0-coloured body: redraw it at its place.
+            if vacated and not set(vacated) <= future:
+                color_op(bgc, vacated)
+            groups = {}
+            for p in dest:
+                groups.setdefault(int(O[p[0], p[1]]), []).append(p)
+            for col in sorted(groups, key=lambda c: -len(groups[c])):
+                color_op(col, groups[col])
+        else:
+            first = True
+            if dr:
+                op = 20 if dr < 0 else 21
+                for _ in range(abs(dr)):
+                    move_op(op, src if first else None)
+                    first = False
+            if dc:
+                op = 23 if dc < 0 else 22
+                for _ in range(abs(dc)):
+                    move_op(op, src if first else None)
+                    first = False
+            # only the footprint the segment no longer covers reads 0 now
+            if bgc != 0 and vacated and not set(vacated) <= future:
+                color_op(bgc, vacated)
+
+        # weld the seam: the snake's free dot and this segment's left dot
+        po = offs[k - 1]
+        ptail = (dots[k - 1][-1][0] + po[0], dots[k - 1][-1][1] + po[1])
+        hpos = (dots[k][0][0] + dr, dots[k][0][1] + dc)
+        seam = {}
+        for p in (ptail, hpos):
+            tgt = int(O[p[0], p[1]])
+            if int(cur[p[0], p[1]]) != tgt:
+                seam.setdefault(tgt, []).append(p)
+        for tgt, cells in seam.items():
+            color_op(tgt, cells)
+
+    if (hi, wi) != (ho, wo):
+        ops.append(33)
+        sels.append([0, 0, ho - 1, wo - 1])   # bbox == exactly the region kept
     ops.append(34)
-    sels.append([0, 0, hi - 1, W - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -337,7 +447,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

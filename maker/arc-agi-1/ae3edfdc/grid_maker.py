@@ -33,199 +33,132 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-from collections import Counter
-
-import numpy as np
-
-from maker.sel_helpers import sel_of
-
-
-# ----------------------------------------------------------------------------
-# colors: the generator only samples `bgc` at random (1/2/3/7 are hardcoded roles)
-# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    bgc = random.choice([c for c in range(10) if c not in (1, 2, 3, 7)])
+    # Only bgc is randomly sampled by the generator; 1/2/3/7 are hardcoded roles.
+    cols = difference(interval(0, 10, 1), (1, 2, 3, 7))
+    bgc = choice(totuple(cols))
     return {"bgc": bgc}
 
 
-# ----------------------------------------------------------------------------
-# generator
-# ----------------------------------------------------------------------------
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    lo = a + int((b - a) * diff_lb)
-    hi = a + int((b - a) * diff_ub)
-    lo = max(a, min(b, lo))
-    hi = max(a, min(b, hi))
-    if hi < lo:
-        lo, hi = hi, lo
-    return random.randint(lo, hi)
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
+    hcap = max(8, min(30, int(max_h)))
+    wcap = max(8, min(30, int(max_w)))
+    h = unifint(diff_lb, diff_ub, (8, hcap))
+    w = unifint(diff_lb, diff_ub, (8, wcap))
+    go = canvas(bgc, (h, w))
+    inds = asindices(go)
+    rdi = randint(1, h - 2)
+    rdj = randint(1, w - 2)
+    rd = (rdi, rdj)
+    reminds = inds - ({rd} | neighbors(rd))
+    reminds = sfilter(reminds, lambda ij: 1 <= ij[0] <= h - 2 and 1 <= ij[1] <= w - 2)
+    bd = choice(totuple(reminds))
+    bdi, bdj = bd
+    go = fill(go, 2, {rd})
+    go = fill(go, 1, {bd})
+    ngd = unifint(diff_lb, diff_ub, (1, 8))
+    gd = sample(totuple(neighbors(rd)), ngd)
+    nod = unifint(diff_lb, diff_ub, (1, 8))
+    od = sample(totuple(neighbors(bd)), nod)
+    go = fill(go, 3, gd)
+    go = fill(go, 7, od)
+    gdmapper = {d: (3, position({rd}, {d})) for d in gd}
+    odmapper = {d: (7, position({bd}, {d})) for d in od}
+    mpr = {**gdmapper, **odmapper}
+    ub = (len(gd) + len(od)) * ((h + w) // 5)
+    ndist = unifint(diff_lb, diff_ub, (1, ub))
+    gi = tuple(e for e in go)
+    fullinds = asindices(gi)
+    for k in range(ndist):
+        options = []
+        for loc, (col, direc) in mpr.items():
+            ii, jj = add(loc, direc)
+            if (ii, jj) in fullinds and gi[ii][jj] == bgc:
+                options.append((loc, col, direc))
+        if len(options) == 0:
+            break
+        loc, col, direc = choice(options)
+        del mpr[loc]
+        newloc = add(loc, direc)
+        mpr[newloc] = (col, direc)
+        gi = fill(gi, bgc, {loc})
+        gi = fill(gi, col, {newloc})
+    return {'input': gi, 'output': go}
 
 
-def _sign(x):
-    return (x > 0) - (x < 0)
-
-
-def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
-    max_h = max(8, min(30, int(max_h)))
-    max_w = max(8, min(30, int(max_w)))
-
-    for _attempt in range(64):
-        h = _unifint(diff_lb, diff_ub, (8, max_h))
-        w = _unifint(diff_lb, diff_ub, (8, max_w))
-
-        go = [[bgc] * w for _ in range(h)]
-
-        rdi = random.randint(1, h - 2)
-        rdj = random.randint(1, w - 2)
-        rd = (rdi, rdj)
-
-        # keep the two centers far enough apart that their neighbourhoods are
-        # disjoint -> each satellite has an unambiguous owner / destination
-        cands = [
-            (i, j)
-            for i in range(1, h - 1)
-            for j in range(1, w - 1)
-            if max(abs(i - rdi), abs(j - rdj)) >= 3
-        ]
-        if not cands:
-            continue
-        bd = random.choice(cands)
-        bdi, bdj = bd
-
-        nbrs_rd = [
-            (rdi + di, rdj + dj)
-            for di in (-1, 0, 1)
-            for dj in (-1, 0, 1)
-            if (di, dj) != (0, 0)
-        ]
-        nbrs_bd = [
-            (bdi + di, bdj + dj)
-            for di in (-1, 0, 1)
-            for dj in (-1, 0, 1)
-            if (di, dj) != (0, 0)
-        ]
-
-        go[rdi][rdj] = 2
-        go[bdi][bdj] = 1
-
-        ngd = _unifint(diff_lb, diff_ub, (1, 8))
-        nod = _unifint(diff_lb, diff_ub, (1, 8))
-        gd = random.sample(nbrs_rd, ngd)
-        od = random.sample(nbrs_bd, nod)
-
-        for (i, j) in gd:
-            go[i][j] = 3
-        for (i, j) in od:
-            go[i][j] = 7
-
-        mpr = {}
-        for (i, j) in gd:
-            mpr[(i, j)] = (3, (_sign(i - rdi), _sign(j - rdj)))
-        for (i, j) in od:
-            mpr[(i, j)] = (7, (_sign(i - bdi), _sign(j - bdj)))
-
-        forbidden = set(nbrs_rd) | set(nbrs_bd) | {rd, bd}
-
-        gi = [row[:] for row in go]
-        ub = max(1, (len(gd) + len(od)) * ((h + w) // 5))
-        ndist = _unifint(diff_lb, diff_ub, (1, ub))
-
-        moved = 0
-        for _ in range(ndist):
-            options = []
-            for loc, (col, d) in mpr.items():
-                ii, jj = loc[0] + d[0], loc[1] + d[1]
-                if 0 <= ii < h and 0 <= jj < w and gi[ii][jj] == bgc \
-                        and (ii, jj) not in forbidden:
-                    options.append((loc, col, d))
-            if not options:
-                break
-            loc, col, d = random.choice(options)
-            del mpr[loc]
-            newloc = (loc[0] + d[0], loc[1] + d[1])
-            mpr[newloc] = (col, d)
-            gi[loc[0]][loc[1]] = bgc
-            gi[newloc[0]][newloc[1]] = col
-            moved += 1
-
-        if moved == 0:
-            continue
-
-        return {
-            "input": tuple(tuple(r) for r in gi),
-            "output": tuple(tuple(r) for r in go),
-        }
-
-    # fallback (should be unreachable in practice)
-    return {
-        "input": tuple(tuple(r) for r in gi),
-        "output": tuple(tuple(r) for r in go),
-    }
-
-
-# ----------------------------------------------------------------------------
-# operations
-# ----------------------------------------------------------------------------
 def derive_operations(I, O):
+    """Every 7-dot slides radially back until it is adjacent to the 1;
+    every 3-dot slides radially back until it is adjacent to the 2."""
+    import numpy as np
+    from collections import Counter
+    from maker.sel_helpers import sel_of
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
 
-    # background = the only colour that is not one of the four fixed roles
+    # bgc: the canvas colour — the generator draws it from colours outside {1,2,3,7}
     cnt = Counter(I.flatten().tolist())
-    bgc = 0
-    for col, _n in cnt.most_common():
-        if col not in (1, 2, 3, 7):
-            bgc = int(col)
-            break
+    cands = [c for c in cnt if c not in (1, 2, 3, 7)]
+    bgc = max(cands, key=lambda c: cnt[c]) if cands else 0
 
-    c1 = tuple(int(v) for v in np.argwhere(I == 1)[0])   # anchor for the 7s
-    c2 = tuple(int(v) for v in np.argwhere(I == 2)[0])   # anchor for the 3s
+    p1 = np.argwhere(I == 1)
+    p2 = np.argwhere(I == 2)
+    c1 = (int(p1[0][0]), int(p1[0][1])) if len(p1) else None   # anchor of the 7s
+    c2 = (int(p2[0][0]), int(p2[0][1])) if len(p2) else None   # anchor of the 3s
+    sgn = lambda v: (v > 0) - (v < 0)
+
+    # each dot lies at anchor + k*u (k >= 1); its home is the neighbour cell anchor + u
+    dots = []
+    for col, ctr in ((7, c1), (3, c2)):
+        if ctr is None:
+            continue
+        for cell in np.argwhere(I == col):
+            r, c = int(cell[0]), int(cell[1])
+            dst = (ctr[0] + sgn(r - ctr[0]), ctr[1] + sgn(c - ctr[1]))
+            dots.append({"src": (r, c), "dst": dst, "col": col})
+
+    pending = [d for d in dots if d["dst"] != d["src"]]      # already-home dots never move
+    frozen = {d["src"] for d in dots if d["dst"] == d["src"]}
+
+    # A dot's home may still be occupied by another dot that has not moved yet:
+    # order the slides so each one lands on a cell its owner has already vacated.
+    order = []
+    while pending:
+        blocked = frozen | {d["src"] for d in pending}
+        pick = None
+        for d in pending:
+            if d["dst"] not in (blocked - {d["src"]}):
+                pick = d
+                break
+        if pick is None:                                      # degenerate tie: 7s first
+            pick = sorted(pending, key=lambda d: 0 if d["col"] == 7 else 1)[0]
+        pending.remove(pick)
+        order.append(pick)
 
     ops, sels = [], []
-
-    # every satellite slides back along its own ray until it touches its anchor
-    for col, ctr in ((7, c1), (3, c2)):
-        cells = [tuple(int(v) for v in p) for p in np.argwhere(I == col)]
-        # farthest satellite first, so each object is handled start-to-finish
-        cells.sort(key=lambda rc: -max(abs(rc[0] - ctr[0]), abs(rc[1] - ctr[1])))
-        for (r, c) in cells:
-            dr = _sign(r - ctr[0])
-            dc = _sign(c - ctr[1])
-            dest = (ctr[0] + dr, ctr[1] + dc)
-            tr = dest[0] - r
-            tc = dest[1] - c
-            if tr == 0 and tc == 0:
-                continue                      # already touching the anchor
-            sr = _sign(tr)
-            sc = _sign(tc)
-            n = max(abs(tr), abs(tc))
-            cur = (r, c)
-            first = True
-            for _k in range(n):
-                if sr != 0:
-                    ops.append(20 if sr < 0 else 21)
-                    sels.append(sel_of([cur]) if first else sel_of([]))
-                    first = False
-                    cur = (cur[0] + sr, cur[1])
-                if sc != 0:
-                    ops.append(23 if sc < 0 else 22)
-                    sels.append(sel_of([cur]) if first else sel_of([]))
-                    first = False
-                    cur = (cur[0], cur[1] + sc)
-            # ARCLE left the object's ORIGINAL footprint at 0 (the path it glided
-            # over was restored automatically); repair just that one cell
-            if bgc != 0:
-                ops.append(bgc)
-                sels.append(sel_of([(r, c)]))
+    for d in order:
+        (sr, sc) = d["src"]
+        (tr, tc) = d["dst"]
+        vr, vc = tr - sr, tc - sc
+        steps = []
+        for i in range(max(abs(vr), abs(vc))):                # diagonal runs alternate U/D and L/R
+            if i < abs(vr):
+                steps.append(20 if vr < 0 else 21)
+            if i < abs(vc):
+                steps.append(23 if vc < 0 else 22)
+        for k, mop in enumerate(steps):
+            ops.append(mop)
+            # first Move grabs this dot; the rest keep it grabbed so the path is restored
+            sels.append(sel_of([(sr, sc)]) if k == 0 else sel_of([]))
+        if bgc != 0:
+            # the grab left the dot's original footprint at 0 — restore the canvas there
+            ops.append(bgc)
+            sels.append(sel_of([(sr, sc)]))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])   # full-grid rectangle: submit
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -269,7 +202,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

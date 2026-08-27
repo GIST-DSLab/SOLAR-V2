@@ -36,117 +36,168 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter
+
 from maker.sel_helpers import sel_of
 
 
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
-
-
+# ----------------------------------------------------------------------------
+# 1. sample_colors
+# ----------------------------------------------------------------------------
+# The only randomly sampled colour whose role matters is the background.
+# The anchor colour is HARDCODED to 1 by the generator (never sampled), and the
+# other object colours are pure decoration: the rule ("align every object's
+# bottom row with the bottom row of the 1-object") does not depend on them.
+# There are no discrete structural variants -> no instance_plan needed.
 def sample_colors(num_examples=None) -> dict:
-    # rule depends only on object positions (anchor = the color-1 object),
-    # so only the background color must be fixed across the episode
-    bgc = random.choice([c for c in range(10) if c != 1])
+    cols = [c for c in range(10) if c != 1]
+    bgc = random.choice(cols)
     return {"bgc": bgc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, **kwargs) -> dict:
-    h = _unifint(diff_lb, diff_ub, (3, max_h))
-    w = _unifint(diff_lb, diff_ub, (6, max_w))
-    oh = _unifint(diff_lb, diff_ub, (1, max(1, h // 2)))
-    ow = _unifint(diff_lb, diff_ub, (1, max(1, w // 3)))
-
-    bb = [(i, j) for i in range(oh) for j in range(ow)]
-    sp = random.choice(bb)
+# ----------------------------------------------------------------------------
+# 2. generate  (RE-ARC generator, 30 -> max_h/max_w, bgc injected)
+# ----------------------------------------------------------------------------
+def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
+    cols = difference(interval(0, 10, 1), (1,))
+    h = unifint(diff_lb, diff_ub, (3, max(3, max_h)))
+    w = unifint(diff_lb, diff_ub, (6, max(6, max_w)))
+    oh = unifint(diff_lb, diff_ub, (1, max(1, h // 2)))
+    ow = unifint(diff_lb, diff_ub, (1, max(1, w // 3)))
+    bb = asindices(canvas(-1, (oh, ow)))
+    sp = choice(totuple(bb))
     obj = {sp}
-    rem = set(bb) - obj
-    ncellsd = _unifint(diff_lb, diff_ub, (0, (oh * ow) // 2))
-    ncells = random.choice([ncellsd, oh * ow - ncellsd])
+    bb = remove(sp, bb)
+    ncellsd = unifint(diff_lb, diff_ub, (0, (oh * ow) // 2))
+    ncells = choice((ncellsd, oh * ow - ncellsd))
     ncells = min(max(0, ncells), oh * ow - 1)
-    for _ in range(ncells):
-        cands = [c for c in rem
-                 if any(abs(c[0] - o[0]) <= 1 and abs(c[1] - o[1]) <= 1 for o in obj)]
-        if not cands:
+    for k in range(ncells):
+        obj.add(choice(totuple((bb - obj) & mapply(neighbors, obj))))
+    obj = normalize(obj)
+    oh, ow = shape(obj)
+    loci = randint(0, h - oh)
+    numo = unifint(diff_lb, diff_ub, (2, min(8, max(2, w // ow)))) - 1
+    itv = interval(0, w, 1)
+    locj = randint(0, w - ow)
+    objp = shift(obj, (loci, locj))
+    remcols = remove(bgc, cols)
+    c = canvas(bgc, (h, w))
+    gi = fill(c, 1, objp)
+    go = fill(c, 1, objp)
+    itv = difference(itv, interval(locj, locj + ow, 1))
+    for k in range(numo):
+        cands = sfilter(itv, lambda j: set(interval(j, j + ow, 1)).issubset(set(itv)))
+        if len(cands) == 0:
             break
-        pick = random.choice(cands)
-        obj.add(pick)
-        rem.discard(pick)
-
-    mr = min(r for r, _ in obj)
-    mc = min(c for _, c in obj)
-    obj = {(r - mr, c - mc) for r, c in obj}
-    oh = max(r for r, _ in obj) + 1
-    ow = max(c for _, c in obj) + 1
-
-    loci = random.randint(0, h - oh)
-    numo = _unifint(diff_lb, diff_ub, (2, min(8, max(2, w // ow)))) - 1
-    locj = random.randint(0, w - ow)
-
-    gi = np.full((h, w), bgc, dtype=int)
-    go = np.full((h, w), bgc, dtype=int)
-    for r, c in obj:
-        gi[loci + r, locj + c] = 1
-        go[loci + r, locj + c] = 1
-
-    # object colors exclude 0 (ARCLE treats 0 as "nothing" for object ops)
-    remcols = [c for c in range(10) if c not in (0, 1, bgc)]
-    random.shuffle(remcols)
-
-    itv = set(range(w)) - set(range(locj, locj + ow))
-    for _ in range(numo):
-        cands = [j for j in sorted(itv) if all(x in itv for x in range(j, j + ow))]
-        if not cands or not remcols:
-            break
-        locj = random.choice(cands)
-        col = remcols.pop()
-        loci_i = random.randint(0, h - oh)
-        for r, c in obj:
-            gi[loci_i + r, locj + c] = col
-            go[loci + r, locj + c] = col
-        itv -= set(range(locj, locj + ow))
-
-    return {"input": gi.tolist(), "output": go.tolist()}
+        locj = choice(cands)
+        col = choice(remcols)
+        remcols = remove(col, remcols)
+        gi = fill(gi, col, shift(obj, (randint(0, h - oh), locj)))
+        go = fill(go, col, shift(obj, (loci, locj)))
+        itv = difference(itv, interval(locj, locj + ow, 1))
+    return {'input': gi, 'output': go}
 
 
+# ----------------------------------------------------------------------------
+# 3. derive_operations
+# ----------------------------------------------------------------------------
 def derive_operations(I, O):
+    """
+    Rule: every coloured object slides VERTICALLY (its columns never change) until
+    its lowermost row coincides with the lowermost row of the colour-1 object.
+    The colour-1 object is the anchor and stays where it is.
+
+    Objects live in mutually disjoint column bands (the generator guarantees it),
+    so a vertical slide never crosses another object -> plain Move chains.
+
+    Special case: an object whose colour is 0.  ARCLE's object ops (Move/Rotate/
+    Flip) grab only NON-ZERO cells of a selection, so a 0-coloured object cannot
+    be grabbed at all - a Move would be a silent no-op.  For that object only, the
+    translation is expressed by painting: Color0 on the destination cells, then
+    bgc on the cells the object no longer covers.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    hi, wi = I.shape
+    ho, wo = O.shape
 
     ops, sels = [], []
 
-    # anchor = the color-1 object; every other object slides vertically
-    # until its bottom row matches the anchor's bottom row
-    anchor_bottom = int(np.argwhere(I == 1)[:, 0].max())
+    # Background: the canvas colour the generator fills before placing objects.
+    # Objects cover at most half the grid, and each single object colour covers at
+    # most h*w/6 cells, so the majority colour is always the background.
+    bgc = int(Counter(I.flatten().tolist()).most_common(1)[0][0])
 
-    for col in [int(c) for c in np.unique(I) if c != bgc and c != 1]:
-        cells = [(int(r), int(c)) for r, c in np.argwhere(I == col)]
-        dr = anchor_bottom - max(r for r, _ in cells)
+    # --- connected components (same colour, 8-connectivity, background excluded)
+    comps = []
+    seen = set()
+    for r in range(hi):
+        for c in range(wi):
+            if int(I[r, c]) == bgc or (r, c) in seen:
+                continue
+            col = int(I[r, c])
+            stack = [(r, c)]
+            seen.add((r, c))
+            cells = []
+            while stack:
+                rr, cc = stack.pop()
+                cells.append((rr, cc))
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = rr + dr, cc + dc
+                        if 0 <= nr < hi and 0 <= nc < wi and (nr, nc) not in seen \
+                                and int(I[nr, nc]) == col:
+                            seen.add((nr, nc))
+                            stack.append((nr, nc))
+            comps.append((col, sorted(cells)))
+
+    anchor_rows = [r for col, cells in comps if col == 1 for (r, _c) in cells]
+    if not anchor_rows:
+        ops.append(34)
+        sels.append([0, 0, ho - 1, wo - 1])
+        return ops, sels
+    anchor_bottom = max(anchor_rows)
+
+    # process objects left to right (each occupies its own column band)
+    for col, cells in sorted(comps, key=lambda t: min(c for _r, c in t[1])):
+        bottom = max(r for r, _c in cells)
+        dr = anchor_bottom - bottom
         if dr == 0:
-            continue
-        step = 1 if dr > 0 else -1
-        move_op = 21 if dr > 0 else 20
+            continue  # anchor itself (and any object already aligned)
 
-        cur = cells
-        for _ in range(abs(dr)):
+        dst = [(r + dr, c) for r, c in cells]
+
+        if col == 0:
+            # 0-coloured object: ungrabbable by ARCLE object ops -> paint it over.
+            ops.append(0)
+            sels.append(sel_of(dst))
+            hole = sorted(set(cells) - set(dst))
+            if hole:
+                ops.append(bgc)
+                sels.append(sel_of(hole))
+        else:
+            move_op = 21 if dr > 0 else 20          # 21 = MoveD, 20 = MoveU
+            step = 1 if dr > 0 else -1
+            cur = list(cells)
+            # first Move GRABS the object (non-empty selection = its true cells)
             ops.append(move_op)
             sels.append(sel_of(cur))
             cur = [(r + step, c) for r, c in cur]
-
-        # ARCLE zeroes every cell the object passed through but no longer occupies
-        if bgc != 0:
-            swept = {(r + step * k, c) for k in range(abs(dr) + 1) for r, c in cells}
-            vacated = sorted(swept - set(cur))
-            if vacated:
-                ops.append(int(bgc))
-                sels.append(sel_of(vacated))
+            # every further step keeps the SAME object grabbed (empty selection),
+            # so ARCLE restores every cell the object glides over
+            for _ in range(abs(dr) - 1):
+                ops.append(move_op)
+                sels.append(sel_of([]))
+                cur = [(r + step, c) for r, c in cur]
+            # only the original footprint the object no longer covers reads 0
+            hole = sorted(set(cells) - set(cur))
+            if bgc != 0 and hole:
+                ops.append(bgc)
+                sels.append(sel_of(hole))
 
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -190,7 +241,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

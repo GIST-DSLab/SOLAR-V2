@@ -33,58 +33,102 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+import numpy as np
+from collections import Counter
+from maker.sel_helpers import sel_of
+
+
 def sample_colors(num_examples=None) -> dict:
+    # Generator: cols = remove(4, interval(0,10,1)); bgc, fgc = sample(cols, 2)
+    # 4 is reserved for the beams, so it is excluded from both roles.
     cols = [c for c in range(10) if c != 4]
-    # fgc must be nonzero: ARCLE object ops treat 0 as "nothing", so a 0-colored
-    # single-pixel object could not be moved.
-    fgc = random.choice([c for c in cols if c != 0])
-    bgc = random.choice([c for c in cols if c != fgc])
+    bgc, fgc = random.sample(cols, 2)
     return {"bgc": bgc, "fgc": fgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int, fgc: int) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc) -> dict:
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        if b < a:
+            b = a
+        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
+
+    max_h = max(2, min(int(max_h), 30))
+    max_w = max(2, min(int(max_w), 30))
+
     h = unifint(diff_lb, diff_ub, (2, max_h))
     w = unifint(diff_lb, diff_ub, (2, max_w))
     loci = unifint(diff_lb, diff_ub, (0, h - 2))
     locjd = unifint(diff_lb, diff_ub, (0, w // 2))
-    locj = choice((locjd, w - locjd))
+    locj = random.choice((locjd, w - locjd))
     locj = min(max(0, locj), w - 1)
-    loc = (loci, locj)
-    c = canvas(bgc, (h, w))
-    gi = fill(c, fgc, {loc})
-    go = fill(c, fgc, {add(loc, (1, 0))})
-    for jj in range(w // 2 + 1):
-        go = fill(go, 4, connect((0, locj + 2 * jj), (loci, locj + 2 * jj)))
-        go = fill(go, 4, connect((0, locj - 2 * jj), (loci, locj - 2 * jj)))
-    return {'input': gi, 'output': go}
+
+    gi = [[bgc for _ in range(w)] for _ in range(h)]
+    gi[loci][locj] = fgc
+
+    go = [[bgc for _ in range(w)] for _ in range(h)]
+    go[loci + 1][locj] = fgc
+    for c in range(w):
+        if (c - locj) % 2 == 0:
+            for r in range(loci + 1):
+                go[r][c] = 4
+
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from collections import Counter
-    from maker.sel_helpers import sel_of
-
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
+    h, w = I.shape
 
+    # Background: the canvas colour the generator paints before placing the single dot.
+    # Exactly one cell differs from it, so the majority colour is reliable here.
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-    # unique non-background pixel
-    rs, cs = np.where(I != bgc)
-    loci, locj = int(rs[0]), int(cs[0])
+    dots = [(r, c) for r in range(h) for c in range(w) if I[r, c] != bgc]
+    loci, locj = dots[0]
+    fgc = int(I[loci, locj])
 
     ops, sels = [], []
 
-    # 1. the marker pixel drops one row
-    ops.append(21); sels.append(sel_of([(loci, locj)]))
+    # 1) The dot drops one row.  ARCLE's object ops only carry NON-ZERO cells, so a
+    #    dot whose colour is literally 0 cannot be grabbed/moved -- in that (and only
+    #    that) case the dot has to be drawn at its new home with Color0.  Either way
+    #    the dot's ORIGINAL cell needs no repair: the beam drawn in step 2 runs down
+    #    column locj through row loci and paints it 4.
+    if fgc != 0:
+        ops.append(21)                          # MoveD: grab the dot, slide it down 1
+        sels.append(sel_of([(loci, locj)]))
+    else:
+        ops.append(0)                           # Color0: dot colour is 0, cannot be grabbed
+        sels.append(sel_of([(loci + 1, locj)]))
 
-    # 2. rays of 4 rise from the marker's original row to the top,
-    #    on every second column outward from the marker column
-    for c in range(locj % 2, wi, 2):
-        ops.append(4); sels.append([0, c, loci, 0])  # full column segment rows 0..loci
+    # 2) Beams of 4 shoot UP from the dot's old row, on every second column outward
+    #    from the dot's column (both directions), each spanning rows 0..loci.
+    #    Emit one Color4 per beam, working outward from the dot.
+    beam_cols = []
+    d = 0
+    while True:
+        right, left = locj + 2 * d, locj - 2 * d
+        added = False
+        if 0 <= right < w:
+            beam_cols.append(right)
+            added = True
+        if d > 0 and 0 <= left < w:
+            beam_cols.append(left)
+            added = True
+        if not added and 2 * d > w:
+            break
+        d += 1
+        if d > w:
+            break
 
-    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
+    for cc in beam_cols:
+        ops.append(4)
+        sels.append(sel_of([(r, cc) for r in range(loci + 1)]))
+
+    ops.append(34)
+    sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 
@@ -128,7 +172,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

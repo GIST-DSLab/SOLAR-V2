@@ -34,169 +34,190 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
+import numpy as np
+from maker.sel_helpers import sel_of
 
 
-VARIANTS = [
-    {"direction": "R"},
-    {"direction": "L"},
-    {"direction": "U"},
-    {"direction": "D"},
-]
+# ----------------------------------------------------------------------------
+# helpers
+# ----------------------------------------------------------------------------
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        b = a
+    lo = a + int((b - a) * diff_lb)
+    hi = a + int((b - a) * diff_ub)
+    if hi < lo:
+        hi = lo
+    if lo < a:
+        lo = a
+    return random.randint(lo, hi)
 
 
+DIRECTIONS = ["right", "left", "down", "up"]   # side of the object the marker line sits on
+
+
+# ----------------------------------------------------------------------------
+# 1. colors  (+ per-instance structural plan: which side the marker line is on)
+# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    import random as _r
-    cols = [c for c in range(1, 10) if c != 3]          # 3 is the output background; 0 breaks Copy/Paste
-    bgc, sepc, objc = _r.sample(cols, 3)
+    cols = [c for c in range(10) if c != 3]          # 3 is reserved for the output background
+    bgc, sepc, objc = random.sample(cols, 3)
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(_r.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        _r.shuffle(examples)
+    if n_ex >= len(DIRECTIONS):
+        examples = [{"direction": d} for d in DIRECTIONS]
+        examples += [{"direction": random.choice(DIRECTIONS)}
+                     for _ in range(n_ex - len(DIRECTIONS))]
+        random.shuffle(examples)
     else:
-        examples = [dict(v) for v in _r.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(_r.choice(examples))]
+        examples = [{"direction": d} for d in random.sample(DIRECTIONS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "sepc": sepc, "objc": objc, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, sepc=None, objc=None, direction=None) -> dict:
-    dirmap = {
-        'identity': lambda v: v,
-        'dmirror':  lambda v: (v[1], v[0]),
-        'cmirror':  lambda v: (-v[1], -v[0]),
-        'vmirror':  lambda v: (v[0], -v[1]),
-        'hmirror':  lambda v: (-v[0], v[1]),
-        'rot90':    lambda v: (v[1], -v[0]),
-        'rot180':   lambda v: (-v[0], -v[1]),
-        'rot270':   lambda v: (-v[1], v[0]),
-    }
-    mfs = ((identity, 'identity'), (dmirror, 'dmirror'), (cmirror, 'cmirror'),
-           (vmirror, 'vmirror'), (hmirror, 'hmirror'), (rot90, 'rot90'),
-           (rot180, 'rot180'), (rot270, 'rot270'))
-    dvecs = {'R': (0, 1), 'L': (0, -1), 'D': (1, 0), 'U': (-1, 0)}
+# ----------------------------------------------------------------------------
+# 2. generator
+# ----------------------------------------------------------------------------
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, sepc, objc, direction=None) -> dict:
     if direction is None:
-        direction = choice(('R', 'L', 'U', 'D'))
-    target = dvecs[direction]
-    while True:
-        nmfs = choice((1, 2))
-        fns = sample(mfs, nmfs)
-        v = (0, 1)
-        for _, nm in fns:
-            v = dirmap[nm](v)
-        if v == target:
-            break
-    # L/R keep the frame; U/D come from transposing transforms -> dims swap at the end
-    if direction in ('L', 'R'):
-        hlim, wlim = max_h, max_w
-    else:
-        hlim, wlim = max_w, max_h
+        direction = random.choice(DIRECTIONS)
+    transposed = direction in ("down", "up")
 
-    h = unifint(diff_lb, diff_ub, (2, min(20, hlim - 1)))
-    w = unifint(diff_lb, diff_ub, (2, min(10, (wlim - 1) // 2)))
-    c = canvas(bgc, (h, w))
-    inds = totuple(asindices(c))
-    spi = randint(0, h - 1)
+    # limits for the PRE-transform canvas (rows, cols)
+    lim_h = max_w if transposed else max_h
+    lim_w = max_h if transposed else max_w
+
+    h_hi = max(2, min(20, lim_h - 1))
+    w_hi = max(2, min(10, (lim_w - 1) // 2))
+    h = _unifint(diff_lb, diff_ub, (2, h_hi))
+    w = _unifint(diff_lb, diff_ub, (2, w_hi))
+
+    fullh = _unifint(diff_lb, diff_ub, (h + 1, max(h + 1, lim_h)))
+    fullw = _unifint(diff_lb, diff_ub, (2 * w + 1, max(2 * w + 1, lim_w)))
+
+    # ---- build the blob, anchored on the right border column of the mini grid
+    spi = random.randrange(h)
     sp = (spi, w - 1)
     shp = {sp}
-    numcellsd = unifint(diff_lb, diff_ub, (0, (h * w) // 2))
-    numc = choice((numcellsd, h * w - numcellsd))
+    rem = {(i, j) for i in range(h) for j in range(w)} - {sp}
+
+    def nbrs(s):
+        out = set()
+        for (i, j) in s:
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    if di or dj:
+                        ni, nj = i + di, j + dj
+                        if 0 <= ni < h and 0 <= nj < w:
+                            out.add((ni, nj))
+        return out
+
+    numcellsd = _unifint(diff_lb, diff_ub, (0, (h * w) // 2))
+    numc = random.choice((numcellsd, h * w - numcellsd))
     numc = min(max(2, numc), h * w - 1)
-    reminds = set(remove(sp, inds))
-    for k in range(numc):
-        shp.add(choice(totuple((reminds - shp) & mapply(neighbors, shp))))
-    while width(shp) == 1:
-        shp.add(choice(totuple((reminds - shp) & mapply(neighbors, shp))))
-    c2 = fill(c, objc, shp)
-    borderinds = sfilter(shp, lambda ij: ij[1] == w - 1)
-    c3 = fill(c, sepc, borderinds)
-    gimini = asobject(hconcat(c2, vmirror(c3)))
-    gomini = asobject(hconcat(c2, vmirror(c2)))
-    fullh = unifint(diff_lb, diff_ub, (h + 1, hlim))
-    fullw = unifint(diff_lb, diff_ub, (2 * w + 1, wlim))
-    fullg = canvas(bgc, (fullh, fullw))
-    loci = randint(0, fullh - h)
-    locj = randint(0, fullw - 2 * w)
-    loc = (loci, locj)
-    gi = paint(fullg, gimini)
-    go = paint(fullg, gomini)
-    for fn, _ in fns:
-        gi = fn(gi)
-        go = fn(go)
-    go = replace(go, bgc, 3)
-    return {'input': gi, 'output': go}
+    for _ in range(numc):
+        cand = list((rem - shp) & nbrs(shp))
+        if not cand:
+            break
+        shp.add(random.choice(cand))
+    guard = 0
+    while len({j for _, j in shp}) == 1 and guard < 200:
+        guard += 1
+        cand = list((rem - shp) & nbrs(shp))
+        if not cand:
+            break
+        shp.add(random.choice(cand))
+
+    gi = np.full((fullh, fullw), bgc, dtype=int)
+    go = np.full((fullh, fullw), bgc, dtype=int)
+    for (i, j) in shp:
+        gi[i, j] = objc
+        go[i, j] = objc
+        go[i, 2 * w - 1 - j] = objc          # mirrored copy in the output
+    for (i, j) in shp:
+        if j == w - 1:
+            gi[i, w] = sepc                  # marker line = mirrored border column
+
+    if direction == "left":
+        gi = np.fliplr(gi); go = np.fliplr(go)
+    elif direction == "down":
+        gi = gi.T.copy(); go = go.T.copy()
+    elif direction == "up":
+        gi = np.flipud(gi.T); go = np.flipud(go.T)
+
+    if random.random() < 0.5:                # extra variation, keeps the marker side
+        if transposed:
+            gi = np.fliplr(gi); go = np.fliplr(go)
+        else:
+            gi = np.flipud(gi); go = np.flipud(go)
+
+    go = np.where(go == bgc, 3, go)
+    return {"input": np.array(gi).tolist(), "output": np.array(go).tolist()}
 
 
+# ----------------------------------------------------------------------------
+# 3. operations
+# ----------------------------------------------------------------------------
 def derive_operations(I, O):
-    import numpy as np
-    from collections import Counter, deque
-
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-
-    # exactly three colors: background > object > marker line (strict, by construction)
-    cnt = Counter(I.flatten().tolist())
-    order = sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))
-    bgc = order[0][0]
-    objc = order[1][0]
-    sepc = order[2][0]
-
-    obj = np.argwhere(I == objc)
-    r0, c0 = int(obj[:, 0].min()), int(obj[:, 1].min())
-    r1, c1 = int(obj[:, 0].max()), int(obj[:, 1].max())
-    h, w = r1 - r0 + 1, c1 - c0 + 1
-
-    sep = np.argwhere(I == sepc)
-    srs = sorted(set(int(p) for p in sep[:, 0]))
-    scs = sorted(set(int(p) for p in sep[:, 1]))
-
-    # the marker line sits flush against one side of the object: that side is the mirror axis
-    if len(scs) == 1 and scs[0] == c1 + 1:
-        dr0, dc0, flip = r0, c1 + 1, 26            # mirror to the right  -> FlipH
-    elif len(scs) == 1 and scs[0] == c0 - 1:
-        dr0, dc0, flip = r0, c0 - w, 26            # mirror to the left   -> FlipH
-    elif len(srs) == 1 and srs[0] == r1 + 1:
-        dr0, dc0, flip = r1 + 1, c0, 27            # mirror downwards     -> FlipV
-    else:
-        dr0, dc0, flip = r0 - h, c0, 27            # mirror upwards       -> FlipV
-
+    H, W = I.shape
+    ho, wo = O.shape
     ops, sels = [], []
 
-    # 1. every background region becomes 3 (object and marker untouched)
-    seen = np.zeros((hi, wi), dtype=bool)
-    comps = []
-    for r in range(hi):
-        for c in range(wi):
-            if I[r, c] == bgc and not seen[r, c]:
-                q = deque([(r, c)])
-                seen[r, c] = True
-                cells = [(r, c)]
-                while q:
-                    y, x = q.popleft()
-                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        ny, nx = y + dy, x + dx
-                        if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] and I[ny, nx] == bgc:
-                            seen[ny, nx] = True
-                            q.append((ny, nx))
-                            cells.append((ny, nx))
-                comps.append(cells)
-    comps.sort(key=len, reverse=True)              # open background first, then the enclosed pockets
-    for cells in comps:
-        sr, sc = cells[0]
-        ops.append(13)
-        sels.append([int(sr), int(sc), 0, 0])
+    # --- colour roles -------------------------------------------------------
+    info = {}
+    for c in np.unique(I):
+        cells = [(int(r), int(cc)) for r, cc in np.argwhere(I == c)]
+        rs = [r for r, _ in cells]
+        cs = [cc for _, cc in cells]
+        area = (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1)
+        info[int(c)] = (cells, area)
 
-    # 2. stamp the object (now sitting on a 3 background) across the marked side and mirror it
-    ops.append(29)
-    sels.append([r0, c0, h - 1, w - 1])
-    ops.append(30)
-    sels.append([dr0, dc0, 0, 0])
-    ops.append(flip)
-    sels.append([dr0, dc0, h - 1, w - 1])
+    # background = the colour whose bounding box spans the whole canvas
+    bgc = max(info, key=lambda c: (info[c][1], len(info[c][0])))
+    others = sorted([c for c in info if c != bgc], key=lambda c: len(info[c][0]))
+
+    # 1) the whole background becomes 3
+    ops.append(3)
+    sels.append(sel_of(info[bgc][0]))
+
+    if len(others) >= 2:
+        sepc = others[0]          # thin marker line (fewest cells)
+        objc = others[-1]         # the blob
+        obj_cells = info[objc][0]
+        sep_cells = info[sepc][0]
+
+        r0 = min(r for r, _ in obj_cells); r1 = max(r for r, _ in obj_cells)
+        c0 = min(c for _, c in obj_cells); c1 = max(c for _, c in obj_cells)
+
+        shares_row = bool({r for r, _ in sep_cells} & {r for r, _ in obj_cells})
+
+        if shares_row:
+            # marker is a vertical line -> reflect left/right across it
+            wobj = c1 - c0 + 1
+            dc = wobj if min(c for _, c in sep_cells) > c0 else -wobj
+            mapped = [(r, c0 + c1 - c + dc) for (r, c) in obj_cells]
+            keys = sorted({c for _, c in mapped}, reverse=(dc < 0))
+            groups = [[(r, c) for (r, c) in mapped if c == k] for k in keys]
+        else:
+            # marker is a horizontal line -> reflect up/down across it
+            hobj = r1 - r0 + 1
+            dr = hobj if min(r for r, _ in sep_cells) > r0 else -hobj
+            mapped = [(r0 + r1 - r + dr, c) for (r, c) in obj_cells]
+            keys = sorted({r for r, _ in mapped}, reverse=(dr < 0))
+            groups = [[(r, c) for (r, c) in mapped if r == k] for k in keys]
+
+        # 2) draw the mirrored blob, line by line, growing outward from the marker
+        for grp in groups:
+            cells = [(r, c) for (r, c) in grp if 0 <= r < H and 0 <= c < W]
+            if not cells:
+                continue
+            ops.append(int(objc))
+            sels.append(sel_of(cells))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -240,7 +261,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

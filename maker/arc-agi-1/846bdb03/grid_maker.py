@@ -39,25 +39,23 @@ from collections import Counter
 from maker.sel_helpers import sel_of
 
 
+# Discrete structural variants of this task:
+#   orient: 'v' -> the framed box has its two coloured lines on the LEFT/RIGHT sides
+#           'h' -> (grid was rotated by 90/270) lines on the TOP/BOTTOM sides
+#   ism   : whether the loose shape is mirrored w.r.t. the arrangement inside the box
+#           (i.e. whether the solver has to mirror it before dropping it in)
 VARIANTS = [
-    {"ism": False, "rot": 0},
-    {"ism": True,  "rot": 1},
-    {"ism": True,  "rot": 0},
-    {"ism": False, "rot": 2},
-    {"ism": False, "rot": 3},
-    {"ism": True,  "rot": 2},
-    {"ism": False, "rot": 1},
-    {"ism": True,  "rot": 3},
+    {"orient": "v", "ism": False},
+    {"orient": "v", "ism": True},
+    {"orient": "h", "ism": False},
+    {"orient": "h", "ism": True},
 ]
 
 
 def sample_colors(num_examples=None) -> dict:
-    while True:
-        bgc, dotc, c1, c2 = random.sample(list(range(10)), 4)
-        # c1/c2 are the copied shape colours; 0 is "transparent" for CopyI/Paste
-        if c1 != 0 and c2 != 0:
-            break
-    n_ex = num_examples if num_examples else 3
+    cols = list(range(10))
+    bgc, dotc, c1, c2 = random.sample(cols, 4)
+    n_ex = num_examples if num_examples else 4
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
         examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
@@ -68,18 +66,22 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "dotc": dotc, "c1": c1, "c2": c2, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, dotc, c1, c2, ism=None, rot=None) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, dotc, c1, c2,
+             orient=None, ism=None) -> dict:
+    if orient is None:
+        orient = choice(('v', 'h'))
     if ism is None:
         ism = choice((True, False))
-    if rot is None:
-        rot = choice((0, 1, 2, 3))
 
-    hlo = min(12, max_h)
-    wlo = min(12, max_w)
-    h = unifint(diff_lb, diff_ub, (hlo, max_h))
-    w = unifint(diff_lb, diff_ub, (wlo, max_w))
-    oh = unifint(diff_lb, diff_ub, (4, max(4, h // 2 - 2)))
-    ow = unifint(diff_lb, diff_ub, (4, max(4, w // 2 - 2)))
+    # a 'h' instance is produced by a 90/270 rotation -> final dims are swapped
+    if orient == 'h':
+        hmax, wmax = max_w, max_h
+    else:
+        hmax, wmax = max_h, max_w
+    h = unifint(diff_lb, diff_ub, (12, max(12, hmax)))
+    w = unifint(diff_lb, diff_ub, (12, max(12, wmax)))
+    oh = unifint(diff_lb, diff_ub, (4, h // 2 - 2))
+    ow = unifint(diff_lb, diff_ub, (4, w // 2 - 2))
 
     gi = canvas(bgc, (h, w))
     go = canvas(bgc, (oh, ow))
@@ -103,7 +105,10 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, dotc, c1, c2, ism=None, rot=No
     locj = randint(0, w - ow)
     plcdB = shift(objB, (loci, locj))
     plcdi = toindices(plcdB)
-    rems = sfilter(fullinds - plcdi, lambda ij: loci + oh <= ij[0] <= h - oh + 2 and ij[1] <= w - ow + 2)
+    rems = sfilter(
+        fullinds - plcdi,
+        lambda ij: loci + oh <= ij[0] <= h - oh + 2 and ij[1] <= w - ow + 2
+    )
     loc = choice(totuple(rems))
     plcdA = shift(objA, loc)
     mp = center(plcdA)[1]
@@ -113,94 +118,140 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, dotc, c1, c2, ism=None, rot=No
 
     gi = paint(gi, plcdB)
     gi = paint(gi, vmirror(plcdA) if ism else plcdA)
-    objAn = shift(normalize(plcdA), (1, 1))
-    go = paint(go, objAn)
+    objA = shift(normalize(plcdA), (1, 1))
+    go = paint(go, objA)
 
-    rotf = (identity, rot90, rot180, rot270)[rot]
+    rotf = choice((identity, rot180)) if orient == 'v' else choice((rot90, rot270))
     gi = rotf(gi)
     go = rotf(go)
     return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    """
+    Rule: a rectangular 'box' is marked by 4 dot-coloured corners and two coloured
+    lines on opposite sides.  A loose two-coloured shape lies elsewhere on the grid;
+    its bounding box is exactly the box's interior.  The shape is slid into the box
+    (mirrored first when its two colours sit on the wrong sides w.r.t. the box's
+    lines), and the grid is cropped down to the box.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
-    ops, sels = [], []
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    cnt = Counter(I.flatten().tolist())
+    bgc = cnt.most_common(1)[0][0]
 
-    # ---- locate the frame from I: 4 dots at the corners of a rectangle whose
-    #      two opposite sides are solid non-background lines ----
-    cells_by_color = {}
+    # ---- locate the box: colour whose cells are exactly 4 bbox corners -------
+    strict = None
+    loose = None
+    for col, n in cnt.items():
+        if col == bgc or n != 4:
+            continue
+        cells = [(int(r), int(c)) for r, c in np.argwhere(I == col).tolist()]
+        r0 = min(r for r, _ in cells); r1 = max(r for r, _ in cells)
+        c0 = min(c for _, c in cells); c1 = max(c for _, c in cells)
+        if r1 - r0 < 3 or c1 - c0 < 3:
+            continue
+        if set(cells) != {(r0, c0), (r0, c1), (r1, c0), (r1, c1)}:
+            continue
+        sub = I[r0:r1 + 1, c0:c1 + 1]
+        inner = sub[1:-1, 1:-1]
+        left = sub[1:-1, 0].tolist(); right = sub[1:-1, -1].tolist()
+        top = sub[0, 1:-1].tolist(); bot = sub[-1, 1:-1].tolist()
+        if np.all(inner == bgc):
+            if (len(set(left)) == 1 and len(set(right)) == 1 and left[0] != bgc
+                    and right[0] != bgc and left[0] != right[0]
+                    and all(v == bgc for v in top) and all(v == bgc for v in bot)):
+                strict = (r0, c0, r1, c1, 'v'); break
+            if (len(set(top)) == 1 and len(set(bot)) == 1 and top[0] != bgc
+                    and bot[0] != bgc and top[0] != bot[0]
+                    and all(v == bgc for v in left) and all(v == bgc for v in right)):
+                strict = (r0, c0, r1, c1, 'h'); break
+        if loose is None and (r1 - r0 + 1, c1 - c0 + 1) == (ho, wo):
+            loose = (r0, c0, r1, c1, 'v' if left and left[0] != bgc else 'h')
+    frame = strict if strict is not None else loose
+    r0, c0, r1, c1, orient = frame
+
+    # ---- the loose shape: every non-background cell outside the box ---------
+    blob = {}
     for r in range(hi):
         for c in range(wi):
             v = int(I[r, c])
-            if v != bgc:
-                cells_by_color.setdefault(v, []).append((r, c))
+            if v == bgc:
+                continue
+            if r0 <= r <= r1 and c0 <= c <= c1:
+                continue
+            blob[(r, c)] = v
+    br0 = min(r for r, _ in blob); br1 = max(r for r, _ in blob)
+    bc0 = min(c for _, c in blob); bc1 = max(c for _, c in blob)
 
-    frame = None
-    for col, cells in cells_by_color.items():
-        if len(cells) != 4:
-            continue
-        rs = [p[0] for p in cells]
-        cs = [p[1] for p in cells]
-        r0, r1, c0, c1c = min(rs), max(rs), min(cs), max(cs)
-        if r1 - r0 < 3 or c1c - c0 < 3:
-            continue
-        if set(cells) != {(r0, c0), (r0, c1c), (r1, c0), (r1, c1c)}:
-            continue
-        lv = {int(I[r, c0]) for r in range(r0 + 1, r1)}
-        rv = {int(I[r, c1c]) for r in range(r0 + 1, r1)}
-        tv = {int(I[r0, c]) for c in range(c0 + 1, c1c)}
-        bv = {int(I[r1, c]) for c in range(c0 + 1, c1c)}
-        if len(lv) == 1 and len(rv) == 1 and lv != {bgc} and rv != {bgc} and tv == {bgc} and bv == {bgc}:
-            frame = (r0, c0, r1, c1c, True)   # lines are vertical
-            break
-        if len(tv) == 1 and len(bv) == 1 and tv != {bgc} and bv != {bgc} and lv == {bgc} and rv == {bgc}:
-            frame = (r0, c0, r1, c1c, False)  # lines are horizontal
-            break
-
-    r0, c0, r1, c1c, vertical = frame
-    fh, fw = r1 - r0 + 1, c1c - c0 + 1
-    ir, ic = r0 + 1, c0 + 1          # frame interior top-left  (shift by UNITY)
-    ih, iw = fh - 2, fw - 2
-
-    # ---- the shape object: every non-background cell outside the frame ----
-    shape_cells = []
-    for col, cells in cells_by_color.items():
-        for (r, c) in cells:
-            if not (r0 <= r <= r1 and c0 <= c <= c1c):
-                shape_cells.append((r, c))
-    shape_cells.sort()
-
-    # ---- mirror decision, measured from I: does the shape's colour order match
-    #      the frame's line order along the axis across the two lines? ----
-    if vertical:
-        L = int(I[r0 + 1, c0])       # colour of the left line
-        R = int(I[r0 + 1, c1c])      # colour of the right line
-        posL = min(c for (r, c) in shape_cells if int(I[r, c]) == L)
-        posR = min(c for (r, c) in shape_cells if int(I[r, c]) == R)
-        flip_op = 26                 # FlipH (left<->right)
+    # ---- does the shape need mirroring to match the box's line sides? -------
+    if orient == 'v':
+        frame_side = int(I[r0 + 1, c0])                     # colour of the left line
+        first = {}
+        for (r, c), v in blob.items():
+            if v not in first or c < first[v]:
+                first[v] = c
     else:
-        L = int(I[r0, c0 + 1])       # colour of the top line
-        R = int(I[r1, c0 + 1])       # colour of the bottom line
-        posL = min(r for (r, c) in shape_cells if int(I[r, c]) == L)
-        posR = min(r for (r, c) in shape_cells if int(I[r, c]) == R)
-        flip_op = 27                 # FlipV (up<->down)
-    mirror = not (posL < posR)
+        frame_side = int(I[r0, c0 + 1])                     # colour of the top line
+        first = {}
+        for (r, c), v in blob.items():
+            if v not in first or r < first[v]:
+                first[v] = r
+    blob_side = min(first.items(), key=lambda kv: kv[1])[0]
+    need_mirror = (frame_side != blob_side)
 
-    # ---- stamp the shape object into the frame interior ----
-    ops.append(28); sels.append(sel_of(shape_cells))       # CopyI: the shape's exact cells
-    ops.append(30); sels.append([ir, ic, 0, 0])            # Paste at interior top-left
-    if mirror:
-        # interior rectangle now holds exactly the stamped shape on background
-        ops.append(flip_op); sels.append([ir, ic, ih - 1, iw - 1])
+    def mirrored(p):
+        r, c = p
+        if not need_mirror:
+            return (r, c)
+        return (r, bc0 + bc1 - c) if orient == 'v' else (br0 + br1 - r, c)
 
-    # ---- keep only the frame ----
-    ops.append(33); sels.append([r0, c0, fh - 1, fw - 1])  # CropGrid to the frame bbox
-    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    dr = (r0 + 1) - br0
+    dc = (c0 + 1) - bc0
+
+    ops, sels = [], []
+    cells = sorted(blob.keys())
+
+    # 1. mirror the shape in place (grabs it as the working object)
+    grabbed = False
+    if need_mirror:
+        ops.append(26 if orient == 'v' else 27)
+        sels.append(sel_of(cells))          # exact cells of the shape, not its bbox
+        grabbed = True
+
+    # 2. slide the shape into the box, one cell at a time
+    steps = []
+    if dr < 0:
+        steps += [20] * (-dr)
+    elif dr > 0:
+        steps += [21] * dr
+    if dc < 0:
+        steps += [23] * (-dc)
+    elif dc > 0:
+        steps += [22] * dc
+    for i, mop in enumerate(steps):
+        ops.append(mop)
+        if i == 0 and not grabbed:
+            sels.append(sel_of(cells))      # first Move grabs the shape
+        else:
+            sels.append(sel_of([]))         # empty -> keep the same object grabbed
+
+    # 3. colour-0 parts of the shape cannot be carried by object ops; draw them
+    zeros = sorted([(r + dr, c + dc) for p, v in blob.items()
+                    for (r, c) in [mirrored(p)] if v == 0])
+    if zeros:
+        ops.append(0)
+        sels.append(sel_of(zeros))
+
+    # 4. crop down to the box (full rectangle: box border + everything inside it)
+    ops.append(33)
+    sels.append([int(r0), int(c0), int(r1 - r0), int(c1 - c0)])
+
+    ops.append(34)
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -244,7 +295,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

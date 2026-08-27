@@ -36,180 +36,161 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter
+
 from maker.sel_helpers import sel_of
 
-ROT_VARIANTS = ["identity", "rot90", "rot180", "rot270"]
+
+# ---------------------------------------------------------------- colors / plan
+
+_ROTS = ("identity", "rot90", "rot180", "rot270")
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    # dotc must be non-zero: ARCLE Move grabs only NONZERO cells of the selection,
-    # and the moving dot is a single cell.
-    dotc = random.choice([c for c in cols if c != 0])
-    rest = [c for c in cols if c != dotc]
-    bgc, linc = random.sample(rest, 2)
+    bgc, linc, dotc = random.sample(cols, 3)
 
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(ROT_VARIANTS):
-        examples = [{"rotf": r} for r in ROT_VARIANTS]
-        examples += [{"rotf": random.choice(ROT_VARIANTS)} for _ in range(n_ex - len(ROT_VARIANTS))]
+    if n_ex >= len(_ROTS):
+        examples = [{"rot": r} for r in _ROTS]
+        examples += [{"rot": random.choice(_ROTS)} for _ in range(n_ex - len(_ROTS))]
         random.shuffle(examples)
     else:
-        examples = [{"rotf": r} for r in random.sample(ROT_VARIANTS, n_ex)]
+        examples = [{"rot": r} for r in random.sample(list(_ROTS), n_ex)]
     plan = examples + [dict(random.choice(examples))]
+
     return {"bgc": bgc, "linc": linc, "dotc": dotc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, dotc, rotf=None) -> dict:
-    def _rot90(g):      # clockwise
-        return tuple(tuple(row) for row in zip(*g[::-1]))
+# ---------------------------------------------------------------- generator
 
-    def _rot180(g):
-        return tuple(tuple(r[::-1]) for r in g[::-1])
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc=None, linc=None, dotc=None, rot=None) -> dict:
+    cols = interval(0, 10, 1)
+    if bgc is None or linc is None or dotc is None:
+        bgc, linc, dotc = sample(cols, 3)
+    if rot is None:
+        rot = choice(_ROTS)
 
-    def _rot270(g):     # counter-clockwise
-        return tuple(tuple(row) for row in list(zip(*g))[::-1])
+    # rot90/rot270 swap the dimensions, so sample within the transposed budget
+    if rot in ("rot90", "rot270"):
+        hmax, wmax = max(4, max_w), max(4, max_h)
+    else:
+        hmax, wmax = max(4, max_h), max(4, max_w)
 
-    def _ident(g):
-        return tuple(tuple(r) for r in g)
+    h = unifint(diff_lb, diff_ub, (4, hmax))
+    w = unifint(diff_lb, diff_ub, (4, wmax))
 
-    if rotf is None:
-        rotf = random.choice(ROT_VARIANTS)
-
-    hb, wb = max_h, max_w
-    if rotf in ("rot90", "rot270"):
-        m = min(max_h, max_w)
-        hb = wb = m
-    hb = max(4, hb)
-    wb = max(4, wb)
-
-    h = unifint(diff_lb, diff_ub, (4, hb))
-    w = unifint(diff_lb, diff_ub, (4, wb))
-
-    gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * w for _ in range(h)]
-    # base line: whole row 0
-    for j in range(w):
-        gi[0][j] = linc
-        go[0][j] = linc
-
-    nlocs = unifint(diff_lb, diff_ub, (1, max(1, w // 2)))
+    c = canvas(bgc, (h, w))
+    ln = connect((0, 0), (0, w - 1))
+    nlocs = unifint(diff_lb, diff_ub, (1, w // 2))
     locs = []
-    opts = list(range(w))
-    for _ in range(nlocs):
-        if not opts:
+    opts = interval(0, w, 1)
+    for k in range(nlocs):
+        if len(opts) == 0:
             break
-        ch = random.choice(opts)
+        ch = choice(opts)
         locs.append(ch)
-        opts = [o for o in opts if o not in (ch - 1, ch, ch + 1)]
+        opts = remove(ch, opts)
+        opts = remove(ch - 1, opts)
+        opts = remove(ch + 1, opts)
 
+    gi = fill(c, linc, ln)
+    go = fill(c, linc, ln)
     for j in locs:
-        hh = random.randint(1, h - 3)
-        for r in range(0, hh + 1):
-            gi[r][j] = linc
-            go[r][j] = linc
-        gi[hh + 1][j] = dotc   # dot sits just past the tip of the stem
-        go[0][j] = dotc        # dot ends up at the base line
+        hh = randint(1, h - 3)
+        lnx = connect((0, j), (hh, j))
+        gi = fill(gi, linc, lnx)
+        go = fill(go, linc, lnx)
+        gi = fill(gi, dotc, {(hh + 1, j)})
+        go = fill(go, dotc, {(0, j)})
 
-    rf = {"identity": _ident, "rot90": _rot90, "rot180": _rot180, "rot270": _rot270}[rotf]
-    return {'input': rf(gi), 'output': rf(go)}
+    rotf = {"identity": identity, "rot90": rot90,
+            "rot180": rot180, "rot270": rot270}[rot]
+    gi = rotf(gi)
+    go = rotf(go)
+    return {"input": gi, "output": go}
 
+
+# ---------------------------------------------------------------- operations
 
 def derive_operations(I, O):
+    """Each isolated dot slides along its line until it hits the solid border line.
+
+    The border line is the one full-length edge whose colour is not the background;
+    every dot sits one cell past the far end of a stub that grows out of that border,
+    and in O the dot has travelled the whole stub and landed on the border itself.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
+    ho, wo = O.shape
     ops, sels = [], []
 
-    colors = sorted(set(int(v) for v in I.flatten().tolist()))
-    cells_of = {c: [(r, cc) for r in range(h) for cc in range(w) if int(I[r, cc]) == c]
-                for c in colors}
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # --- dot colour: the only colour whose every cell is an isolated singleton ---
-    def all_isolated(col):
-        s = set(cells_of[col])
-        if not s:
-            return False
-        for (r, cc) in s:
-            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                if (r + dr, cc + dc) in s:
-                    return False
-        return True
-
-    cands = [c for c in colors if all_isolated(c)]
-    if not cands:
-        cands = colors
-    dotc = min(cands, key=lambda c: len(cells_of[c]))
-    dots = sorted(cells_of[dotc])
-
-    # --- base edge: a fully constant edge whose adjacent inner line carries that
-    #     colour at EXACTLY the dots' perpendicular coordinates (the stems) ---
-    edge_specs = [
-        ('U', [(0, j) for j in range(w)],     [(1, j) for j in range(w)]),
-        ('D', [(h - 1, j) for j in range(w)], [(h - 2, j) for j in range(w)]),
-        ('L', [(i, 0) for i in range(h)],     [(i, 1) for i in range(h)]),
-        ('R', [(i, w - 1) for i in range(h)], [(i, w - 2) for i in range(h)]),
-    ]
-    base_name, linc = None, None
-    for name, edge, inner in edge_specs:
-        vals = set(int(I[r, c]) for r, c in edge)
-        if len(vals) != 1:
-            continue
-        A = vals.pop()
-        if A == dotc:
-            continue
-        if name in ('U', 'D'):
-            innerpos = set(j for (r, j) in inner if int(I[r, j]) == A)
-            dotpos = set(c for (r, c) in dots)
-        else:
-            innerpos = set(i for (i, c) in inner if int(I[i, c]) == A)
-            dotpos = set(r for (r, c) in dots)
-        if innerpos and innerpos == dotpos:
-            base_name, linc = name, A
+    # the solid non-background edge = the border line the dots travel to
+    edges = (('U', I[0, :]), ('D', I[h - 1, :]), ('L', I[:, 0]), ('R', I[:, w - 1]))
+    direction, linc = None, None
+    for name, arr in edges:
+        vals = set(arr.tolist())
+        if len(vals) == 1 and arr[0] != bgc:
+            direction, linc = name, int(arr[0])
             break
-    if base_name is None:
-        # fallback: side of the unique neighbour colour of the first dot
-        r0, c0 = dots[0]
-        nb = []
-        for name, (dr, dc) in (('U', (-1, 0)), ('D', (1, 0)), ('L', (0, -1)), ('R', (0, 1))):
-            rr, cc = r0 + dr, c0 + dc
-            if 0 <= rr < h and 0 <= cc < w:
-                nb.append((name, int(I[rr, cc])))
-        cnt = Counter(v for _, v in nb)
-        base_name, linc = next((n, v) for n, v in nb if cnt[v] == 1)
 
-    rest = [c for c in colors if c != dotc and c != linc]
-    bgc = max(rest, key=lambda c: len(cells_of[c])) if rest else 0
+    if direction is None:                      # degenerate: nothing to do
+        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+        return ops, sels
 
-    if base_name == 'U':
-        mop, (dr, dc) = 20, (-1, 0)
-        nsteps = lambda r, c: r
-    elif base_name == 'D':
-        mop, (dr, dc) = 21, (1, 0)
-        nsteps = lambda r, c: h - 1 - r
-    elif base_name == 'L':
-        mop, (dr, dc) = 23, (0, -1)
-        nsteps = lambda r, c: c
+    # remaining colour = the dot colour
+    others = [int(v) for v in sorted(set(I.flatten().tolist())) if v not in (bgc, linc)]
+    if not others:
+        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+        return ops, sels
+    dotc = others[0]
+    if len(others) > 1:                        # pick the sparsest colour, just in case
+        cnt = Counter(I.flatten().tolist())
+        dotc = min(others, key=lambda v: cnt[v])
+
+    step = {'U': (-1, 0, 20), 'D': (1, 0, 21), 'L': (0, -1, 23), 'R': (0, 1, 22)}
+    dr, dc, mop = step[direction]
+
+    dots = [(r, c) for r in range(h) for c in range(w) if I[r, c] == dotc]
+    # walk the dots along the border line, one stub at a time
+    if direction in ('U', 'D'):
+        dots.sort(key=lambda p: (p[1], p[0]))
     else:
-        mop, (dr, dc) = 22, (0, 1)
-        nsteps = lambda r, c: w - 1 - c
+        dots.sort(key=lambda p: (p[0], p[1]))
 
-    # --- slide each dot along its stem until it reaches the base line ---
     for (r, c) in dots:
-        n = nsteps(r, c)
-        if n <= 0:
+        if direction == 'U':
+            steps = r
+        elif direction == 'D':
+            steps = h - 1 - r
+        elif direction == 'L':
+            steps = c
+        else:
+            steps = w - 1 - c
+        if steps <= 0:
             continue
-        cur = (r, c)
-        ops.append(mop); sels.append(sel_of([cur]))          # grab the dot
-        cur = (cur[0] + dr, cur[1] + dc)
-        for _ in range(n - 1):
-            ops.append(mop); sels.append(sel_of([]))         # keep the same object grabbed
-            cur = (cur[0] + dr, cur[1] + dc)
-        # ARCLE zeroed only the dot's ORIGINAL footprint (the path is restored)
-        if bgc != 0 and cur != (r, c):
-            ops.append(int(bgc)); sels.append(sel_of([(r, c)]))
 
-    ops.append(34); sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
+        if dotc != 0:
+            # grab this dot once, then keep sliding it with empty selections so the
+            # stub it glides over is restored automatically
+            ops.append(mop); sels.append(sel_of([(r, c)]))
+            for _ in range(steps - 1):
+                ops.append(mop); sels.append(sel_of([]))
+            # the dot's original footprint is the only cell left at 0
+            if bgc != 0:
+                ops.append(bgc); sels.append(sel_of([(r, c)]))
+        else:
+            # ARCLE's object mode cannot carry a colour-0 cell (0 == "nothing"),
+            # so this dot has to be painted at its landing cell and cleared at home
+            dest = (r + dr * steps, c + dc * steps)
+            ops.append(0); sels.append(sel_of([dest]))
+            ops.append(bgc); sels.append(sel_of([(r, c)]))
+
+    # full-grid rectangle for submit
+    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -253,7 +234,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

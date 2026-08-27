@@ -40,164 +40,196 @@ from maker.sel_helpers import sel_of
 
 
 def sample_colors(num_examples=None) -> dict:
+    # generator does: bgc, objc, otherc = sample(cols, 3)  -> three distinct colors
     cols = list(range(10))
-    bgc = random.choice(cols)
-    # objc / otherc must be non-zero: the mover object is relocated with ARCLE Move ops,
-    # and Move only carries NON-ZERO cells of the selection.
-    rest = [c for c in cols if c != bgc and c != 0]
-    objc, otherc = random.sample(rest, 2)
-
-    # Discrete structural variant: which way the stemmed rectangle travels.
-    variants = [{"direction": d} for d in ("up", "down", "left", "right")]
-    n_ex = num_examples if num_examples else 3
-    if n_ex >= len(variants):
-        examples = [dict(v) for v in variants]
-        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
-        random.shuffle(examples)
-    else:
-        examples = [dict(v) for v in random.sample(variants, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "objc": objc, "otherc": otherc, "instance_plan": plan}
+    bgc, objc, otherc = random.sample(cols, 3)
+    return {"bgc": bgc, "objc": objc, "otherc": otherc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, otherc, direction=None) -> dict:
-    if direction is None:
-        direction = random.choice(("up", "down", "left", "right"))
-
-    def ui(bounds):
-        a, b = bounds
-        return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
-
-    # any of the 4 orientations may transpose h/w, so bound both by the smaller limit
-    m = min(max_h, max_w)
-    if m < 10:
-        m = 10
-
-    h = ui((10, m))
-    w = ui((10, m))
-    objh = ui((2, h - 5))
-    objw = ui((2, w - 5))
-    # anchor block placed with a bottom margin > 2 (base orientation: mover travels UP)
-    loci = random.randint(0, h - objh - 3)
-    locj = random.randint(0, w - objw)
-
-    gi = [[bgc] * w for _ in range(h)]
-    for r in range(loci, loci + objh):
-        for c in range(locj, locj + objw):
-            gi[r][c] = objc
-
-    low = loci + objh - 1
-    left = locj
-    right = locj + objw - 1
-
-    locis = random.randint(low + 2, h - 2)
-    locie = random.randint(locis + 1, h - 1)
-    locjs = random.randint(0, min(w - 2, right))
-    locje = random.randint(max(locjs + 1, left), w - 1)
-    jloc = random.randint(max(left, locjs), min(right, locje))
-    lnlen = locis - low - 1
-
-    go = [row[:] for row in gi]
-    for r in range(locis, locie + 1):
-        for c in range(locjs, locje + 1):
-            gi[r][c] = otherc
-            go[r - lnlen][c] = otherc
-    for r in range(low + 1, locis):
-        gi[r][jloc] = otherc
-
-    def flipud(g):
-        return [row[:] for row in g[::-1]]
-
-    def transpose(g):
-        return [list(t) for t in zip(*g)]
-
-    def rot_cw(g):
-        return [list(t) for t in zip(*g[::-1])]
-
-    if direction == "down":
-        gi, go = flipud(gi), flipud(go)
-    elif direction == "left":
-        gi, go = transpose(gi), transpose(go)
-    elif direction == "right":
-        gi, go = rot_cw(gi), rot_cw(go)
-
-    return {
-        "input": tuple(tuple(r) for r in gi),
-        "output": tuple(tuple(r) for r in go),
-    }
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc: int, objc: int, otherc: int) -> dict:
+    hlo = max(8, min(10, max_h))
+    wlo = max(8, min(10, max_w))
+    h = unifint(diff_lb, diff_ub, (hlo, max(hlo, max_h)))
+    w = unifint(diff_lb, diff_ub, (wlo, max(wlo, max_w)))
+    objh = unifint(diff_lb, diff_ub, (2, h - 5))
+    objw = unifint(diff_lb, diff_ub, (2, w - 5))
+    loci = randint(0, h - objh)
+    locj = randint(0, w - objw)
+    obj = backdrop(frozenset({(loci, locj), (loci + objh - 1, locj + objw - 1)}))
+    gi = canvas(bgc, (h, w))
+    gi = fill(gi, objc, obj)
+    bmarg = h - (loci + objh)
+    rmarg = w - (locj + objw)
+    tmarg = loci
+    lmarg = locj
+    margs = (bmarg, rmarg, tmarg, lmarg)
+    options = [idx for idx, marg in enumerate(margs) if marg > 2]
+    pos = choice(options)
+    for k in range(pos):
+        gi = rot90(gi)
+    h, w = shape(gi)
+    ofc = ofcolor(gi, objc)
+    locis = randint(lowermost(ofc) + 2, h - 2)
+    locie = randint(locis + 1, h - 1)
+    locjs = randint(0, min(w - 2, rightmost(ofc)))
+    locje = randint(max(locjs + 1, leftmost(ofc)), w - 1)
+    otherobj = backdrop(frozenset({(locis, locjs), (locie, locje)}))
+    ub = min(rightmost(ofc), rightmost(otherobj))
+    lb = max(leftmost(ofc), leftmost(otherobj))
+    jloc = randint(lb, ub)
+    ln = connect((lowermost(ofc) + 1, jloc), (uppermost(otherobj) - 1, jloc))
+    gib = tuple(e for e in gi)
+    gi = fill(gi, otherc, otherobj)
+    gi = fill(gi, otherc, ln)
+    go = fill(gib, otherc, shift(otherobj, (-len(ln), 0)))
+    mfs = (identity, dmirror, cmirror, vmirror, hmirror, rot90, rot180, rot270)
+    nmfs = choice((1, 2))
+    for fn in sample(mfs, nmfs):
+        gi = fn(gi)
+        go = fn(go)
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    """
+    Rule: two non-background objects.  One is a solid rectangle (the anchor).
+    The other is a solid rectangle with a 1-cell-wide stem pointing at the anchor.
+    The stemmed rectangle SLIDES along the stem until it touches the anchor; the
+    stem disappears.  -> Move chain + cleanup of the vacated footprint + erase of
+    whatever part of the stem is still visible afterwards.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
-    ho, wo = O.shape
-
-    # background = most common colour on the border ring (objects can dominate the interior)
-    border = ([int(I[0, c]) for c in range(w)] + [int(I[h - 1, c]) for c in range(w)] +
-              [int(I[r, 0]) for r in range(h)] + [int(I[r, w - 1]) for r in range(h)])
-    bg = Counter(border).most_common(1)[0][0]
-
     ops, sels = [], []
+    full_sel = [0, 0, h - 1, w - 1]   # bbox = the whole grid (exactly the rectangle meant)
 
-    # the mover is the colour whose cell set differs between I and O; the other block is the anchor
-    M, Mo = set(), set()
-    for col in sorted(set(I.flatten().tolist()) - {bg}):
-        a = {(r, c) for r in range(h) for c in range(w) if int(I[r, c]) == col}
-        b = {(r, c) for r in range(ho) for c in range(wo) if int(O[r, c]) == col}
-        if a != b:
-            M, Mo = a, b
-            break
+    # --- background: most common colour along the grid border (task's own definition)
+    border = []
+    for c in range(w):
+        border.append(int(I[0, c]))
+        border.append(int(I[h - 1, c]))
+    for r in range(h):
+        border.append(int(I[r, 0]))
+        border.append(int(I[r, w - 1]))
+    bgc = Counter(border).most_common(1)[0][0]
 
-    # split the mover into its solid rectangle and its 1-wide connecting stem
-    stem = []
-    for (r, c) in M:
-        l_in = (r, c - 1) in M
-        r_in = (r, c + 1) in M
-        u_in = (r - 1, c) in M
-        d_in = (r + 1, c) in M
-        if (not l_in and not r_in) or (not u_in and not d_in):
-            stem.append((r, c))
-    stem = sorted(stem)
-    rect = sorted(M - set(stem))
+    def cells_of(col):
+        rs, cs = np.where(I == col)
+        return [(int(r), int(c)) for r, c in zip(rs, cs)]
 
-    # destination of the rectangle (pure translation along the stem axis)
-    r0 = min(r for r, c in rect)
-    c0 = min(c for r, c in rect)
-    dr = min(r for r, c in Mo) - r0
-    dc = min(c for r, c in Mo) - c0
-    dest = {(r + dr, c + dc) for (r, c) in rect}
+    def bbox(cells):
+        rs = [r for r, _ in cells]
+        cs = [c for _, c in cells]
+        return min(rs), min(cs), max(rs), max(cs)
 
-    # erase the stem only when the arriving rectangle would not cover all of it
-    if stem and any(p not in dest for p in stem):
-        ops.append(int(bg))
-        sels.append(sel_of(stem))
+    def is_full_rect(cells):
+        if not cells:
+            return False
+        r0, c0, r1, c1 = bbox(cells)
+        return len(cells) == (r1 - r0 + 1) * (c1 - c0 + 1)
 
-    # slide the rectangle until it abuts the anchor block
-    steps = abs(dr) + abs(dc)
-    if dr < 0:
-        mop = 20
-    elif dr > 0:
-        mop = 21
-    elif dc > 0:
-        mop = 22
+    colors = [int(c) for c in np.unique(I).tolist() if int(c) != bgc]
+
+    if len(colors) != 2:
+        # degenerate safety net: repaint only the cells that actually differ
+        diff = {}
+        for r in range(min(h, O.shape[0])):
+            for c in range(min(w, O.shape[1])):
+                if I[r, c] != O[r, c]:
+                    diff.setdefault(int(O[r, c]), []).append((r, c))
+        for col, cs in diff.items():
+            ops.append(col); sels.append(sel_of(cs))
+        ops.append(34); sels.append(full_sel)
+        return ops, sels
+
+    a, b = colors
+    ca, cb = cells_of(a), cells_of(b)
+    if is_full_rect(ca) and not is_full_rect(cb):
+        static_col, mover_col = a, b
+    elif is_full_rect(cb) and not is_full_rect(ca):
+        static_col, mover_col = b, a
     else:
-        mop = 23
-    if steps > 0:
-        ops.append(mop)
-        sels.append(sel_of(rect))               # first Move GRABS the rectangle
-        for _ in range(steps - 1):
-            ops.append(mop)
-            sels.append(sel_of([]))             # empty selection -> keep same object grabbed
+        na = int(np.sum((I == a) != (O == a)))
+        nb = int(np.sum((I == b) != (O == b)))
+        mover_col, static_col = (a, b) if na >= nb else (b, a)
 
-    # ARCLE leaves the vacated original footprint at 0; repair it when bg != 0
-    hole = sorted(set(rect) - dest)
-    if bg != 0 and hole:
-        ops.append(int(bg))
-        sels.append(sel_of(hole))
+    mover_cells = cells_of(mover_col)
+    static_cells = cells_of(static_col)
 
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    # --- split the mover into its solid block and its 1-cell-wide stem
+    P = np.full((h + 2, w + 2), bgc, dtype=int)
+    P[1:h + 1, 1:w + 1] = I
+    stem, block = [], []
+    for (r, c) in mover_cells:
+        thin_h = (P[r + 1, c] == bgc and P[r + 1, c + 2] == bgc)
+        thin_v = (P[r, c + 1] == bgc and P[r + 2, c + 1] == bgc)
+        (stem if (thin_h or thin_v) else block).append((r, c))
+    if not block:
+        block, stem = list(mover_cells), []
+
+    br0, bc0, br1, bc1 = bbox(block)
+    sr0, sc0, sr1, sc1 = bbox(static_cells)
+    cols_overlap = not (bc1 < sc0 or sc1 < bc0)
+    rows_overlap = not (br1 < sr0 or sr1 < br0)
+
+    if cols_overlap and not rows_overlap:
+        if br0 > sr1:
+            dr, dc, dist = -1, 0, br0 - sr1 - 1
+        else:
+            dr, dc, dist = 1, 0, sr0 - br1 - 1
+    elif rows_overlap and not cols_overlap:
+        if bc0 > sc1:
+            dr, dc, dist = 0, -1, bc0 - sc1 - 1
+        else:
+            dr, dc, dist = 0, 1, sc0 - bc1 - 1
+    else:
+        # fall back on the stem's own geometry
+        bcr, bcc = (br0 + br1) / 2.0, (bc0 + bc1) / 2.0
+        scr, scc = (sr0 + sr1) / 2.0, (sc0 + sc1) / 2.0
+        if abs(scr - bcr) >= abs(scc - bcc):
+            dr, dc = (1, 0) if scr > bcr else (-1, 0)
+            dist = abs(sr0 - br1 - 1) if scr > bcr else abs(br0 - sr1 - 1)
+        else:
+            dr, dc = (0, 1) if scc > bcc else (0, -1)
+            dist = abs(sc0 - bc1 - 1) if scc > bcc else abs(bc0 - sc1 - 1)
+        if stem:
+            dist = len(stem)
+    dist = max(0, int(dist))
+
+    move_op = {(-1, 0): 20, (1, 0): 21, (0, 1): 22, (0, -1): 23}[(dr, dc)]
+
+    # ARCLE object ops treat colour 0 as transparent, so a 0-coloured block cannot
+    # be carried by Move.  Give it a temporary visible colour, slide it, restore.
+    use_temp = (mover_col == 0)
+    temp = None
+    if use_temp:
+        temp = next(c for c in range(1, 10) if c != bgc and c != static_col)
+        ops.append(temp); sels.append(sel_of(block))
+
+    cur = list(block)
+    if dist > 0:
+        ops.append(move_op); sels.append(sel_of(cur))       # first step GRABS the block
+        cur = [(r + dr, c + dc) for r, c in cur]
+        for _ in range(dist - 1):
+            ops.append(move_op); sels.append(sel_of([]))    # empty -> keep same object
+            cur = [(r + dr, c + dc) for r, c in cur]
+
+    # ARCLE zeroed the grabbed footprint; repair only what the block no longer covers
+    hole = sorted(set(block) - set(cur))
+    if bgc != 0 and hole:
+        ops.append(bgc); sels.append(sel_of(hole))
+
+    # the stem is still in the grid wherever the block did not come to rest on it
+    leftover = sorted(set(stem) - set(cur))
+    if leftover:
+        ops.append(bgc); sels.append(sel_of(leftover))
+
+    if use_temp:
+        ops.append(0); sels.append(sel_of(cur))
+
+    ops.append(34); sels.append(full_sel)
     return ops, sels
 
 
@@ -241,7 +273,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -34,19 +34,16 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
+import numpy as np
+from collections import Counter, deque
+from maker.sel_helpers import sel_of
 
-
-VARIANTS = [{"axis": "v"}, {"axis": "h"}]
+VARIANTS = [{"orient": "v"}, {"orient": "h"}]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc = random.choice(cols)
-    # object color must be non-zero: the restoration copies the intact half of the
-    # shape with CopyI/Paste, and 0 is "nothing" for the clipboard.
-    objc = random.choice([c for c in cols if c != bgc and c != 0])
-    occcol = random.choice([c for c in cols if c not in (bgc, objc)])
-
+    bgc, objc, occcol = random.sample(cols, 3)
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -58,132 +55,233 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "objc": objc, "occcol": occcol, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, objc=None, occcol=None, axis=None) -> dict:
-    if axis is None:
-        axis = choice(('v', 'h'))
-    lim = min(max_h, max_w)                 # rot90-family transforms may transpose
-    lo = min(10, lim)
-    h = unifint(diff_lb, diff_ub, (lo, lim))
-    w = unifint(diff_lb, diff_ub, (lo, lim))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, occcol, orient=None) -> dict:
+    if orient is None:
+        orient = random.choice(("v", "h"))
+
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
+
+    def hw(s):
+        rs = [i for i, _ in s]
+        cs = [j for _, j in s]
+        return max(rs) - min(rs) + 1, max(cs) - min(cs) + 1
+
+    def nbrs(s):
+        out = set()
+        for (i, j) in s:
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    if di or dj:
+                        out.add((i + di, j + dj))
+        return out
+
+    cap = min(max_h, max_w)                      # transposing mirrors may swap h and w
+    h = unifint(diff_lb, diff_ub, (10, max(10, cap)))
+    w = unifint(diff_lb, diff_ub, (10, max(10, cap)))
     oh = unifint(diff_lb, diff_ub, (4, h - 2))
     ow = unifint(diff_lb, diff_ub, (4, (w - 2) // 2))
     nc = unifint(diff_lb, diff_ub, (min(oh, ow), (oh * ow) // 3 * 2))
+
     shp = {(0, 0)}
-    bounds = asindices(canvas(-1, (oh, ow)))
-    for j in range(nc):
-        ij = choice(totuple((bounds - shp) & mapply(neighbors, shp)))
-        shp.add(ij)
-    while height(shp) < 3 or width(shp) < 3:
-        ij = choice(totuple((bounds - shp) & mapply(neighbors, shp)))
-        shp.add(ij)
-    vmshp = vmirror(shp)
-    if choice((True, False)):
-        vmshp = sfilter(vmshp, lambda ij: ij[1] != width(shp) - 1)
-    shp = normalize(combine(shp, shift(vmshp, (0, -width(vmshp)))))
-    oh, ow = shape(shp)
-    loci = randint(1, h - oh - 1)
-    locj = randint(1, w - ow - 1)
-    loc = (loci, locj)
-    shp = shift(shp, loc)
-    c = canvas(bgc, (h, w))
-    go = fill(c, objc, shp)
+    bounds = {(i, j) for i in range(oh) for j in range(ow)}
+    for _ in range(nc):
+        cand = sorted((bounds - shp) & nbrs(shp))
+        if not cand:
+            break
+        shp.add(random.choice(cand))
+    while hw(shp)[0] < 3 or hw(shp)[1] < 3:
+        cand = sorted((bounds - shp) & nbrs(shp))
+        if not cand:
+            break
+        shp.add(random.choice(cand))
+
+    cjs = [j for _, j in shp]
+    cmin, cmax = min(cjs), max(cjs)
+    wshp = cmax - cmin + 1
+    vmshp = {(i, cmin + cmax - j) for i, j in shp}
+    if random.choice((True, False)):
+        vmshp = {(i, j) for (i, j) in vmshp if j != wshp - 1}
+    wvm = hw(vmshp)[1]
+    comb = shp | {(i, j - wvm) for i, j in vmshp}
+    rmn = min(i for i, _ in comb)
+    cmn = min(j for _, j in comb)
+    shp = {(i - rmn, j - cmn) for i, j in comb}
+    oh, ow = hw(shp)
+
+    loci = random.randint(1, h - oh - 1)
+    locj = random.randint(1, w - ow - 1)
+    shp = {(i + loci, j + locj) for i, j in shp}
+
+    go = [[bgc] * w for _ in range(h)]
+    for (i, j) in shp:
+        go[i][j] = objc
+
     boxh = unifint(diff_lb, diff_ub, (2, oh - 1))
     boxw = unifint(diff_lb, diff_ub, (2, ow // 2))
-    ulci = randint(loci - 1, loci + oh - boxh + 1)
-    ulcj = randint(locj + ow // 2 + 1, locj + ow - boxw + 1)
-    bx = backdrop(frozenset({(ulci, ulcj), (ulci + boxh - 1, ulcj + boxw - 1)}))
-    gi = fill(go, occcol, bx)
-    # shape is mirror-symmetric about a vertical axis here; transposing transforms
-    # turn that into a horizontal-axis symmetry. Pick the transform set matching `axis`.
-    mfs = (identity, dmirror, cmirror, vmirror, hmirror, rot90, rot180, rot270)
-    transposing = (dmirror, cmirror, rot90, rot270)
-    nmfs = choice((1, 2))
-    while True:
-        fns = sample(mfs, nmfs)
-        par = sum(1 for fn in fns if fn in transposing) % 2
-        if (par == 1) == (axis == 'h'):
-            break
+    ulci = random.randint(loci - 1, loci + oh - boxh + 1)
+    ulcj = random.randint(locj + ow // 2 + 1, locj + ow - boxw + 1)
+    gi = [row[:] for row in go]
+    for i in range(ulci, ulci + boxh):
+        for j in range(ulcj, ulcj + boxw):
+            gi[i][j] = occcol
+
+    def xf(g, name):
+        if name == "identity":
+            return [row[:] for row in g]
+        if name == "vmirror":
+            return [row[::-1] for row in g]
+        if name == "hmirror":
+            return [row[:] for row in g[::-1]]
+        if name == "rot180":
+            return [row[::-1] for row in g[::-1]]
+        if name == "dmirror":
+            return [list(r) for r in zip(*g)]
+        if name == "cmirror":
+            return [list(r) for r in zip(*[row[::-1] for row in g[::-1]])]
+        if name == "rot90":
+            return [list(r) for r in zip(*g[::-1])]
+        if name == "rot270":
+            return [list(r) for r in zip(*g)][::-1]
+        return g
+
+    keep = ["identity", "vmirror", "hmirror", "rot180"]      # keeps the mirror axis vertical
+    swap = ["dmirror", "cmirror", "rot90", "rot270"]         # turns the mirror axis horizontal
+    if orient == "v":
+        fns = random.sample(keep, random.choice((1, 2)))
+    else:
+        fns = [random.choice(swap)]
+        if random.choice((True, False)):
+            fns.append(random.choice(keep))
     for fn in fns:
-        gi = fn(gi)
-        go = fn(go)
-    return {'input': gi, 'output': go}
+        gi = xf(gi, fn)
+        go = xf(go, fn)
+
+    return {"input": [[int(v) for v in row] for row in gi],
+            "output": [[int(v) for v in row] for row in go]}
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from collections import Counter
-
+    """A solid rectangle of one colour covers part of a mirror-symmetric figure.
+    Wipe the rectangle away and redraw the piece of the figure it was hiding,
+    found by reflecting the still-visible part onto itself."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-
-    # background = border color
-    border = I[0].tolist() + I[-1].tolist() + I[:, 0].tolist() + I[:, -1].tolist()
-    bgc = Counter(border).most_common(1)[0][0]
-
-    # two remaining colors: the occluder is the one filling its bbox solidly
-    cols = [c for c in np.unique(I).tolist() if c != bgc]
-    info = {}
-    for c in cols:
-        rs, cs = np.where(I == c)
-        a, b, d, e = int(rs.min()), int(rs.max()), int(cs.min()), int(cs.max())
-        solid = (b - a + 1) * (e - d + 1) == len(rs)
-        info[c] = (solid, len(rs), (a, d, b, e))
-    solids = [c for c in cols if info[c][0]]
-    occ_c = solids[0] if len(solids) == 1 else min(cols, key=lambda c: info[c][1])
-    obj_c = [c for c in cols if c != occ_c][0]
-    r0, c0, r1, c1 = info[occ_c][2]
-
-    V = set(zip(*[a.tolist() for a in np.where(I == obj_c)]))   # visible shape cells
-    B = {(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)}  # occluded area
-    allowed = V | B
-
-    # The shape is mirror-symmetric; find the axis (row-mirror r->K-r or col-mirror
-    # c->K-c) whose reflection of the visible shape stays inside shape+occluded area,
-    # never straddles the occluder, and overlaps the visible shape the most.
-    best = None
-    for kind in ('h', 'v'):
-        span = hi if kind == 'h' else wi
-        for K in range(0, 2 * span - 1):
-            if kind == 'h':
-                if K - r1 < 0 or K - r0 > hi - 1:
-                    continue
-                if not (K - r1 > r1 or K - r0 < r0):
-                    continue
-                mir = {(K - r, c) for (r, c) in V}
-            else:
-                if K - c1 < 0 or K - c0 > wi - 1:
-                    continue
-                if not (K - c1 > c1 or K - c0 < c0):
-                    continue
-                mir = {(r, K - c) for (r, c) in V}
-            if not mir <= allowed:
-                continue
-            score = len(mir & V)
-            if best is None or score > best[0]:
-                best = (score, kind, K)
-
+    h, w = I.shape
     ops, sels = [], []
-    dh, dw = r1 - r0, c1 - c0
+
+    # background = the colour the canvas was painted with; it rings the whole grid
+    border = ([int(I[0, j]) for j in range(w)] + [int(I[h - 1, j]) for j in range(w)] +
+              [int(I[i, 0]) for i in range(1, h - 1)] + [int(I[i, w - 1]) for i in range(1, h - 1)])
+    bgc = Counter(border).most_common(1)[0][0]
+    others = sorted(set(int(v) for v in I.flatten().tolist()) - {bgc})
+    bg_arr = (I == bgc)
+
+    def cells_of(col):
+        rs, cs = np.nonzero(I == col)
+        return set(zip(rs.tolist(), cs.tolist()))
+
+    def is_rect(cells):
+        rs = [r for r, _ in cells]
+        cs = [c for _, c in cells]
+        return len(cells) == (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1)
+
+    # The occluder is the colour whose cells fill a solid rectangle; the remaining
+    # non-background colour is the figure. (Both colours qualify only when the figure
+    # itself happens to be a solid block — an ambiguity the task's own reference
+    # implementation resolves arbitrarily, so O settles it below.)
+    best = None
+    for occ in others:
+        rest = [c for c in others if c != occ]
+        if len(rest) != 1:
+            continue
+        obj = rest[0]
+        box = cells_of(occ)
+        objcells = cells_of(obj)
+        if not box or not objcells or not is_rect(box):
+            continue
+        obj_arr = (I == obj)
+
+        rr = np.array([r for r, _ in sorted(objcells)])
+        cc = np.array([c for _, c in sorted(objcells)])
+        rmin, rmax, cmin, cmax = rr.min(), rr.max(), cc.min(), cc.max()
+        mirrors = [(rr, cmin + cmax - cc),          # reflected left<->right
+                   (rmin + rmax - rr, cc)]          # reflected up<->down
+
+        union = objcells | box
+        ur = [r for r, _ in union]
+        uc = [c for _, c in union]
+        lim = max((max(ur) - min(ur) + 1) // 2 + 1, (max(uc) - min(uc) + 1) // 2 + 1)
+
+        # Slide each reflection over the figure: it may never land on background,
+        # and the right placement is the one covering the most of the visible figure.
+        cands = []
+        for (mr, mc) in mirrors:
+            for di in range(-lim, lim + 1):
+                for dj in range(-lim, lim + 1):
+                    ar, ac = mr + di, mc + dj
+                    inside = (ar >= 0) & (ar < h) & (ac >= 0) & (ac < w)
+                    ir, ic = ar[inside], ac[inside]
+                    if bg_arr[ir, ic].any():
+                        continue
+                    cands.append((int(obj_arr[ir, ic].sum()),
+                                  set(zip(ir.tolist(), ic.tolist()))))
+        if not cands:
+            continue
+        cands.sort(key=lambda t: -t[0])
+        for score, sh in cands:
+            paint = sh & box            # outside the rectangle the reflection is already drawn
+            G = I.copy()
+            for (r, c) in box:
+                G[r, c] = bgc
+            for (r, c) in paint:
+                G[r, c] = obj
+            agrees = bool(np.array_equal(G, O))
+            cand = (agrees, score, obj, box, paint)
+            if best is None or (cand[0], cand[1]) > (best[0], best[1]):
+                best = cand
+            if agrees:                  # best overlap wins; O only settles exact ties
+                break
+        if best is not None and best[0]:
+            break
 
     if best is None:
-        ops.append(int(bgc)); sels.append([r0, c0, dh, dw])
-    else:
-        _, kind, K = best
-        # Paste is transparent to 0: when bgc==0 the occluder must be cleared first.
-        if bgc == 0:
-            ops.append(0); sels.append([r0, c0, dh, dw])
-        if kind == 'h':
-            ops.append(28); sels.append([K - r1, c0, dh, dw])   # intact mirror half
-            ops.append(30); sels.append([r0, c0, 0, 0])         # onto occluded area
-            ops.append(27); sels.append([r0, c0, dh, dw])       # mirror it up<->down
-        else:
-            ops.append(28); sels.append([r0, K - c1, dh, dw])
-            ops.append(30); sels.append([r0, c0, 0, 0])
-            ops.append(26); sels.append([r0, c0, dh, dw])       # mirror it left<->right
+        ops.append(34)
+        sels.append([0, 0, h - 1, w - 1])
+        return ops, sels
 
-    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
+    _, _, obj, box, paint = best
+
+    # 1) wipe the occluding rectangle back to background
+    ops.append(int(bgc))
+    sels.append(sel_of(sorted(box)))
+
+    # 2) redraw the hidden part of the figure, one connected patch at a time
+    todo = set(paint)
+    comps = []
+    while todo:
+        seed = min(todo)
+        todo.discard(seed)
+        comp = [seed]
+        q = deque([seed])
+        while q:
+            r, c = q.popleft()
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    n = (r + dr, c + dc)
+                    if n in todo:
+                        todo.discard(n)
+                        comp.append(n)
+                        q.append(n)
+        comps.append(sorted(comp))
+    comps.sort(key=lambda cp: cp[0])
+    for comp in comps:
+        ops.append(int(obj))
+        sels.append(sel_of(comp))
+
+    ops.append(34)
+    sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 
@@ -227,7 +325,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

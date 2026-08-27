@@ -37,133 +37,192 @@ import random
 import numpy as np
 from collections import Counter
 
+try:
+    from maker.sel_helpers import sel_of
+except Exception:  # pragma: no cover - fallback if helper unavailable
+    def sel_of(cells):
+        return {"cells": [[int(r), int(c)] for (r, c) in cells]}
 
-def unifint(diff_lb, diff_ub, bounds):
+
+ROTATIONS = ["identity", "rot90", "rot180", "rot270"]
+
+
+def _unifint(diff_lb, diff_ub, bounds):
     a, b = bounds
-    lo = round(a + (b - a) * diff_lb)
-    hi = round(a + (b - a) * diff_ub)
-    if lo < a:
-        lo = a
+    if b < a:
+        b = a
+    lo = min(max(a, int(a + diff_lb * (b - a))), b)
+    hi = min(max(a, int(a + diff_ub * (b - a))), b)
     if hi < lo:
-        hi = lo
+        lo, hi = hi, lo
     return random.randint(lo, hi)
 
 
 def sample_colors(num_examples=None) -> dict:
-    # bgc / linc are ordinary colors; generator excludes 2 and 4 (reserved for the
-    # drawn 4-band and 2-staircase). Rule is color-agnostic beyond that, but fix roles.
+    # generator: cols = interval(0,10,1) minus (2,4); bgc, linc = sample(cols, 2)
     cols = [c for c in range(10) if c not in (2, 4)]
     bgc, linc = random.sample(cols, 2)
-
-    # Discrete structural variant = the rotation (which edge the line sits on).
-    # Line-edge uniquely determines rotation, so cover all 4 in examples.
-    ROT = [0, 1, 2, 3]
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(ROT):
-        examples = [{"rot": r} for r in ROT]
-        examples += [{"rot": random.choice(ROT)} for _ in range(n_ex - len(ROT))]
+    if n_ex >= len(ROTATIONS):
+        examples = [{"rotation": r} for r in ROTATIONS]
+        examples += [{"rotation": random.choice(ROTATIONS)}
+                     for _ in range(n_ex - len(ROTATIONS))]
         random.shuffle(examples)
     else:
-        examples = [{"rot": r} for r in random.sample(ROT, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
+        examples = [{"rotation": r} for r in random.sample(ROTATIONS, n_ex)]
+    plan = [dict(e) for e in examples] + [dict(random.choice(examples))]
     return {"bgc": bgc, "linc": linc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, rot=None) -> dict:
-    if rot is None:
-        rot = random.choice([0, 1, 2, 3])
+def _rot(g, rotation):
+    if rotation == "identity":
+        return [list(r) for r in g]
+    if rotation == "rot90":   # CW
+        return [list(r) for r in zip(*g[::-1])]
+    if rotation == "rot180":
+        return [list(r)[::-1] for r in g[::-1]]
+    # rot270 == CCW
+    return [list(r) for r in zip(*g)][::-1]
 
-    maxdim = min(max_h, max_w)
-    h = unifint(diff_lb, diff_ub, (3, min(15, maxdim)))
-    w = unifint(diff_lb, diff_ub, (3, min(15, maxdim)))
-    upper = max(1, maxdim // max(h, w))
-    fac = unifint(diff_lb, diff_ub, (1, upper))
 
-    # base frame (identity): line = left column, 4-band = bottom row (cols>=1),
-    # 2-staircase shoots up-right from (h-2, 1).
-    gi = np.full((h, w), bgc, dtype=int)
-    gi[:, 0] = linc
-    go = gi.copy()
-    go[h - 1, 1:w] = 4
+def _upscale(g, fac):
+    out = []
+    for row in g:
+        newrow = []
+        for v in row:
+            newrow.extend([v] * fac)
+        for _ in range(fac):
+            out.append(list(newrow))
+    return out
+
+
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, rotation=None, **kwargs) -> dict:
+    if rotation is None:
+        rotation = random.choice(ROTATIONS)
+
+    keeps_shape = rotation in ("identity", "rot180")
+    hmax = min(15, max_h if keeps_shape else max_w)
+    wmax = min(15, max_w if keeps_shape else max_h)
+    hmax = max(3, hmax)
+    wmax = max(3, wmax)
+
+    h = _unifint(diff_lb, diff_ub, (3, hmax))
+    w = _unifint(diff_lb, diff_ub, (3, wmax))
+
+    H0, W0 = (h, w) if keeps_shape else (w, h)
+    facmax = min(30 // max(h, w), max(1, max_h // H0), max(1, max_w // W0))
+    facmax = max(1, facmax)
+    fac = _unifint(diff_lb, diff_ub, (1, facmax))
+
+    # base input: background canvas with the line colour on the whole left column
+    gi = [[bgc for _ in range(w)] for _ in range(h)]
+    for r in range(h):
+        gi[r][0] = linc
+
+    # base output: colour 4 along the bottom row (excluding the line column),
+    # and a colour-2 ray shooting up-right from just above/right of the corner
+    go = [list(row) for row in gi]
+    for c in range(1, w):
+        go[h - 1][c] = 4
     r, c = h - 2, 1
     while 0 <= r < h and 0 <= c < w:
-        go[r, c] = 2
+        go[r][c] = 2
         r -= 1
         c += 1
 
-    gi = np.rot90(gi, k=rot)
-    go = np.rot90(go, k=rot)
-    gi = np.kron(gi, np.ones((fac, fac), dtype=int))
-    go = np.kron(go, np.ones((fac, fac), dtype=int))
-
-    return {"input": gi.astype(int).tolist(), "output": go.astype(int).tolist()}
+    gi = _upscale(_rot(gi, rotation), fac)
+    go = _upscale(_rot(go, rotation), fac)
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     H, W = I.shape
+    ho, wo = O.shape
 
-    # --- measure rule from I ---
-    # line color = minority color (thin edge band vs the rest of the grid)
+    # ---- read the structure out of I -------------------------------------
     cnt = Counter(I.flatten().tolist())
-    linc = min(cnt, key=lambda k: cnt[k])
+    # the line colour is always the minority colour (line = 1 base column of w>=3)
+    linc = sorted(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0][0]
 
-    def row_all(rr):
-        return bool(np.all(I[rr, :] == linc))
+    edge = None
+    if np.all(I[:, 0] == linc):
+        edge = "left"
+    elif np.all(I[:, W - 1] == linc):
+        edge = "right"
+    elif np.all(I[0, :] == linc):
+        edge = "top"
+    elif np.all(I[H - 1, :] == linc):
+        edge = "bottom"
+    if edge is None:
+        ops = [34]
+        sels = [sel_of([(r, c) for r in range(ho) for c in range(wo)])]
+        return ops, sels
 
-    def col_all(cc):
-        return bool(np.all(I[:, cc] == linc))
-
-    # which full edge holds the line, and its thickness f (= upscale factor)
-    if row_all(0):
-        edge = "TOP"
-        f = 0
-        while f < H and row_all(f):
-            f += 1
-    elif row_all(H - 1):
-        edge = "BOTTOM"
-        f = 0
-        while f < H and row_all(H - 1 - f):
-            f += 1
-    elif col_all(0):
-        edge = "LEFT"
-        f = 0
-        while f < W and col_all(f):
-            f += 1
+    # thickness of the line band == upscaling factor
+    fac = 0
+    if edge == "left":
+        while fac < W and np.all(I[:, fac] == linc):
+            fac += 1
+    elif edge == "right":
+        while fac < W and np.all(I[:, W - 1 - fac] == linc):
+            fac += 1
+    elif edge == "top":
+        while fac < H and np.all(I[fac, :] == linc):
+            fac += 1
     else:
-        edge = "RIGHT"
-        f = 0
-        while f < W and col_all(W - 1 - f):
-            f += 1
+        while fac < H and np.all(I[H - 1 - fac, :] == linc):
+            fac += 1
+    fac = max(1, fac)
+    while fac > 1 and (H % fac or W % fac):
+        fac -= 1
 
-    # number of diagonal steps (base_h/base_w = dim//f)
-    N = min(H // f, W // f) - 1
+    RB, CB = H // fac, W // fac
+
+    # (u, v) block coordinates: u = distance from the "4" edge,
+    # v = distance from the line edge.  The "4" edge is the line edge turned
+    # 90 deg counter-clockwise (left->bottom, top->left, right->top, bottom->right).
+    if edge == "left":       # four edge = bottom
+        U, V = RB, CB
+        def blk(u, v): return (RB - 1 - u, v)
+    elif edge == "top":      # four edge = left
+        U, V = CB, RB
+        def blk(u, v): return (v, u)
+    elif edge == "right":    # four edge = top
+        U, V = RB, CB
+        def blk(u, v): return (u, CB - 1 - v)
+    else:                    # edge == "bottom", four edge = right
+        U, V = CB, RB
+        def blk(u, v): return (RB - 1 - v, CB - 1 - u)
+
+    def block_cells(rb, cb):
+        return [(rb * fac + dr, cb * fac + dc)
+                for dr in range(fac) for dc in range(fac)]
 
     ops, sels = [], []
 
-    # 4-band: the full edge perpendicular to the line, on the far side, as ONE region.
-    # staircase: fac x fac blocks stepping diagonally away from the line corner.
-    if edge == "LEFT":
-        ops.append(4); sels.append([H - f, f, f - 1, W - 1 - f])        # bottom band
-        r0, c0, dr, dc = H - 2 * f, f, -f, f                            # up-right
-    elif edge == "BOTTOM":
-        ops.append(4); sels.append([0, W - f, H - f - 1, f - 1])        # right band
-        r0, c0, dr, dc = 0, f, f, f                                     # down-right
-    elif edge == "TOP":
-        ops.append(4); sels.append([f, 0, H - 1 - f, f - 1])           # left band
-        r0, c0, dr, dc = f, f, f, f                                     # down-right
-    else:  # RIGHT
-        ops.append(4); sels.append([0, 0, f - 1, W - 1 - f])           # top band
-        r0, c0, dr, dc = f, W - 2 * f, f, -f                           # down-left
+    # 1) the colour-4 band: the whole edge strip next to the line, minus the
+    #    block shared with the line band itself (v = 0).
+    band = []
+    for v in range(1, V):
+        rb, cb = blk(0, v)
+        band.extend(block_cells(rb, cb))
+    if band:
+        ops.append(4)
+        sels.append(sel_of(band))
 
-    r, c = r0, c0
-    for _ in range(N):
-        ops.append(2); sels.append([r, c, f - 1, f - 1])
-        r += dr
-        c += dc
+    # 2) the colour-2 ray: one block per step, starting at the block diagonally
+    #    inward from the corner and marching away from both edges.
+    K = min(U - 1, V - 1)
+    for k in range(1, K + 1):
+        rb, cb = blk(k, k)
+        if 0 <= rb < RB and 0 <= cb < CB:
+            ops.append(2)
+            sels.append(sel_of(block_cells(rb, cb)))
 
-    ops.append(34); sels.append([0, 0, H - 1, W - 1])
+    ops.append(34)
+    sels.append(sel_of([(r, c) for r in range(ho) for c in range(wo)]))
     return ops, sels
 
 
@@ -207,7 +266,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

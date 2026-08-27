@@ -37,170 +37,235 @@ import random
 import numpy as np
 from collections import Counter
 
-from maker.sel_helpers import sel_of
+try:
+    from maker.sel_helpers import sel_of
+except Exception:                                    # pragma: no cover
+    def sel_of(cells):
+        return {"cells": [(int(r), int(c)) for r, c in cells]}
 
 
+# --------------------------------------------------------------------- colors
 def sample_colors(num_examples=None) -> dict:
-    """All six roles (bgc, pc, c1..c4) are sampled randomly by the original generator,
-    so all six are fixed once per episode.  Extra constraint: pc != 0, because the blob
-    is carried into the box with CopyI/Paste and 0 is transparent to those ops."""
+    """bgc, pc and the four wall colours are one fixed 6-colour scheme per episode.
+    The generator also picks a random rotation (identity/90/180/270) — a discrete
+    structural variant, so it is planned per instance instead of resampled."""
     cols = list(range(10))
-    picked = random.sample(cols, 6)
-    if picked[1] == 0:                      # keep pc non-zero
-        for i in range(2, 6):
-            if picked[i] != 0:
-                picked[1], picked[i] = picked[i], picked[1]
-                break
-    bgc, pc, c1, c2, c3, c4 = picked
-    return {"bgc": bgc, "pc": pc, "c1": c1, "c2": c2, "c3": c3, "c4": c4}
+    bgc, pc, c1, c2, c3, c4 = random.sample(cols, 6)
+    ROTS = [0, 1, 2, 3]
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(ROTS):
+        ex = [{"rot": r} for r in ROTS]
+        ex += [{"rot": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
+        random.shuffle(ex)
+    else:
+        ex = [{"rot": r} for r in random.sample(ROTS, n_ex)]
+    plan = ex + [dict(random.choice(ex))]            # test rotation was shown
+    return {"bgc": bgc, "pc": pc, "c1": c1, "c2": c2, "c3": c3, "c4": c4,
+            "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, pc=None, c1=None, c2=None, c3=None, c4=None) -> dict:
-    if bgc is None:
-        ck = sample_colors()
-        bgc, pc = ck["bgc"], ck["pc"]
-        c1, c2, c3, c4 = ck["c1"], ck["c2"], ck["c3"], ck["c4"]
+# ------------------------------------------------------------------- generate
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, pc, c1, c2, c3, c4,
+             rot=None, **kwargs) -> dict:
+    if rot is None:
+        rot = random.choice([0, 1, 2, 3])
 
-    # a final rot90/rot270 can swap the grid dimensions -> bound both by the smaller cap
-    lim = max(12, min(max_h, max_w))
-    h = unifint(diff_lb, diff_ub, (12, lim))
-    w = unifint(diff_lb, diff_ub, (12, lim))
-    oh = unifint(diff_lb, diff_ub, (4, h // 2 - 2))
-    ow = unifint(diff_lb, diff_ub, (4, w // 2 - 2))
-    gi = canvas(bgc, (h, w))
-    go = canvas(bgc, (oh, ow))
-    ln1 = connect((1, 0), (oh - 2, 0))
-    ln2 = connect((1, ow - 1), (oh - 2, ow - 1))
-    ln3 = connect((0, 1), (0, ow - 2))
-    ln4 = connect((oh - 1, 1), (oh - 1, ow - 2))
-    go = fill(go, c1, ln1)
-    go = fill(go, c2, ln2)
-    go = fill(go, c3, ln3)
-    go = fill(go, c4, ln4)
-    objB = asobject(go)
-    bounds = asindices(canvas(-1, (oh - 2, ow - 2)))
-    objA = {choice(totuple(bounds))}
-    ncells = unifint(diff_lb, diff_ub, (1, ((oh - 2) * (ow - 2)) // 2))
-    for k in range(ncells - 1):
-        objA.add(choice(totuple((bounds - objA) & mapply(neighbors, objA))))
-    while shape(objA) != (oh - 2, ow - 2):
-        objA.add(choice(totuple((bounds - objA) & mapply(neighbors, objA))))
-    fullinds = asindices(gi)
-    loci = randint(0, h - 2 * oh + 2)
-    locj = randint(0, w - ow)
-    plcdB = shift(objB, (loci, locj))
-    plcdi = toindices(plcdB)
-    rems = sfilter(fullinds - plcdi,
-                   lambda ij: loci + oh <= ij[0] <= h - oh + 2 and ij[1] <= w - ow + 2)
-    loc = choice(totuple(rems))
-    plcdA = shift(objA, loc)
-    gi = paint(gi, plcdB)
-    gi = fill(gi, pc, plcdA)
-    objA = shift(objA, (1, 1))
-    objs = objects(go, T, F, T)
-    for ij in objA:
-        manhs = {obj: manhattan(obj, {ij}) for obj in objs}
-        manhsl = list(manhs.values())
-        mmh = min(manhsl)
-        if manhsl.count(mmh) == 1:
-            col = color([o for o, mnh in manhs.items() if mmh == mnh][0])
-        else:
-            col = pc
-        go = fill(go, col, {ij})
-    rotf = choice((identity, rot90, rot180, rot270))
-    gi = rotf(gi)
-    go = rotf(go)
-    return {'input': gi, 'output': go}
+    def unifint(lb, ub):
+        if ub < lb:
+            ub = lb
+        return random.randint(lb + int((ub - lb) * diff_lb),
+                              lb + int((ub - lb) * diff_ub))
+
+    if rot in (1, 3):                                # rotation swaps h and w
+        hcap = wcap = min(max_h, max_w)
+    else:
+        hcap, wcap = max_h, max_w
+    hcap = max(12, min(30, hcap))
+    wcap = max(12, min(30, wcap))
+
+    h = unifint(12, hcap)
+    w = unifint(12, wcap)
+    oh = unifint(4, h // 2 - 2)
+    ow = unifint(4, w // 2 - 2)
+
+    # the box: four coloured walls, background corners
+    go = [[bgc] * ow for _ in range(oh)]
+    for i in range(1, oh - 1):
+        go[i][0] = c1
+        go[i][ow - 1] = c2
+    for j in range(1, ow - 1):
+        go[0][j] = c3
+        go[oh - 1][j] = c4
+
+    # the blob: 8-connected, spanning exactly the (oh-2, ow-2) interior
+    ih, iw = oh - 2, ow - 2
+    bounds = [(i, j) for i in range(ih) for j in range(iw)]
+    objA = {random.choice(bounds)}
+    ncells = unifint(1, max(1, (ih * iw) // 2))
+
+    def frontier(s):
+        cand = set()
+        for (i, j) in s:
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    if di == 0 and dj == 0:
+                        continue
+                    p = (i + di, j + dj)
+                    if 0 <= p[0] < ih and 0 <= p[1] < iw and p not in s:
+                        cand.add(p)
+        return sorted(cand)
+
+    def shape_of(s):
+        rs = [p[0] for p in s]
+        cs = [p[1] for p in s]
+        return (max(rs) - min(rs) + 1, max(cs) - min(cs) + 1)
+
+    for _ in range(ncells - 1):
+        f = frontier(objA)
+        if not f:
+            break
+        objA.add(random.choice(f))
+    while shape_of(objA) != (ih, iw):
+        f = frontier(objA)
+        if not f:
+            break
+        objA.add(random.choice(f))
+
+    # placement: box somewhere, blob strictly below it (never overlapping)
+    gi = [[bgc] * w for _ in range(h)]
+    loci = random.randint(0, h - 2 * oh + 2)
+    locj = random.randint(0, w - ow)
+    for i in range(oh):
+        for j in range(ow):
+            gi[loci + i][locj + j] = go[i][j]
+    rems = [(i, j) for i in range(loci + oh, h - oh + 3)
+            for j in range(0, w - ow + 3)]
+    lr, lc = random.choice(rems)
+    for (i, j) in objA:
+        gi[lr + i][lc + j] = pc
+
+    # each blob cell takes the colour of its nearest wall; ties keep the blob colour
+    for (i, j) in objA:
+        r, c = i + 1, j + 1
+        d = [(r, c3), (oh - 1 - r, c4), (c, c1), (ow - 1 - c, c2)]
+        mn = min(x[0] for x in d)
+        hits = [col for dd, col in d if dd == mn]
+        go[r][c] = hits[0] if len(hits) == 1 else pc
+
+    def rotate(g, k):
+        g = [list(row) for row in g]
+        for _ in range(k):
+            g = [list(row) for row in zip(*g[::-1])]
+        return g
+
+    gi = rotate(gi, rot)
+    go = rotate(go, rot)
+    return {"input": tuple(tuple(r) for r in gi),
+            "output": tuple(tuple(r) for r in go)}
 
 
-def derive_operations(I, O):
-    """Rule (measured from I only):
-       I holds a rectangular frame made of 4 straight one-cell-wide lines of 4 distinct
-       colours (corners empty), plus one free-form blob of a 5th colour whose bounding box
-       is exactly the size of the frame's interior.
-       O = the frame box, with the blob carried inside (its bbox onto the interior) and
-       every blob cell recoloured with the colour of the STRICTLY nearest frame line
-       (manhattan, min over that line's cells); ties keep the blob colour.
-    """
-    I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
+# --------------------------------------------------------------------- derive
+def _parse(I, bgc):
+    """Split the non-background content into the 4 straight walls of the box
+    (each 1 cell thick) and the single 2-D blob."""
     hi, wi = I.shape
-
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
     cells_by_color = {}
     for r in range(hi):
         for c in range(wi):
             v = int(I[r, c])
             if v != bgc:
                 cells_by_color.setdefault(v, []).append((r, c))
+    if len(cells_by_color) != 5:
+        return None
+    hor, ver, blob = [], [], None
+    for col, cells in cells_by_color.items():
+        rs = [p[0] for p in cells]
+        cs = [p[1] for p in cells]
+        bh = max(rs) - min(rs) + 1
+        bw = max(cs) - min(cs) + 1
+        if bh == 1 and bw >= 2 and len(cells) == bw:
+            hor.append((min(rs), min(cs), max(cs), col))
+        elif bw == 1 and bh >= 2 and len(cells) == bh:
+            ver.append((min(cs), min(rs), max(rs), col))
+        elif bh >= 2 and bw >= 2:
+            if blob is not None:
+                return None
+            blob = (col, cells, min(rs), min(cs), bh, bw)
+        else:
+            return None
+    if len(hor) != 2 or len(ver) != 2 or blob is None:
+        return None
+    hor.sort()
+    ver.sort()
+    top, bot = hor
+    left, right = ver
+    r0, r1 = top[0], bot[0]
+    c0, c1 = left[0], right[0]
+    oh, ow = r1 - r0 + 1, c1 - c0 + 1
+    if oh < 4 or ow < 4:
+        return None
+    if (top[1], top[2]) != (c0 + 1, c1 - 1) or (bot[1], bot[2]) != (c0 + 1, c1 - 1):
+        return None
+    if (left[1], left[2]) != (r0 + 1, r1 - 1) or (right[1], right[2]) != (r0 + 1, r1 - 1):
+        return None
+    if (blob[4], blob[5]) != (oh - 2, ow - 2):       # blob exactly fills the interior
+        return None
+    return dict(r0=r0, c0=c0, oh=oh, ow=ow,
+                ctop=top[3], cbot=bot[3], cleft=left[3], cright=right[3],
+                pc=blob[0], blob=blob[1], br=blob[2], bc=blob[3])
 
-    # the blob is the only non-bg colour that is not a 1-cell-wide straight line
-    blob_color = None
-    for col in sorted(cells_by_color):
-        pts = cells_by_color[col]
-        rs = [p[0] for p in pts]
-        cs = [p[1] for p in pts]
-        if (max(rs) - min(rs)) >= 1 and (max(cs) - min(cs)) >= 1:
-            blob_color = col
+
+def derive_operations(I, O):
+    I = np.asarray(I, dtype=int)
+    O = np.asarray(O, dtype=int)
+
+    info = None
+    for bgc, _ in Counter(I.flatten().tolist()).most_common():
+        info = _parse(I, bgc)
+        if info is not None:
             break
 
-    blob = cells_by_color[blob_color]
-    a0 = min(p[0] for p in blob); a1 = max(p[0] for p in blob)
-    b0 = min(p[1] for p in blob); b1 = max(p[1] for p in blob)
-    ih, iw = a1 - a0 + 1, b1 - b0 + 1
+    r0, c0 = info["r0"], info["c0"]
+    oh, ow = info["oh"], info["ow"]
+    pc = info["pc"]
 
-    # the 4 frame lines -> the box region (measured from I, not from O)
-    lines = {col: pts for col, pts in cells_by_color.items() if col != blob_color}
-    frame_cells = [p for pts in lines.values() for p in pts]
-    br = min(p[0] for p in frame_cells); br2 = max(p[0] for p in frame_cells)
-    bc = min(p[1] for p in frame_cells); bc2 = max(p[1] for p in frame_cells)
-    bh, bw = br2 - br + 1, bc2 - bc + 1
+    # the blob, carried into the box interior (its top-left lands on (1,1) of the box)
+    interior = []
+    for (r, c) in info["blob"]:
+        lr = r - info["br"] + 1
+        lc = c - info["bc"] + 1
+        interior.append((r0 + lr, c0 + lc, lr, lc))
+    interior.sort()
+
+    walls = [("top", info["ctop"]), ("bottom", info["cbot"]),
+             ("left", info["cleft"]), ("right", info["cright"])]
+    claim = {}
+    for (gr, gc, lr, lc) in interior:
+        d = {"top": lr, "bottom": oh - 1 - lr, "left": lc, "right": ow - 1 - lc}
+        mn = min(d.values())
+        winners = [k for k, v in d.items() if v == mn]
+        claim[(gr, gc)] = winners[0] if len(winners) == 1 else None
 
     ops, sels = [], []
 
-    # 1) pick up the blob: its bounding box is exactly the frame's interior size,
-    #    and the selection IS that full rectangle, so bbox form is exact here.
-    ops.append(28); sels.append([a0, b0, ih - 1, iw - 1])
+    # 1. stamp the whole blob inside the box, in its own colour (the base layer)
+    ops.append(int(pc))
+    sels.append(sel_of([(gr, gc) for (gr, gc, _, _) in interior]))
 
-    # 2) crop the canvas down to the frame box (extent from the frame lines in I).
-    #    Full-rectangle region -> bbox form is exact.
-    ops.append(33); sels.append([br, bc, bh - 1, bw - 1])
+    # 2. each wall repaints the blob cells that are strictly closest to it;
+    #    the cells left in the blob colour are the ones tied between two walls
+    for name, col in walls:
+        grp = [(gr, gc) for (gr, gc, _, _) in interior if claim[(gr, gc)] == name]
+        if grp:
+            ops.append(int(col))
+            sels.append(sel_of(grp))
 
-    # 3) drop the blob onto the interior, top-left corner (1,1)
-    ops.append(30); sels.append([1, 1, 0, 0])
+    # 3. keep only the box — selection is exactly that full rectangle, background included
+    ops.append(33)
+    sels.append([r0, c0, oh - 1, ow - 1])
 
-    # 4) recolour each blob cell with its strictly-nearest frame line.
-    #    Work in box coordinates.
-    lines_box = {col: [(r - br, c - bc) for (r, c) in pts] for col, pts in lines.items()}
-    blob_box = [(r - a0 + 1, c - b0 + 1) for (r, c) in blob]
-
-    targets = {}
-    for (r, c) in blob_box:
-        dists = []
-        for col, pts in lines_box.items():
-            d = min(abs(r - pr) + abs(c - pc_) for (pr, pc_) in pts)
-            dists.append((d, col))
-        dmin = min(d for d, _ in dists)
-        winners = [col for d, col in dists if d == dmin]
-        if len(winners) == 1:                       # strict nearest -> that line's colour
-            targets.setdefault(winners[0], []).append((r, c))
-        # ties -> cell keeps the blob colour, already placed by the Paste
-
-    # emit one Color op per frame line, ordered top / left / right / bottom
-    def line_key(col):
-        pts = lines_box[col]
-        rs = [p[0] for p in pts]; cs = [p[1] for p in pts]
-        horizontal = (max(rs) == min(rs))
-        if horizontal:
-            return (0, 0) if min(rs) == 0 else (3, 0)
-        return (1, 0) if min(cs) == 0 else (2, 0)
-
-    for col in sorted(targets, key=line_key):
-        ops.append(int(col)); sels.append(sel_of(targets[col]))
-
-    ops.append(34); sels.append([0, 0, bh - 1, bw - 1])
+    ops.append(34)
+    sels.append([0, 0, oh - 1, ow - 1])
     return ops, sels
 
 
@@ -244,7 +309,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
