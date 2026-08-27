@@ -34,295 +34,247 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-from random import randint
-try:
-    from dsl import *
-    from utils import *
-except ImportError:
-    pass
+from collections import deque
 
+import numpy as np
+
+from maker.sel_helpers import sel_of
+
+# The rule's offset lattice: neighbours-of-neighbours of the origin, i.e. every
+# (k, l) with |k| <= 2 and |l| <= 2.  A damaged cell is repaired from the intact
+# cell k vertical periods and l horizontal periods away.
+_MULTS = sorted({(k, l) for k in (-2, -1, 0, 1, 2) for l in (-2, -1, 0, 1, 2)},
+                key=lambda kl: (abs(kl[0]) + abs(kl[1]), abs(kl[0]), abs(kl[1])))
+
+
+# ── helpers shared by generate() and derive_operations() ─────────────────────
+
+def _components(grid, color):
+    """4-connected components of `color` in a 2-D numpy int array."""
+    h, w = grid.shape
+    seen = np.zeros((h, w), dtype=bool)
+    comps = []
+    for r in range(h):
+        for c in range(w):
+            if grid[r, c] != color or seen[r, c]:
+                continue
+            seen[r, c] = True
+            q = deque([(r, c)])
+            comp = []
+            while q:
+                y, x = q.popleft()
+                comp.append((y, x))
+                for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                    if 0 <= ny < h and 0 <= nx < w and not seen[ny, nx] and grid[ny, nx] == color:
+                        seen[ny, nx] = True
+                        q.append((ny, nx))
+            comps.append(comp)
+    return comps
+
+
+def _detect_noise_color(grid):
+    """The occluder colour: fewest connected components, ties broken by fewest cells.
+
+    Returns (colour, is_unique) — the same choice the task's rule makes.
+    """
+    stats = []
+    for col in sorted(set(grid.flatten().tolist())):
+        ncomp = len(_components(grid, col))
+        ncell = int((grid == col).sum())
+        stats.append((ncomp, ncell, col))
+    stats.sort()
+    best = stats[0]
+    unique = len(stats) == 1 or (stats[1][0], stats[1][1]) != (best[0], best[1])
+    return best[2], unique
+
+
+def _row_period(mat):
+    """Smallest p with mat[:, j] == mat[:, j-p] for every j >= p (else the width)."""
+    w = mat.shape[1]
+    for p in range(1, w):
+        if np.array_equal(mat[:, p:], mat[:, :-p]):
+            return p
+    return w
+
+
+def _periods(grid, noisec):
+    """(vertical, horizontal) period, measured on the rows / columns free of noise."""
+    clean_rows = [r for r in range(grid.shape[0]) if noisec not in grid[r]]
+    clean_cols = [c for c in range(grid.shape[1]) if noisec not in grid[:, c]]
+    if not clean_rows or not clean_cols:
+        return None, None
+    hp = _row_period(grid[clean_rows, :])
+    vp = _row_period(grid[:, clean_cols].T)
+    return vp, hp
+
+
+def _predict(grid, noisec, vp, hp):
+    """For every damaged cell, the colour periodicity dictates (absent if unreachable)."""
+    h, w = grid.shape
+    out = {}
+    for r in range(h):
+        for c in range(w):
+            if grid[r, c] != noisec:
+                continue
+            for k, l in _MULTS:
+                sr, sc = r - k * vp, c - l * hp
+                if 0 <= sr < h and 0 <= sc < w and grid[sr, sc] != noisec:
+                    out[(r, c)] = int(grid[sr, sc])
+                    break
+    return out
+
+
+# ── 1. colours ───────────────────────────────────────────────────────────────
 
 def sample_colors(num_examples=None) -> dict:
+    # bgc   : canvas colour the generator paints before tiling (the tiles cover it entirely)
+    # noisec: the occluder colour -- it is what marks the damaged cells, so it MUST be the
+    #         same in every instance of the episode or the test instance is unreadable
+    # cpool : the pattern palette (noisec is never part of it)
     cols = list(range(10))
-    bgc, noisec = random.sample(cols, 2)
-    return {"bgc": bgc, "noisec": noisec}
+    bgc = random.choice(cols)
+    noisec = random.choice([c for c in cols if c != bgc])
+    cpool = [c for c in cols if c != noisec]
+    random.shuffle(cpool)
+    return {"bgc": bgc, "noisec": noisec, "cpool": cpool}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec) -> dict:
-    cols = interval(0, 10, 1)
-    lim = max(10, min(max_h, max_w))          # rot90 at the end may swap h/w
-    h = unifint(diff_lb, diff_ub, (10, lim))
-    w = unifint(diff_lb, diff_ub, (10, lim))
-    hp = unifint(diff_lb, diff_ub, (2, h // 2 - 1))
-    wp = unifint(diff_lb, diff_ub, (2, w // 2 - 1))
-    pinds = asindices(canvas(-1, (hp, wp)))
-    remcols = remove(noisec, cols)
-    numc = unifint(diff_lb, diff_ub, (2, 9))
-    ccols = sample(remcols, numc)
-    pobj = frozenset({(choice(ccols), ij) for ij in pinds})
-    go = canvas(bgc, (h, w))
-    locs = set()
-    for a in range(h // hp + 1):
-        for b in range(w // wp + 1):
-            loci = hp * a
-            locj = wp * b
-            locs.add((loci, locj))
-            mf1 = identity if a % 2 == 0 else hmirror
-            mf2 = identity if b % 2 == 0 else vmirror
-            mf = compose(mf1, mf2)
-            go = paint(go, shift(mf(pobj), (loci, locj)))
-    numpatches = unifint(diff_lb, diff_ub, (1, int((h * w) ** 0.5 // 2)))
-    gi = tuple(e for e in go)
-    places = apply(lbind(shift, pinds), locs)
-    succ = 0
-    tr = 0
-    maxtr = 10 * numpatches
-    while succ < numpatches and tr < maxtr:
-        tr += 1
-        ph = randint(2, 6)
-        pw = randint(2, 6)
-        loci = randint(0, h - ph)
-        locj = randint(0, w - pw)
-        ptch = backdrop(frozenset({(loci, locj), (loci + ph - 1, locj + pw - 1)}))
-        gi2 = fill(gi, noisec, ptch)
-        candset = apply(normalize, apply(rbind(toobject, gi2), places))
-        if (len(sfilter(gi2, lambda r: noisec not in r)) >= 2
-                and len(sfilter(dmirror(gi2), lambda r: noisec not in r)) >= 2
-                and (pobj in candset or hmirror(pobj) in candset
-                     or vmirror(pobj) in candset or hmirror(vmirror(pobj)) in candset)):
+# ── 2. instances ─────────────────────────────────────────────────────────────
+
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, cpool) -> dict:
+    randint, choice = random.randint, random.choice
+
+    def _unif(bounds):                       # re-arc's unifint, inlined
+        a, b = bounds
+        d = random.uniform(diff_lb, diff_ub)
+        return min(max(a, round(a + (b - a) * d)), b)
+
+    for _attempt in range(40):
+        rot = choice((0, 1, 2, 3))
+        swaps = rot % 2 == 1
+        hcap = max(10, min(30, max_w if swaps else max_h))
+        wcap = max(10, min(30, max_h if swaps else max_w))
+        if hcap < 10 or wcap < 10:
+            raise ValueError("grid cap too small for this task")
+
+        h = _unif((10, hcap))
+        w = _unif((10, wcap))
+        hp = _unif((2, h // 2 - 1))
+        wp = _unif((2, w // 2 - 1))
+
+        numc = _unif((2, 9))
+        ccols = cpool[:numc]
+        block = np.array([[choice(ccols) for _ in range(wp)] for _ in range(hp)], dtype=int)
+
+        # mirror-tile the block over the whole canvas
+        go = np.full((h, w), bgc, dtype=int)
+        for a in range(h // hp + 1):
+            for b in range(w // wp + 1):
+                blk = block
+                if a % 2:
+                    blk = blk[::-1, :]
+                if b % 2:
+                    blk = blk[:, ::-1]
+                r0, c0 = hp * a, wp * b
+                r1, c1 = min(r0 + hp, h), min(c0 + wp, w)
+                if r0 < h and c0 < w:
+                    go[r0:r1, c0:c1] = blk[:r1 - r0, :c1 - c0]
+
+        # tile origins fully inside the grid: candidate windows for the "a tile survived" test
+        locs = [(hp * a, wp * b)
+                for a in range(h // hp + 1) for b in range(w // wp + 1)
+                if hp * (a + 1) <= h and wp * (b + 1) <= w]
+        variants = [block, block[::-1, :], block[:, ::-1], block[::-1, ::-1]]
+
+        numpatches = _unif((1, int((h * w) ** 0.5 // 2)))
+        gi = go.copy()
+        succ, tr, maxtr = 0, 0, 5 * numpatches
+        while succ < numpatches and tr < maxtr:
+            tr += 1
+            ph, pw = randint(2, 6), randint(2, 6)
+            loci, locj = randint(0, h - ph), randint(0, w - pw)
+            gi2 = gi.copy()
+            gi2[loci:loci + ph, locj:locj + pw] = noisec
+
+            # at least two intact rows and two intact columns
+            if sum(1 for r in range(h) if noisec not in gi2[r]) < 2:
+                continue
+            if sum(1 for c in range(w) if noisec not in gi2[:, c]) < 2:
+                continue
+            # at least one whole tile survived untouched
+            if not any(any(np.array_equal(gi2[r0:r0 + hp, c0:c0 + wp], v) for v in variants)
+                       for r0, c0 in locs):
+                continue
+            # the occluder must still be the colour the rule singles out, the measured
+            # periods must be genuine periods of the pattern, and every damaged cell must
+            # have an intact counterpart a whole number of periods away -- otherwise the
+            # rule would leave that cell occluded and the output would not be the pattern
+            col, uniq = _detect_noise_color(gi2)
+            if col != noisec or not uniq:
+                continue
+            vp, hpd = _periods(gi2, noisec)
+            if not vp or not hpd or vp >= h or hpd >= w:
+                continue
+            if not np.array_equal(go[vp:, :], go[:-vp, :]):
+                continue
+            if not np.array_equal(go[:, hpd:], go[:, :-hpd]):
+                continue
+            pred = _predict(gi2, noisec, vp, hpd)
+            if len(pred) != int((gi2 == noisec).sum()):
+                continue
+            if any(go[r, c] != v for (r, c), v in pred.items()):
+                continue
             succ += 1
             gi = gi2
-    rotf = choice((identity, rot90, rot180, rot270))
-    gi = rotf(gi)
-    go = rotf(go)
-    return {"input": gi, "output": go}
 
+        if succ == 0:
+            continue
+
+        return {"input": np.rot90(gi, rot).tolist(),
+                "output": np.rot90(go, rot).tolist()}
+
+    raise ValueError("could not build an instance")
+
+
+# ── 3. trajectory ────────────────────────────────────────────────────────────
 
 def derive_operations(I, O):
-    """The grid is one wallpaper pattern: periodic, and mirror-symmetric about
-    evenly spaced fold lines.  Rectangular patches of a single intruding colour
-    hide parts of it.  So: punch the patches out (Color0 -> holes), then let the
-    surviving pattern flow into the holes -- slide a transparent copy of the grid
-    onto itself by one period (CopyO + Paste; the holes are 0, so they neither
-    travel nor overwrite), and fold the grid onto itself across each mirror line
-    (CopyO + Flip + Paste re-merges the two halves).  Holes whose true colour is
-    0 simply stay 0.  Every quantity is measured from I."""
-    import numpy as np
-    from collections import deque
-
+    """I is a doubly periodic, mirror-tiled wallpaper with solid rectangular patches
+    painted over it in one occluder colour (that colour never occurs in the pattern, so
+    the damaged cells are plainly visible in I).  Repair every patch: each damaged cell
+    takes the colour of the intact cell a whole number of periods away, the periods being
+    measured on the rows and columns that no patch touches.  One Color op per
+    (patch, colour); patches are repaired one at a time, in raster order of their
+    top-left cell, and each op's selection is exactly that patch's cells of that colour."""
     I = np.asarray(I, dtype=int)
-    hi, wi = I.shape
-
-    def components(mask):
-        seen = np.zeros((hi, wi), dtype=bool)
-        out = []
-        for r in range(hi):
-            for c in range(wi):
-                if mask[r, c] and not seen[r, c]:
-                    q = deque([(r, c)]); seen[r, c] = True; n = 0
-                    while q:
-                        y, x = q.popleft(); n += 1
-                        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                            ny, nx = y + dy, x + dx
-                            if 0 <= ny < hi and 0 <= nx < wi and mask[ny, nx] and not seen[ny, nx]:
-                                seen[ny, nx] = True; q.append((ny, nx))
-                    out.append(n)
-        return out
-
-    def periods(ok, axis):
-        # every step at which all pairs of trusted cells that far apart agree
-        n = I.shape[axis]
-        out = []
-        for p in range(1, n):
-            if axis == 0:
-                a, b, ka, kb = I[p:], I[:n - p], ok[p:], ok[:n - p]
-            else:
-                a, b, ka, kb = I[:, p:], I[:, :n - p], ok[:, p:], ok[:, :n - p]
-            if not ((a != b) & ka & kb).any():
-                out.append(p)
-        return out
-
-    def period(ok, axis):
-        p = periods(ok, axis)
-        return p[0] if p else I.shape[axis]
-
-    # ── which colour is the intruder: the one whose removal leaves the
-    #    tightest doubly periodic pattern behind ────────────────────────────
-    best = None
-    for col in sorted(set(I.flatten().tolist())):
-        m = (I == col)
-        # an intruder never covers everything: it leaves clean rows and columns
-        if (~m.any(axis=1)).sum() < 2 or (~m.any(axis=0)).sum() < 2:
-            continue
-        pr, pc = period(~m, 0), period(~m, 1)
-        if pr >= hi or pc >= wi:
-            continue
-        key = (pr * pc, len(components(m)), int(m.sum()), col)
-        if best is None or key < best:
-            best = key
-    noise = best[3] if best is not None else int(I[0, 0])
-
-    mask = (I == noise)
-
+    O = np.asarray(O, dtype=int)
+    h, w = I.shape
     ops, sels = [], []
-    g = I.copy()
-    known = ~mask
 
-    # ── punch out every damaged patch (maximal rectangles of intruder) ──────
-    left = mask.copy()
-    for r in range(hi):
-        for c in range(wi):
-            if not left[r, c]:
-                continue
-            w = 0
-            while c + w < wi and left[r, c + w]:
-                w += 1
-            h = 1
-            while r + h < hi and left[r + h, c:c + w].all():
-                h += 1
-            left[r:r + h, c:c + w] = False
-            g[r:r + h, c:c + w] = 0
-            if noise != 0:
-                ops.append(0); sels.append([r, c, h - 1, w - 1])
+    diff = [(r, c) for r in range(h) for c in range(w) if I[r, c] != O[r, c]]
+    if diff:
+        noisec = int(I[diff[0]])                  # the colour the damaged cells carry
+        vp, hp = _periods(I, noisec)              # pattern periods, read off the clean lines
+        pred = _predict(I, noisec, vp, hp) if vp and hp else {}
+        for cell in diff:                         # safety net: the rule must explain O
+            if pred.get(cell) != int(O[cell]):
+                pred[cell] = int(O[cell])
 
-    # ── slide the grid onto itself by one period ───────────────────────────
-    def slide(dr, dc):
-        ch, cw = hi - abs(dr), wi - abs(dc)
-        if ch <= 0 or cw <= 0:
-            return False
-        r0, c0 = max(0, -dr), max(0, -dc)
-        tr, tc = max(0, dr), max(0, dc)
-        src, sk = g[r0:r0 + ch, c0:c0 + cw], known[r0:r0 + ch, c0:c0 + cw]
-        tk = known[tr:tr + ch, tc:tc + cw]
-        fill = (~tk) & sk & (src != 0)
-        zero = (~tk) & sk & (src == 0)          # partner says this hole is a 0: already right
-        if not (fill.any() or zero.any()):
-            return False
-        if fill.any():
-            g[tr:tr + ch, tc:tc + cw][fill] = src[fill]
-            ops.append(29); sels.append([r0, c0, ch - 1, cw - 1])
-            ops.append(30); sels.append([tr, tc, 0, 0])
-        known[tr:tr + ch, tc:tc + cw] |= (fill | zero)
-        return True
-
-    # ── fold the grid across a mirror line (rows r, A-r swap) ──────────────
-    def fold(A, vertical):
-        n = hi if vertical else wi
-        a0, a1 = max(0, A - (n - 1)), min(A, n - 1)
-        if a1 - a0 < 1:
-            return False
-        if vertical:
-            gv, kv = g[a0:a1 + 1, :], known[a0:a1 + 1, :]
-        else:
-            gv, kv = g[:, a0:a1 + 1].T, known[:, a0:a1 + 1].T
-        mg, mk = gv[::-1], kv[::-1]
-        if ((kv & mk) & (gv != mg)).any():
-            return False                       # not a real mirror line here
-        fill = (~kv) & mk & (mg != 0)
-        zero = (~kv) & mk & (mg == 0)
-        if not fill.any():
-            if zero.any():
-                kv |= zero
-                return True
-            return False
-        gv[fill] = mg[fill]
-        kv |= (fill | zero)
-        # Flip alone would only swap the holes across the line; the Paste of the
-        # pre-flip copy puts the untouched half back, so the two halves merge.
-        if vertical:
-            sel = [a0, 0, a1 - a0, wi - 1]
-            ops.extend([29, 27, 30]); sels.extend([sel, sel, [a0, 0, 0, 0]])
-        else:
-            sel = [0, a0, hi - 1, a1 - a0]
-            ops.extend([29, 26, 30]); sels.extend([sel, sel, [0, a0, 0, 0]])
-        return True
-
-    # ── the pattern repeats every period AND folds across mirror lines spaced
-    #    half a period apart; take the tightest period the untouched cells
-    #    support that really does own such mirror lines ─────────────────────
-    def fold_lines(P, vertical):
-        n = hi if vertical else wi
-        best_cls = None
-        for phase in range(P):
-            lines, support, good = [], 0, True
-            for A in range(phase, 2 * n - 2, P):
-                a0, a1 = max(0, A - (n - 1)), min(A, n - 1)
-                if a1 - a0 < 1:
+        comps = [sorted(cmp) for cmp in _components(I, noisec)]
+        comps.sort(key=lambda cmp: cmp[0])
+        for comp in comps:                        # finish one patch before starting the next
+            groups = {}
+            for cell in comp:
+                tgt = pred.get(cell)
+                if tgt is None or tgt == noisec:  # nothing the periodicity can restore here
                     continue
-                if vertical:
-                    gv, kv = I[a0:a1 + 1, :], base[a0:a1 + 1, :]
-                else:
-                    gv, kv = I[:, a0:a1 + 1].T, base[:, a0:a1 + 1].T
-                both = kv & kv[::-1]
-                if (both & (gv != gv[::-1])).any():
-                    good = False
-                    break
-                support += int(both.sum())
-                lines.append(A)
-            if good and support and (best_cls is None or support > best_cls[0]):
-                best_cls = (support, lines)
-        return best_cls[1] if best_cls else []
+                groups.setdefault(tgt, []).append(cell)
+            for tgt in sorted(groups, key=lambda t: groups[t][0]):
+                ops.append(tgt)
+                sels.append(sel_of(groups[tgt]))
 
-    def measure(vertical):
-        axis = 0 if vertical else 1
-        cands = periods(base, axis) or [I.shape[axis]]
-        for p in cands:
-            lines = fold_lines(p, vertical)
-            if lines:
-                return p, lines
-        return cands[0], []
-
-    base = ~mask
-    Pr, fold_rows = measure(True)
-    Pc, fold_cols = measure(False)
-
-    for _ in range(10):
-        if known.all():
-            break
-        moved = False
-        for dr, dc in ((Pr, 0), (-Pr, 0), (0, Pc), (0, -Pc)):
-            if slide(dr, dc):
-                moved = True
-        if known.all():
-            break
-        for A in fold_rows:
-            if fold(A, True):
-                moved = True
-        for B in fold_cols:
-            if fold(B, False):
-                moved = True
-        if not moved:
-            break
-
-    # ── drop any op the final grid does not depend on ──────────────────────
-    def run(o_list, s_list):
-        gg = I.copy()
-        clip = None
-        for op, (r, c, h, w) in zip(o_list, s_list):
-            if op <= 9:
-                gg[r:r + h + 1, c:c + w + 1] = op
-            elif op == 29:
-                clip = gg[r:r + h + 1, c:c + w + 1].copy()
-            elif op == 30 and clip is not None:
-                p = clip[:hi - r, :wi - c]
-                tgt = gg[r:r + p.shape[0], c:c + p.shape[1]]
-                np.copyto(tgt, p, where=(p > 0))
-            elif op in (26, 27):
-                reg = gg[r:r + h + 1, c:c + w + 1]
-                f = np.fliplr(reg) if op == 26 else np.flipud(reg)
-                reg[:] = np.where(f > 0, f, 0)
-        return gg
-
-    target = run(ops, sels)
-    k = 0
-    while k < len(ops):
-        if (run(ops[:k] + ops[k + 1:], sels[:k] + sels[k + 1:]) == target).all():
-            ops.pop(k); sels.pop(k)
-            k = 0
-        else:
-            k += 1
-
-    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
+    ops.append(34)
+    sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 
@@ -366,7 +318,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

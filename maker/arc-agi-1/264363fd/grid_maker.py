@@ -33,350 +33,205 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+# ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 def sample_colors(num_examples=None) -> dict:
+    """bgc / sqc / linc are three distinct colors (generator: sample(cols, 3));
+    cpcol and nbhcol are each drawn from the remaining colors and MAY coincide."""
     import random
     cols = list(range(10))
-    bgc, sqc, linc, cpcol, nbhcol = random.sample(cols, 5)
-
-    VARIANTS = [{"has_ring": True}, {"has_ring": False}]
-    n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
-    else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-
-    return {"bgc": bgc, "sqc": sqc, "linc": linc, "cpcol": cpcol,
-            "nbhcol": nbhcol, "instance_plan": plan}
+    bgc, sqc, linc = random.sample(cols, 3)
+    remcols = [c for c in cols if c not in (bgc, sqc, linc)]
+    cpcol = random.choice(remcols)
+    nbhcol = random.choice(remcols)
+    return {"bgc": bgc, "sqc": sqc, "linc": linc,
+            "cpcol": cpcol, "nbhcol": nbhcol}
 
 
 def generate(diff_lb, diff_ub, max_h, max_w,
-             bgc=1, sqc=8, linc=3, cpcol=4, nbhcol=6, has_ring=None) -> dict:
-    import random
+             bgc=1, sqc=8, linc=3, cpcol=4, nbhcol=6) -> dict:
+    """Faithful port of generate_264363fd: colors are injected, the hardcoded
+    30 bounds become max_h / max_w, and degenerate draws (no square placed, or
+    a grid whose background is not the dominant / largest-bbox color, which
+    would break the reference rule's own object detection) are re-rolled."""
+    from random import randint, choice, sample
 
-    def _unifint(lb, ub):
-        if ub < lb:
-            ub = lb
-        a = lb + int((ub - lb) * diff_lb)
-        b = lb + int((ub - lb) * diff_ub)
-        if b < a:
-            a, b = b, a
-        a = max(lb, min(ub, a))
-        b = max(lb, min(ub, b))
-        return random.randint(a, b)
+    if max_h < 11 or max_w < 11:
+        raise ValueError("grid too small for task 264363fd")
 
-    if has_ring is None:
-        has_ring = random.choice([True, False])
+    cp = (2, 2)
+    neighs = neighbors(cp)
+    o1 = shift(frozenset({(0, 1), (-1, 1)}), (1, 1))
+    o2 = shift(frozenset({(1, 0), (1, -1)}), (1, 1))
+    o3 = shift(frozenset({(2, 1), (3, 1)}), (1, 1))
+    o4 = shift(frozenset({(1, 2), (1, 3)}), (1, 1))
+    mpr = {o1: (-1, 0), o2: (0, -1), o3: (1, 0), o4: (0, 1)}
+    hbounds = (min(15, max_h), max_h)
+    wbounds = (min(15, max_w), max_w)
 
-    DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-    NEIGH8 = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)]
-
-    hlo = min(15, max_h)
-    wlo = min(15, max_w)
-    h = _unifint(hlo, max_h)
-    w = _unifint(wlo, max_w)
-    h = max(12, min(h, max_h))
-    w = max(12, min(w, max_w))
-
-    for _attempt in range(40):
-        nspikes = random.randint(1, 4)
-        spikes = random.sample(DIRS, nspikes)
-        lns_rel = set()
-        for d in spikes:
-            lns_rel.add((d[0], d[1]))
-            lns_rel.add((2 * d[0], 2 * d[1]))
-        obj_rel = {(0, 0): cpcol}
-        for cell in lns_rel:
-            obj_rel[cell] = linc
-        if has_ring:
-            for cell in NEIGH8:
-                if cell not in lns_rel:
-                    obj_rel[cell] = nbhcol
-
-        gi = [[bgc] * w for _ in range(h)]
-        go = [[bgc] * w for _ in range(h)]
-
-        loci = random.randint(0, h - 5)
-        locj = random.randint(0, w - 5)
-        kctr = (loci + 2, locj + 2)
-        keycells = set()
-        for (dr, dc), col in obj_rel.items():
-            r, c = kctr[0] + dr, kctr[1] + dc
-            gi[r][c] = col
-            keycells.add((r, c))
-
-        blocked = set()
-        for (r, c) in keycells:
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    blocked.add((r + dr, c + dc))
-        inds = set((r, c) for r in range(h) for c in range(w)
-                   if (r, c) not in blocked)
-
-        numsq = _unifint(1, max(1, (h * w) // 100))
+    for _attempt in range(60):
+        h = unifint(diff_lb, diff_ub, hbounds)
+        w = unifint(diff_lb, diff_ub, wbounds)
+        nspikes = randint(1, 4)
+        spikes = sample((o1, o2, o3, o4), nspikes)
+        lns = merge(set(spikes))
+        obj = {(cpcol, cp)} | recolor(linc, lns) | recolor(nbhcol, neighs - lns)
+        loci = randint(0, h - 5)
+        locj = randint(0, w - 5)
+        loc = (loci, locj)
+        gi = canvas(bgc, (h, w))
+        go = canvas(bgc, (h, w))
+        gi = paint(gi, shift(obj, loc))
+        numsq = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 100)))
         succ = 0
         tr = 0
-        maxtr = 10 * numsq + 10
+        maxtr = 10 * numsq
+        inds = ofcolor(gi, bgc) - mapply(neighbors, toindices(shift(obj, loc)))
         while succ < numsq and tr < maxtr:
             tr += 1
-            gh = random.randint(5, h // 2 + 1)
-            gw = random.randint(5, w // 2 + 1)
-            cands = [ij for ij in inds if ij[0] <= h - gh and ij[1] <= w - gw]
-            if not cands:
+            gh = randint(5, h // 2 + 1)
+            gw = randint(5, w // 2 + 1)
+            cands = sfilter(inds, lambda ij: ij[0] <= h - gh and ij[1] <= w - gw)
+            if len(cands) == 0:
                 continue
-            loc = random.choice(sorted(cands))
-            bck = set((loc[0] + i, loc[1] + j) for i in range(gh) for j in range(gw))
-            if not bck <= inds:
-                continue
-
-            ginds = set((i, j) for i in range(gh) for j in range(gw))
-            g1 = [[sqc] * gw for _ in range(gh)]
-            g2 = [[sqc] * gw for _ in range(gh)]
-            lincells = set()
-            noccs = _unifint(1, max(1, (gh * gw) // 25))
-            succ2 = 0
-            tr2 = 0
-            maxtr2 = 5 * noccs + 5
-            while succ2 < noccs and tr2 < maxtr2:
-                tr2 += 1
-                cands2 = [ij for ij in ginds if ij[0] <= gh - 5 and ij[1] <= gw - 5]
-                if not cands2:
-                    break
-                loc2 = random.choice(sorted(cands2))
-                ctr = (loc2[0] + 2, loc2[1] + 2)
-                lns2 = set()
-                for d in spikes:
-                    rr, cc = ctr[0] + d[0], ctr[1] + d[1]
-                    while 0 <= rr < gh and 0 <= cc < gw:
-                        lns2.add((rr, cc))
-                        rr += d[0]
-                        cc += d[1]
-                plcd2i = set((ctr[0] + dr, ctr[1] + dc) for (dr, dc) in obj_rel)
-                if plcd2i <= ginds and lns2 <= (ginds | lincells) and len(lns2 - plcd2i) > 0:
-                    succ2 += 1
-                    nbrs = set()
-                    for (r, c) in plcd2i:
-                        for dr in (-1, 0, 1):
-                            for dc in (-1, 0, 1):
-                                nbrs.add((r + dr, c + dc))
-                    ginds = ((ginds - plcd2i) - nbrs) - lns2
-                    g1[ctr[0]][ctr[1]] = cpcol
-                    for (dr, dc), col in obj_rel.items():
-                        g2[ctr[0] + dr][ctr[1] + dc] = col
-                    for (r, c) in lns2:
-                        g2[r][c] = linc
-                    lincells |= lns2
-
-            if succ2 > 0:
-                succ += 1
-                ob = set((loc[0] + i, loc[1] + j)
-                         for i in range(-1, gh + 1) for j in range(-1, gw + 1))
-                inds -= ob
-                for i in range(gh):
-                    for j in range(gw):
-                        gi[loc[0] + i][loc[1] + j] = g1[i][j]
-                        go[loc[0] + i][loc[1] + j] = g2[i][j]
-
-        if succ > 0:
-            return {'input': tuple(tuple(row) for row in gi),
-                    'output': tuple(tuple(row) for row in go)}
-
-    return {'input': tuple(tuple(row) for row in gi),
-            'output': tuple(tuple(row) for row in go)}
+            loc2p = choice(totuple(cands))
+            g1 = canvas(sqc, (gh, gw))
+            g2 = canvas(sqc, (gh, gw))
+            ginds = asindices(g1)
+            gindsfull = asindices(g1)
+            bck = shift(ginds, loc2p)
+            if bck.issubset(inds):
+                noccs = unifint(diff_lb, diff_ub, (1, max(1, (gh * gw) // 25)))
+                succ2 = 0
+                tr2 = 0
+                maxtr2 = 5 * noccs
+                while succ2 < noccs and tr2 < maxtr2:
+                    tr2 += 1
+                    cands2 = sfilter(ginds, lambda ij: ij[0] <= gh - 5 and ij[1] <= gw - 5)
+                    if len(cands2) == 0:
+                        break
+                    loc2 = choice(totuple(cands2))
+                    lns2 = merge(frozenset({
+                        shoot(add(cp, add(loc2, mpr[spike])), mpr[spike]) for spike in spikes
+                    }))
+                    lns2 = lns2 & gindsfull
+                    plcd2 = shift(obj, loc2)
+                    plcd2i = toindices(plcd2)
+                    if plcd2i.issubset(ginds) and lns2.issubset(ginds | ofcolor(g2, linc)) \
+                            and len(lns2 - plcd2i) > 0:
+                        succ2 += 1
+                        ginds = ((ginds - plcd2i) - mapply(neighbors, plcd2i)) - lns2
+                        g1 = fill(g1, cpcol, {add(cp, loc2)})
+                        g2 = paint(g2, plcd2)
+                        g2 = fill(g2, linc, lns2)
+                if succ2 > 0:
+                    succ += 1
+                    inds = (inds - bck) - outbox(bck)
+                    objfull1 = shift(asobject(g1), loc2p)
+                    objfull2 = shift(asobject(g2), loc2p)
+                    gi = paint(gi, objfull1)
+                    go = paint(go, objfull2)
+        if succ == 0:
+            continue
+        # the rule identifies the background as the most common color AND as the
+        # color of the widest-bounding-box mono object; re-roll if a freak draw
+        # of squares would outvote it
+        if mostcolor(gi) != bgc:
+            continue
+        if mostcolor(argmax(objects(gi, T, F, F), fork(multiply, height, width))) != bgc:
+            continue
+        return {'input': gi, 'output': go}
+    raise ValueError("could not build a valid 264363fd instance")
 
 
 def derive_operations(I, O):
+    """The legend (smallest non-background blob) is a dot with a halo and 1-4
+    two-cell spikes.  Every legend-colored dot inside a plain square grows the
+    same halo, and each spike direction is shot out as a ray to the square's
+    border.  The legend itself is then wiped."""
     import numpy as np
-    from collections import Counter
+    from collections import deque
     try:
         from maker.sel_helpers import sel_of
     except Exception:
         def sel_of(cells):
-            return {"cells": [[int(r), int(c)] for r, c in cells]}
+            uniq = sorted({(int(r), int(c)) for r, c in cells})
+            return {"cells": [[r, c] for r, c in uniq]}
 
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
-    ho, wo = O.shape
+    hi, wi = I.shape
 
-    DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+    def comps(pred, same_color):
+        seen = np.zeros((hi, wi), dtype=bool)
+        out = []
+        for r in range(hi):
+            for c in range(wi):
+                if seen[r, c] or not pred(r, c):
+                    continue
+                col = I[r, c]
+                q = deque([(r, c)])
+                seen[r, c] = True
+                cells = []
+                while q:
+                    y, x = q.popleft()
+                    cells.append((y, x))
+                    for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] and pred(ny, nx):
+                            if (not same_color) or I[ny, nx] == col:
+                                seen[ny, nx] = True
+                                q.append((ny, nx))
+                out.append(cells)
+        return out
 
-    def components(grid, bg):
-        seen = np.zeros((h, w), dtype=bool)
-        comps = []
-        for r in range(h):
-            for c in range(w):
-                if grid[r, c] != bg and not seen[r, c]:
-                    stack = [(r, c)]
-                    seen[r, c] = True
-                    cells = []
-                    while stack:
-                        rr, cc = stack.pop()
-                        cells.append((rr, cc))
-                        for dr, dc in DIRS:
-                            nr, nc = rr + dr, cc + dc
-                            if 0 <= nr < h and 0 <= nc < w and not seen[nr, nc] \
-                                    and grid[nr, nc] != bg:
-                                seen[nr, nc] = True
-                                stack.append((nr, nc))
-                    comps.append(cells)
-        return comps
+    # background = color of the mono component with the largest bounding box
+    best, bgc = -1, int(I[0, 0])
+    for cells in comps(lambda r, c: True, True):
+        rs = [p[0] for p in cells]
+        cs = [p[1] for p in cells]
+        area = (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1)
+        if area > best:
+            best, bgc = area, int(I[cells[0][0], cells[0][1]])
 
-    def bg_ok(bg):
-        comps = components(I, bg)
-        if len(comps) < 2:
-            return None
-        comps.sort(key=len)
-        if len(comps[0]) > 13:
-            return None
-        for comp in comps[1:]:
-            rs = [r for r, _ in comp]
-            cs = [c for _, c in comp]
-            r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
-            if (r1 - r0 + 1) < 5 or (c1 - c0 + 1) < 5:
-                return None
-            if len(comp) != (r1 - r0 + 1) * (c1 - c0 + 1):
-                return None
-        return comps
+    blobs = comps(lambda r, c: I[r, c] != bgc, False)
+    blobs.sort(key=len)
+    legend = blobs[0]                      # smallest blob = the legend key
+    squares = sorted(blobs[1:], key=lambda cs: (min(p[0] for p in cs), min(p[1] for p in cs)))
 
-    # --- background: the canvas colour the key object and the rectangles sit on ---
-    counts = Counter(I.flatten().tolist())
-    bgc = counts.most_common(1)[0][0]
-    comps = None
-    for cand, _n in counts.most_common():
-        got = bg_ok(cand)
-        if got is not None:
-            bgc = cand
-            comps = got
-            break
-    if comps is None:
-        comps = components(I, bgc)
-        comps.sort(key=len)
+    # legend anatomy: 3x3 core (cells with >=2 orthogonal partners) + spike tips
+    lset = set(legend)
+    core = [p for p in legend
+            if sum(((p[0] + dy, p[1] + dx) in lset)
+                   for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1))) > 1]
+    cr = min(p[0] for p in core) + (max(p[0] for p in core) - min(p[0] for p in core) + 1) // 2
+    cc = min(p[1] for p in core) + (max(p[1] for p in core) - min(p[1] for p in core) + 1) // 2
+    cpcol = int(I[cr, cc])
+    nbhcol = int(I[cr - 1, cc - 1])        # a diagonal halo cell is never a spike
+    tips = [p for p in legend if p not in core]
+    linc = int(I[tips[0][0], tips[0][1]])
+    dirs = [((p[0] - cr) // 2, (p[1] - cc) // 2) for p in tips]
+    dirs = [d for d in ((-1, 0), (1, 0), (0, -1), (0, 1)) if d in dirs]
 
     ops, sels = [], []
-    G = I.copy()
 
-    def emit(color, cells):
-        cells = [(int(r), int(c)) for r, c in cells if 0 <= r < h and 0 <= c < w]
-        if not cells:
-            return
-        if all(G[r, c] == color for r, c in cells):
-            return                      # would change nothing -> not an action
-        for r, c in cells:
-            G[r, c] = color
-        ops.append(int(color))
-        sels.append(sel_of(cells))
+    for cells in squares:
+        r0 = min(p[0] for p in cells); r1 = max(p[0] for p in cells)
+        c0 = min(p[1] for p in cells); c1 = max(p[1] for p in cells)
+        marks = sorted(p for p in cells if I[p[0], p[1]] == cpcol)
+        for (mr, mc) in marks:
+            halo = [(mr + dy, mc + dx)
+                    for dy in (-1, 0, 1) for dx in (-1, 0, 1) if (dy, dx) != (0, 0)]
+            halo = [(r, c) for r, c in halo if r0 <= r <= r1 and c0 <= c <= c1]
+            ops.append(nbhcol); sels.append(sel_of(halo))
+            for dy, dx in dirs:
+                ray, r, c = [], mr + dy, mc + dx
+                while r0 <= r <= r1 and c0 <= c <= c1:
+                    ray.append((r, c)); r += dy; c += dx
+                if ray:
+                    ops.append(linc); sels.append(sel_of(ray))
 
-    if not comps:
-        ops.append(34)
-        sels.append(sel_of([(r, c) for r in range(ho) for c in range(wo)]))
-        return ops, sels
-
-    key = comps[0]
-    squares = comps[1:]
-    keyset = set(key)
-    keycol = {(r, c): int(I[r, c]) for (r, c) in key}
-
-    # --- the marker colour: the odd pixel inside each rectangle ---
-    square_info = []
-    marker_colors = Counter()
-    for sq in squares:
-        rs = [r for r, _ in sq]
-        cs = [c for _, c in sq]
-        r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
-        cnt = Counter(int(I[r, c]) for (r, c) in sq)
-        sqcol = cnt.most_common(1)[0][0]
-        markers = sorted([(r, c) for (r, c) in sq if int(I[r, c]) != sqcol])
-        for m in markers:
-            marker_colors[int(I[m[0], m[1]])] += 1
-        square_info.append((r0, c0, r1, c1, sqcol, markers))
-    square_info.sort(key=lambda s: (s[0], s[1]))
-    cpcol = marker_colors.most_common(1)[0][0] if marker_colors else None
-
-    # --- centre of the key object: the hub the arms radiate from ---
-    def center_ok(cr, cc):
-        for (r, c) in keyset:
-            dr, dc = r - cr, c - cc
-            m = max(abs(dr), abs(dc))
-            if m > 2:
-                return False
-            if m == 2:
-                if dr != 0 and dc != 0:
-                    return False
-                if (cr + (dr // 2 if dr else 0), cc + (dc // 2 if dc else 0)) not in keyset:
-                    return False
-        return True
-
-    best, bestscore = None, -1
-    for (r, c) in key:
-        if cpcol is not None and keycol[(r, c)] != cpcol:
-            continue
-        if not center_ok(r, c):
-            continue
-        score = sum(1 for (rr, cc) in key if max(abs(rr - r), abs(cc - c)) == 1)
-        if score > bestscore:
-            bestscore, best = score, (r, c)
-    if best is None:
-        for (r, c) in key:
-            if center_ok(r, c):
-                score = sum(1 for (rr, cc) in key if max(abs(rr - r), abs(cc - c)) == 1)
-                if score > bestscore:
-                    bestscore, best = score, (r, c)
-    if best is None:
-        rs = [r for r, _ in key]
-        cs = [c for _, c in key]
-        best = ((min(rs) + max(rs)) // 2, (min(cs) + max(cs)) // 2)
-    cr, cc = best
-
-    # --- arms (which directions, what colour) and the surrounding ring ---
-    spikes = []
-    for d in DIRS:
-        if (cr + d[0], cc + d[1]) in keyset and (cr + 2 * d[0], cc + 2 * d[1]) in keyset:
-            spikes.append(d)
-    linc = None
-    if spikes:
-        d = spikes[0]
-        linc = keycol[(cr + 2 * d[0], cc + 2 * d[1])]
-
-    ring = []
-    spikeset = set(spikes)
-    for (r, c) in key:
-        dr, dc = r - cr, c - cc
-        m = max(abs(dr), abs(dc))
-        if m == 0 or m >= 2:
-            continue
-        if (dr, dc) in spikeset:
-            continue
-        ring.append(((dr, dc), keycol[(r, c)]))
-
-    # --- stamp the template on every marker, then grow its arms to the rectangle edge ---
-    for (r0, c0, r1, c1, sqcol, markers) in square_info:
-        for (mr, mc) in markers:
-            bycol = {}
-            for (dr, dc), col in ring:
-                rr, ccc = mr + dr, mc + dc
-                if r0 <= rr <= r1 and c0 <= ccc <= c1:
-                    bycol.setdefault(col, []).append((rr, ccc))
-            for col in sorted(bycol):
-                emit(col, bycol[col])
-            if linc is None:
-                continue
-            for d in spikes:
-                line = []
-                rr, ccc = mr + d[0], mc + d[1]
-                while r0 <= rr <= r1 and c0 <= ccc <= c1:
-                    line.append((rr, ccc))
-                    rr += d[0]
-                    ccc += d[1]
-                emit(linc, line)
-
-    # --- the key object has done its job: wipe it back to background ---
-    emit(bgc, key)
-
-    ops.append(34)
-    sels.append(sel_of([(r, c) for r in range(ho) for c in range(wo)]))
+    ops.append(bgc); sels.append(sel_of(legend))   # the key has done its job
+    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
@@ -420,7 +275,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

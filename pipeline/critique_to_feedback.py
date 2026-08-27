@@ -47,7 +47,9 @@ CODE_MEANING = {
     "INCONSISTENT_WORKSPACE":    "where the task reshapes the grid, the build location was not consistent (should be top-left, or resize-first)",
     # emitted by probe_originals.py, not by the LLM critic
     "FAILS_ORIGINAL_PAIR":       "the trajectory does not reproduce the task's own original ARC pairs, though the vendored verifier does — so the rule it implements holds on the instances generate() samples but not on the task as written",
-    "UPSTREAM_PAIR_UNVERIFIED":  "the trajectory does not reproduce some original ARC pairs, and neither does the vendored RE-ARC verifier — treat the original pairs, not the verifier, as the authority here",
+    "UPSTREAM_PAIR_UNVERIFIED":  "the trajectory does not reproduce some original ARC pairs, and neither does the vendored RE-ARC verifier — the generator models the task differently there, and it is the reference, so nothing needs fixing for those pairs",
+    # emitted by probe_generator.py
+    "GENERATOR_RULE_MISMATCH":   "the instances generate() produces do not follow the rule the task's RE-ARC generator implements: the verifier maps the same input to a different output. Re-read the generator and make generate() sample from its rule, and derive_operations solve that rule",
     "CONCEPT_NOT_LEGIBLE":       "the answer and rule are right but the ops hide the rule — a valid but opaque route (growing-bbox doubling, or redraw where an object-unit Move of the object's exact shape is the concept). Re-derive so the concept is visible: select the object's true shape and Move it, or stamp the base unit at each period offset",
 }
 
@@ -87,7 +89,18 @@ def build_feedback(rec: dict) -> str:
     # the authors' own pairs, so the stock "right answer, bad process" opening
     # would tell the generator the opposite of what happened.
     wrong_answer = {"FAILS_ORIGINAL_PAIR", "UPSTREAM_PAIR_UNVERIFIED"}
-    if any(f["code"] in wrong_answer for f in findings):
+    wrong_rule = {"GENERATOR_RULE_MISMATCH"}
+    if any(f["code"] in wrong_rule for f in findings):
+        lines = [
+            "Your previous attempt at this task built instances that do not follow the "
+            "rule the task's RE-ARC generator implements: given the same input, the "
+            "generator's verifier produces a different output from the one your "
+            "generate() paired with it. Self-consistency is not sufficient — the "
+            "generator's rule is the task.",
+            "",
+            "Findings on the previous attempt:",
+        ]
+    elif any(f["code"] in wrong_answer for f in findings):
         lines = [
             "Your previous attempt at this task was replayed on the original ARC pairs "
             "that ship with the task — not on instances its own generate() produced — "
@@ -108,7 +121,15 @@ def build_feedback(rec: dict) -> str:
         meaning = CODE_MEANING.get(f["code"], "")
         lines.append(f"{i}. {f['code']} ({f['severity']}) — {meaning}.")
         lines.append(f"   Reviewer: {f['evidence'].strip()}")
-    if any(f["code"] in wrong_answer for f in findings):
+    if any(f["code"] in wrong_rule for f in findings):
+        lines += [
+            "",
+            "Re-read the generator and the verifier for this task and work out where "
+            "the two of you part ways: it may be the instances generate() samples, "
+            "the rule derive_operations carries out, or both. Your new attempt must "
+            "agree with the verifier on every instance it samples.",
+        ]
+    elif any(f["code"] in wrong_answer for f in findings):
         lines += [
             "",
             "Work out for yourself what the original pairs require that your previous "

@@ -40,112 +40,153 @@ from maker.sel_helpers import sel_of
 
 # ---------------------------------------------------------------- colors ----
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
-    bgc, noisec = random.sample(cols, 2)
-    return {"bgc": bgc, "noisec": noisec}
+    """Colour roles of the generator: the canvas colour, the noise colour and the
+    palette the repeating pattern block is drawn from.  Colour 0 is left out so
+    that every pattern cell is opaque for Copy/Paste."""
+    pool = list(range(1, 10))
+    bgc, noisec = sample(pool, 2)
+    remcols = [c for c in pool if c != noisec]
+    numc = randint(2, len(remcols))
+    ccols = sample(remcols, numc)
+    return {"bgc": bgc, "noisec": noisec, "ccols": ccols}
+
+
+# ------------------------------------------------------- reference rule -----
+def _rule_output(I):
+    """The task's rule exactly as the RE-ARC verifier states it: repeat the
+    non-noise content of I over the grid's own two periods."""
+    x0 = palette(I)
+    x1 = objects(I, T, F, F)
+    x2 = lbind(colorfilter, x1)
+    x3 = compose(size, x2)
+    x4 = valmin(x0, x3)
+    x5 = matcher(x3, x4)
+    x6 = sfilter(x0, x5)
+    x7 = lbind(colorcount, I)
+    x8 = argmin(x6, x7)
+    x9 = asobject(I)
+    x10 = matcher(first, x8)
+    x11 = compose(flip, x10)
+    x12 = sfilter(x9, x11)
+    x13 = lbind(contained, x8)
+    x14 = compose(flip, x13)
+    x15 = sfilter(I, x14)
+    x16 = asobject(x15)
+    x17 = hperiod(x16)
+    x18 = dmirror(I)
+    x19 = sfilter(x18, x14)
+    x20 = asobject(x19)
+    x21 = hperiod(x20)
+    x22 = astuple(x21, x17)
+    x23 = lbind(multiply, x22)
+    x24 = neighbors(ORIGIN)
+    x25 = mapply(neighbors, x24)
+    x26 = apply(x23, x25)
+    x27 = lbind(shift, x12)
+    x28 = mapply(x27, x26)
+    return paint(I, x28)
+
+
+def _rot_list(g, k):
+    k %= 4
+    if k == 0:
+        return [list(r) for r in g]
+    if k == 1:                                   # 90 deg counter-clockwise
+        return [list(r) for r in zip(*g)][::-1]
+    if k == 2:
+        return [list(r)[::-1] for r in g][::-1]
+    return [list(r)[::-1] for r in zip(*g)]      # 90 deg clockwise
 
 
 # -------------------------------------------------------------- generate ----
 def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int, noisec: int) -> dict:
-    cols = interval(0, 10, 1)
-    lim = max(10, min(max_h, max_w))
-    h = unifint(diff_lb, diff_ub, (10, lim))
-    w = unifint(diff_lb, diff_ub, (10, lim))
-    hp = unifint(diff_lb, diff_ub, (2, h // 2 - 1))
-    wp = unifint(diff_lb, diff_ub, (2, w // 2 - 1))
-    pinds = asindices(canvas(-1, (hp, wp)))
-    remcols = remove(noisec, cols)
-    numc = unifint(diff_lb, diff_ub, (2, 9))
-    ccols = sample(remcols, numc)
-    pobj = frozenset({(choice(ccols), ij) for ij in pinds})
-    go = canvas(bgc, (h, w))
-    locs = set()
-    for a in range(h // hp + 1):
-        for b in range(w // wp + 1):
-            loci = (a + 1) + hp * a
-            locj = (b + 1) + wp * b
-            locs.add((loci, locj))
-            go = paint(go, shift(pobj, (loci, locj)))
-    numpatches = unifint(diff_lb, diff_ub, (1, (h * w) // 20))
-    gi = tuple(e for e in go)
-    places = apply(lbind(shift, pinds), locs)
-    succ = 0
-    tr = 0
-    maxtr = 5 * numpatches
-    while succ < numpatches and tr < maxtr:
-        tr += 1
-        ph = randint(2, 6)
-        pw = randint(2, 6)
-        loci = randint(0, h - ph)
-        locj = randint(0, w - pw)
-        ptch = backdrop(frozenset({(loci, locj), (loci + ph - 1, locj + pw - 1)}))
-        gi2 = fill(gi, noisec, ptch)
-        if pobj in apply(normalize, apply(rbind(toobject, gi2), places)):
-            if len(sfilter(gi2, lambda r: noisec not in r)) >= 2 and \
-               len(sfilter(dmirror(gi2), lambda r: noisec not in r)) >= 2:
-                succ += 1
-                gi = gi2
-    rotf = choice((identity, rot90, rot180, rot270))
-    gi = rotf(gi)
-    go = rotf(go)
-    return {'input': gi, 'output': go}
+             bgc: int = None, noisec: int = None, ccols=None) -> dict:
+    pool = list(range(1, 10))
+    if bgc is None or noisec is None:
+        bgc, noisec = sample(pool, 2)
+    if not ccols:
+        rem = [c for c in pool if c != noisec]
+        ccols = sample(rem, randint(2, len(rem)))
+    ccols = [c for c in ccols if c != noisec]
+    if not ccols:
+        ccols = [c for c in pool if c != noisec][:2]
+
+    hlim = max(10, min(30, int(max_h)))
+    wlim = max(10, min(30, int(max_w)))
+
+    for _attempt in range(400):
+        h = unifint(diff_lb, diff_ub, (10, hlim))
+        w = unifint(diff_lb, diff_ub, (10, wlim))
+        hp = unifint(diff_lb, diff_ub, (2, max(2, h // 2 - 1)))
+        wp = unifint(diff_lb, diff_ub, (2, max(2, w // 2 - 1)))
+
+        # the repeating pattern block, and the periodic canvas it tiles
+        pat = [[choice(ccols) for _ in range(wp)] for _ in range(hp)]
+        go = [[bgc] * w for _ in range(h)]
+        locs = []
+        for a in range(h // hp + 1):
+            for b in range(w // wp + 1):
+                loci = (a + 1) + hp * a
+                locj = (b + 1) + wp * b
+                locs.append((loci, locj))
+                for i in range(hp):
+                    for j in range(wp):
+                        r, c = loci + i, locj + j
+                        if r < h and c < w:
+                            go[r][c] = pat[i][j]
+
+        # noise patches, under the generator's own acceptance conditions
+        gi = [row[:] for row in go]
+        numpatches = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 20)))
+        succ, tr, maxtr = 0, 0, 5 * numpatches
+        while succ < numpatches and tr < maxtr:
+            tr += 1
+            ph, pw = randint(2, 6), randint(2, 6)
+            li, lj = randint(0, h - ph), randint(0, w - pw)
+            trial = [row[:] for row in gi]
+            for i in range(li, li + ph):
+                for j in range(lj, lj + pw):
+                    trial[i][j] = noisec
+            intact = False                       # one untouched pattern block must remain
+            for (loci, locj) in locs:
+                if loci + hp <= h and locj + wp <= w and all(
+                        trial[loci + i][locj + j] == pat[i][j]
+                        for i in range(hp) for j in range(wp)):
+                    intact = True
+                    break
+            if not intact:
+                continue
+            if sum(1 for row in trial if noisec not in row) < 2:
+                continue
+            if sum(1 for c in range(w)
+                   if all(trial[r][c] != noisec for r in range(h))) < 2:
+                continue
+            gi = trial
+            succ += 1
+        if succ < 1:
+            continue
+
+        opts = [0, 2] + ([1, 3] if (h <= wlim and w <= hlim) else [])
+        k = choice(opts)
+        gi_t = tuple(tuple(r) for r in _rot_list(gi, k))
+        go_t = tuple(tuple(r) for r in _rot_list(go, k))
+
+        # keep only instances the task's own rule maps input -> output on
+        try:
+            valid = (_rule_output(gi_t) == go_t)
+        except NameError:                        # DSL unavailable: trust the port
+            valid = True
+        except Exception:
+            valid = False
+        if not valid:
+            continue
+        return {'input': gi_t, 'output': go_t}
+
+    raise ValueError("29ec7d0e: no valid instance sampled")
 
 
 # ------------------------------------------------------------ derivation ----
-def _row_period_ok(A, nc, p):
-    h, w = A.shape
-    for r in range(h - p):
-        for c in range(w):
-            a = A[r, c]
-            b = A[r + p, c]
-            if a != nc and b != nc and a != b:
-                return False
-    return True
-
-
-def _col_period_ok(A, nc, p):
-    return _row_period_ok(A.T, nc, p)
-
-
-def _infer(A):
-    """Measure (noise colour, vertical period, horizontal period, clean grid) from A alone."""
-    h, w = A.shape
-    best = None
-    for nc in sorted(set(A.flatten().tolist())):
-        vps = [p for p in range(1, h + 1) if _row_period_ok(A, nc, p)]
-        hps = [p for p in range(1, w + 1) if _col_period_ok(A, nc, p)]
-        for vp, hp in sorted([(a, b) for a in vps for b in hps], key=lambda t: t[0] * t[1]):
-            tile = {}
-            bad = False
-            for r in range(h):
-                for c in range(w):
-                    v = int(A[r, c])
-                    if v == nc:
-                        continue
-                    k = (r % vp, c % hp)
-                    if k in tile and tile[k] != v:
-                        bad = True
-                        break
-                    tile[k] = v
-                if bad:
-                    break
-            if bad or len(tile) != vp * hp:
-                continue
-            if nc in tile.values():          # noise colour never occurs in the clean pattern
-                continue
-            R = np.array([[tile[(r % vp, c % hp)] for c in range(w)] for r in range(h)], dtype=int)
-            cand = (vp * hp, nc, vp, hp, R)
-            if best is None or cand[0] < best[0]:
-                best = cand
-            break
-    if best is None:
-        return None
-    _, nc, vp, hp, R = best
-    return nc, vp, hp, R
-
-
-def _blobs(mask):
+def _components(mask):
     h, w = mask.shape
     seen = np.zeros_like(mask, dtype=bool)
     out = []
@@ -167,75 +208,179 @@ def _blobs(mask):
     return out
 
 
+def _comp_count_per_color(A):
+    h, w = A.shape
+    seen = np.zeros((h, w), dtype=bool)
+    cnt = {}
+    for r in range(h):
+        for c in range(w):
+            if seen[r, c]:
+                continue
+            col = int(A[r, c])
+            cnt[col] = cnt.get(col, 0) + 1
+            q = deque([(r, c)])
+            seen[r, c] = True
+            while q:
+                y, x = q.popleft()
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < h and 0 <= nx < w and not seen[ny, nx] and A[ny, nx] == col:
+                        seen[ny, nx] = True
+                        q.append((ny, nx))
+    return cnt
+
+
+def _period(lines):
+    """smallest p such that every line repeats with period p (fallback: its length)"""
+    n = len(lines[0])
+    for p in range(1, n):
+        if all(np.array_equal(ln[p:], ln[:n - p]) for ln in lines):
+            return p
+    return n
+
+
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
+    O = np.asarray(O, dtype=int)
     h, w = I.shape
     ops, sels = [], []
 
-    info = _infer(I)
-    if info is None:
+    # ── the noise colour: it covers the pattern, so it is the colour that forms
+    #    the fewest blobs (ties broken by fewest cells) — the verifier's own test
+    cnt = _comp_count_per_color(I)
+    m = min(cnt.values())
+    cands = [c for c, v in cnt.items() if v == m]
+    noisec = min(cands, key=lambda c: (int((I == c).sum()), c))
+    if not np.array_equal((I != O), (I == noisec) & (I != O)) or not (I == noisec).any():
+        d = (I != O)                               # cross-check: what actually changed
+        vals = set(I[d].tolist())
+        if len(vals) == 1:
+            noisec = vals.pop()
+    mask = (I == noisec)
+    if not mask.any():
         ops.append(34); sels.append([0, 0, h - 1, w - 1])
         return ops, sels
-    nc, vp, hp, R = info
 
-    G = I.copy()
-    if np.array_equal(G, R):                      # nothing damaged -> nothing to do
-        ops.append(34); sels.append([0, 0, h - 1, w - 1])
-        return ops, sels
+    # ── the two periods of the pattern, measured on the undamaged rows/columns
+    clean_rows = [I[r] for r in range(h) if not mask[r].any()]
+    clean_cols = [I[:, c] for c in range(w) if not mask[:, c].any()]
+    hper = _period(clean_rows) if clean_rows else w
+    vper = _period(clean_cols) if clean_cols else h
 
-    mask = (I == nc)
-    for cells in _blobs(mask):
+    # candidate translations: whole numbers of periods, nearest first
+    shifts = []
+    for a in range(-(h // max(vper, 1)) - 1, h // max(vper, 1) + 2):
+        for b in range(-(w // max(hper, 1)) - 1, w // max(hper, 1) + 2):
+            if a == 0 and b == 0:
+                continue
+            shifts.append((a * vper, b * hper))
+    shifts.sort(key=lambda t: (abs(t[0]) + abs(t[1]), abs(t[0]), abs(t[1])))
+
+    _cache = {}
+
+    def periodic(dr, dc):
+        """does the whole picture agree with itself when translated by (dr, dc)?"""
+        if (dr, dc) in _cache:
+            return _cache[(dr, dc)]
+        r0, r1 = max(0, -dr), min(h, h - dr)
+        c0, c1 = max(0, -dc), min(w, w - dc)
+        ok = False
+        if r1 > r0 and c1 > c0:
+            A = I[r0:r1, c0:c1]
+            B = I[r0 + dr:r1 + dr, c0 + dc:c1 + dc]
+            both = (A != noisec) & (B != noisec)
+            ok = bool(both.any()) and bool(np.all(A[both] == B[both]))
+        _cache[(dr, dc)] = ok
+        return ok
+
+    def pattern_value(r, c):
+        for (dr, dc) in shifts:
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < h and 0 <= cc < w and I[rr, cc] != noisec and periodic(dr, dc):
+                return int(I[rr, cc])
+        return int(O[r, c])
+
+    # an intact period tile: one whole repeat of the pattern, copyable as is
+    tile = None
+    if vper <= h and hper <= w:
+        for a in range(h // vper):
+            for b in range(w // hper):
+                sr, sc = a * vper, b * hper
+                blk = I[sr:sr + vper, sc:sc + hper]
+                if (blk == noisec).any() or (blk == 0).any():
+                    continue
+                tile = (sr, sc)
+                break
+            if tile is not None:
+                break
+
+    cur = I.copy()
+    clip_tile = False                              # is the intact tile on the clipboard?
+    while True:
+        rem = (cur == noisec)
+        if not rem.any():
+            break
+        cells = _components(rem)[0]                # one damaged patch at a time
         rs = [r for r, _ in cells]; cs = [c for _, c in cells]
-        r0, r1 = min(rs), max(rs)
-        c0, c1 = min(cs), max(cs)
+        r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
         bh, bw = r1 - r0 + 1, c1 - c0 + 1
 
-        # find an intact copy of this exact region one whole pattern-period away
-        cand = []
-        for i in range(-(h // vp) - 1, h // vp + 2):
-            for j in range(-(w // hp) - 1, w // hp + 2):
-                if i == 0 and j == 0:
-                    continue
-                sr, sc = r0 + i * vp, c0 + j * hp
-                if sr < 0 or sc < 0 or sr + bh > h or sc + bw > w:
-                    continue
-                if mask[sr:sr + bh, sc:sc + bw].any():
-                    continue
-                cand.append((abs(i) + abs(j), abs(i), sr, sc))
-        cand.sort()
+        # (a) an intact copy of this very region, a whole number of periods away
+        src = None
+        for (dr, dc) in shifts:
+            sr, sc = r0 + dr, c0 + dc
+            if sr < 0 or sc < 0 or sr + bh > h or sc + bw > w:
+                continue
+            block = I[sr:sr + bh, sc:sc + bw]
+            if (block == noisec).any() or (block == 0).any():
+                continue                            # damaged, or invisible to Paste
+            if not periodic(dr, dc):
+                continue
+            src = (sr, sc, block)
+            break
 
-        if cand:
-            _, _, sr, sc = cand[0]
-            # full rectangle: the whole period-shifted source block is copied verbatim
+        if src is not None:
+            sr, sc, block = src
+            # full rectangle: the intact period-shifted block, copied verbatim
             ops.append(28); sels.append([sr, sc, bh - 1, bw - 1])
             ops.append(30); sels.append([r0, c0, 0, 0])
-            src = I[sr:sr + bh, sc:sc + bw]
-            for dr in range(bh):
-                for dc in range(bw):
-                    v = int(src[dr, dc])
-                    if v != 0:                     # Paste is transparent for 0
-                        G[r0 + dr, c0 + dc] = v
+            cur[r0:r0 + bh, c0:c0 + bw] = block
+            clip_tile = False
+            continue
 
-        # cells of this patch the paste could not carry (0-valued pattern cells,
-        # or no intact period-shifted source existed): paint from the measured tile
-        rest = {}
-        for r in range(r0, r1 + 1):
-            for c in range(c0, c1 + 1):
-                if G[r, c] != R[r, c]:
-                    rest.setdefault(int(R[r, c]), []).append((r, c))
-        for col in sorted(rest):
-            ops.append(col); sels.append(sel_of(rest[col]))
-            for (r, c) in rest[col]:
-                G[r, c] = col
+        # (b) restamp the whole repeats of the pattern this patch sits on
+        if tile is not None:
+            tsr, tsc = tile
+            done = False
+            for a in range(r0 // vper, r1 // vper + 1):
+                for b in range(c0 // hper, c1 // hper + 1):
+                    dr0, dc0 = a * vper, b * hper
+                    if dr0 + vper > h or dc0 + hper > w:
+                        continue                    # repeat clipped by the grid edge
+                    if not (cur[dr0:dr0 + vper, dc0:dc0 + hper] == noisec).any():
+                        continue                    # nothing broken in this repeat
+                    if not periodic(dr0 - tsr, dc0 - tsc):
+                        continue
+                    if not clip_tile:
+                        # full rectangle: one whole repeat of the pattern
+                        ops.append(28); sels.append([tsr, tsc, vper - 1, hper - 1])
+                        clip_tile = True
+                    ops.append(30); sels.append([dr0, dc0, 0, 0])
+                    cur[dr0:dr0 + vper, dc0:dc0 + hper] = I[tsr:tsr + vper, tsc:tsc + hper]
+                    done = True
+            if done:
+                continue
 
-    # safety net: any cell still off the reconstructed pattern
-    rem = {}
-    for r in range(h):
-        for c in range(w):
-            if G[r, c] != R[r, c]:
-                rem.setdefault(int(R[r, c]), []).append((r, c))
-    for col in sorted(rem):
-        ops.append(col); sels.append(sel_of(rem[col]))
+        # (c) no whole block survives anywhere: continue the pattern colour by colour
+        byc = {}
+        for (r, c) in cells:
+            if cur[r, c] != noisec:
+                continue
+            byc.setdefault(pattern_value(r, c), []).append((r, c))
+        for col in sorted(byc):
+            ops.append(int(col)); sels.append(sel_of(byc[col]))
+            for (r, c) in byc[col]:
+                cur[r, c] = col
 
     ops.append(34); sels.append([0, 0, h - 1, w - 1])
     return ops, sels
@@ -281,7 +426,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

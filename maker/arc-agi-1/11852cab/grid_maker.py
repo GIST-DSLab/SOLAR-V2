@@ -33,9 +33,90 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
+import random
 from collections import Counter
+
+import numpy as np
+
 from maker.sel_helpers import sel_of
+
+# ── the four concentric "rings" of the 5x5 motif ─────────────────────────────
+_R1 = ((0, 0), (0, 4), (4, 0), (4, 4))          # outer corners
+_R2 = ((2, 0), (0, 2), (4, 2), (2, 4))          # outer edge midpoints
+_R3 = ((1, 1), (3, 1), (1, 3), (3, 3))          # inner corners
+_R4 = ((2, 2),)                                 # centre
+_RINGS_IN_OUT = [                               # inner -> outer, for op emission
+    [(1, 1), (1, 3), (3, 1), (3, 3)],
+    [(0, 2), (2, 0), (2, 4), (4, 2)],
+    [(0, 0), (0, 4), (4, 0), (4, 4)],
+]
+_CORE = [(r, c) for r in range(5) for c in range(5)]
+_PERIM5 = [(r, c) for (r, c) in _CORE if r in (0, 4) or c in (0, 4)]
+_INNER5 = [(r, c) for r in range(1, 4) for c in range(1, 4) if r in (1, 3) or c in (1, 3)]
+_ODD5 = [(r, c) for (r, c) in _CORE if (r + c) % 2 == 1]
+
+
+def _is_motif(I, bgc, i, j):
+    """Exactly the verifier's acceptance test for a 5x5 motif whose ulcorner is (i, j)."""
+    hi, wi = I.shape
+    if i - 1 < 0 or j - 1 < 0 or i + 5 > hi - 1 or j + 5 > wi - 1:
+        return False
+    for c in range(j - 1, j + 6):                      # 7x7 halo must be pure background
+        if I[i - 1, c] != bgc or I[i + 5, c] != bgc:
+            return False
+    for r in range(i - 1, i + 6):
+        if I[r, j - 1] != bgc or I[r, j + 5] != bgc:
+            return False
+    if I[i + 2, j + 2] == bgc:                          # centre lit
+        return False
+    if not any(I[i + r, j + c] != bgc for r, c in _PERIM5):     # outer band used
+        return False
+    if not any(I[i + r, j + c] != bgc for r, c in _INNER5):     # inner band used
+        return False
+    if any(I[i + r, j + c] != bgc for r, c in _ODD5):           # odd parity always empty
+        return False
+    pts = [(r, c) for r, c in _CORE if I[i + r, j + c] != bgc]
+    rs = [p[0] for p in pts]
+    cs = [p[1] for p in pts]
+    return max(rs) - min(rs) == 4 and max(cs) - min(cs) == 4     # spans the full 5x5
+
+
+def _detect(I, bgc):
+    hi, wi = I.shape
+    return [(i, j) for i in range(1, hi - 5) for j in range(1, wi - 5)
+            if _is_motif(I, bgc, i, j)]
+
+
+def _closure(I, bgc):
+    """Symmetric completion of every detected motif; ok=False on colour conflicts."""
+    O = I.copy()
+    assigned = {}
+    ok = True
+    for (i, j) in _detect(I, bgc):
+        for (r, c) in _CORE:
+            v = I[i + r, j + c]
+            if v == bgc:
+                continue
+            for (a, b) in [(r, c), (c, r), (4 - c, 4 - r), (4 - r, c), (r, 4 - c)]:
+                key = (i + a, j + b)
+                if key in assigned and assigned[key] != v:
+                    ok = False
+                assigned[key] = v
+                O[key] = v
+    return O, ok
+
+
+def _detectable(block, bgc):
+    if block[2, 2] == bgc:
+        return False
+    if not any(block[r, c] != bgc for r, c in _PERIM5):
+        return False
+    if not any(block[r, c] != bgc for r, c in _INNER5):
+        return False
+    pts = [(r, c) for r, c in _CORE if block[r, c] != bgc]
+    rs = [p[0] for p in pts]
+    cs = [p[1] for p in pts]
+    return max(rs) - min(rs) == 4 and max(cs) - min(cs) == 4
 
 
 def sample_colors(num_examples=None) -> dict:
@@ -47,23 +128,11 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "ccols": ccols}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, ccols=None) -> dict:
-    cols = interval(0, 10, 1)
-    r1 = ((0, 0), (0, 4), (4, 0), (4, 4))
-    r2 = ((2, 0), (0, 2), (4, 2), (2, 4))
-    r3 = ((1, 1), (3, 1), (1, 3), (3, 3))
-    r4 = ((2, 2),)
-    rings = [r4, r3, r2, r1]
-    bx = backdrop(frozenset(r1))
+def _one(diff_lb, diff_ub, max_h, max_w, bgc, ccols, force=False):
+    rings = [_R4, _R3, _R2, _R1]
+    bx = backdrop(frozenset(_R1))
     h = unifint(diff_lb, diff_ub, (7, max(7, max_h)))
     w = unifint(diff_lb, diff_ub, (7, max(7, max_w)))
-    if bgc is None:
-        bgc = choice(cols)
-    if ccols is None:
-        remcols = remove(bgc, cols)
-        numc = unifint(diff_lb, diff_ub, (1, 9))
-        ccols = sample(remcols, numc)
     ccols = list(ccols)
     gi = canvas(bgc, (h, w))
     go = canvas(bgc, (h, w))
@@ -91,111 +160,88 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
             remrings = plcdrings[1:idx] + plcdrings[idx + 1:]
             remringcols = ringcols[1:idx] + ringcols[idx + 1:]
             numrs = unifint(diff_lb, diff_ub, (1, 2))
+            if idx != 1:
+                # the inner band must carry at least one cell or the motif is
+                # not readable at all (the verifier ignores it entirely)
+                numrs = 2
             locs = sample((0, 1), numrs)
             remrings = [rr for j, rr in enumerate(remrings) if j in locs]
             remringcols = [rr for j, rr in enumerate(remringcols) if j in locs]
+            ncells = [4 - unifint(diff_lb, diff_ub, (0, 3)) for _ in remrings]
+            if force:
+                ncells[0] = min(ncells[0], 3)
             tofillgi = merge(frozenset(
-                recolor(col, frozenset(sample(totuple(remring), 4 - unifint(diff_lb, diff_ub, (0, 3)))))
-                for remring, col in zip(remrings, remringcols)
-            ))
+                recolor(col, frozenset(sample(totuple(remring), n)))
+                for remring, col, n in zip(remrings, remringcols, ncells)))
             tofillgo = merge(frozenset(
-                recolor(col, remring) for remring, col in zip(remrings, remringcols)
-            ))
+                recolor(col, remring) for remring, col in zip(remrings, remringcols)))
             if min(shape(tofillgi)) == 5:
-                succ += 1
-                gi = paint(gi, tofillgi)
-                go = paint(go, tofillgo)
+                cgi = paint(gi, tofillgi)
+                blk = np.array(crop(cgi, loc, (5, 5)))
+                if _detectable(blk, bgc):
+                    succ += 1
+                    gi = cgi
+                    go = paint(go, tofillgo)
+    return gi, go, succ
+
+
+def _fallback(max_h, max_w, bgc, ccols):
+    """Minimal guaranteed-valid instance: one motif with a half-drawn outer ring."""
+    h, w = max(7, min(9, max_h)), max(7, min(9, max_w))
+    ccols = list(ccols)
+    ci, cm, co = (choice(ccols) for _ in range(3))
+    i = randint(1, h - 6)
+    j = randint(1, w - 6)
+    gi = canvas(bgc, (h, w))
+    gi = fill(gi, cm, shift(_R4, (i, j)))
+    gi = fill(gi, ci, shift(_R3, (i, j)))
+    go = fill(gi, co, shift(_R1, (i, j)))
+    gi = fill(gi, co, shift(frozenset({(0, 0), (4, 4)}), (i, j)))
     return {'input': gi, 'output': go}
+
+
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols) -> dict:
+    best = None
+    for attempt in range(80):
+        gi, go, succ = _one(diff_lb, diff_ub, max_h, max_w, bgc, ccols,
+                            force=attempt >= 5)
+        if succ == 0:
+            continue
+        I, G = np.array(gi), np.array(go)
+        if Counter(I.flatten().tolist()).most_common(1)[0][0] != bgc:
+            continue
+        O, ok = _closure(I, bgc)
+        if not ok or not (O == G).all():
+            continue                       # ambiguous / undetectable -> resample
+        if not (I == G).all():
+            return {'input': gi, 'output': go}
+        best = {'input': gi, 'output': go}
+    if best is not None:
+        return best
+    return _fallback(max_h, max_w, bgc, ccols)
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
-
-    # background: the canvas colour the generator paints before placing objects;
-    # objects are sparse lattice dots, so it dominates the grid.
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # concentric rings of a 5x5 object, inner -> outer
-    CENTER = [(2, 2)]
-    RING3 = [(1, 1), (1, 3), (3, 1), (3, 3)]
-    RING2 = [(0, 2), (2, 0), (2, 4), (4, 2)]
-    RING1 = [(0, 0), (0, 4), (4, 0), (4, 4)]
-    LATTICE = set(CENTER) | set(RING3) | set(RING2) | set(RING1)
-
-    def window_ok(r0, c0):
-        # centre dot must be present (generator always draws it)
-        if I[r0 + 2, c0 + 2] == bgc:
-            return None
-        cells = []
-        for dr in range(5):
-            for dc in range(5):
-                if I[r0 + dr, c0 + dc] != bgc:
-                    if (dr, dc) not in LATTICE:
-                        return None
-                    cells.append((dr, dc))
-        # object bbox must be exactly the 5x5 block
-        rs = {d[0] for d in cells}
-        cs = {d[1] for d in cells}
-        if min(rs) != 0 or max(rs) != 4 or min(cs) != 0 or max(cs) != 4:
-            return None
-        # each ring must be single-coloured; at least one outer ring complete
-        info = {}
-        complete = False
-        for name, ring in (("r3", RING3), ("r2", RING2), ("r1", RING1)):
-            present = [(dr, dc) for (dr, dc) in ring if I[r0 + dr, c0 + dc] != bgc]
-            if not present:
-                info[name] = None
-                continue
-            colset = {int(I[r0 + dr, c0 + dc]) for (dr, dc) in present}
-            if len(colset) != 1:
-                return None
-            if len(present) == 4:
-                complete = True
-            info[name] = (colset.pop(), present)
-        if not complete:
-            return None
-        # objects are placed with a clear one-cell margin all around
-        for r in range(r0 - 1, r0 + 6):
-            for c in range(c0 - 1, c0 + 6):
-                if r0 <= r <= r0 + 4 and c0 <= c <= c0 + 4:
-                    continue
-                if 0 <= r < hi and 0 <= c < wi and I[r, c] != bgc:
-                    return None
-        return info
-
-    # locate every 5x5 ring object in I
-    objects = []
-    taken = np.zeros((hi, wi), dtype=bool)
-    for r0 in range(hi - 4):
-        for c0 in range(wi - 4):
-            if taken[r0:r0 + 5, c0:c0 + 5].any():
-                continue
-            info = window_ok(r0, c0)
-            if info is not None:
-                objects.append((r0, c0, info))
-                taken[r0:r0 + 5, c0:c0 + 5] = True
-
     ops, sels = [], []
-    RINGS = (("r3", RING3), ("r2", RING2), ("r1", RING1))
-    # complete each partially drawn ring, inner ring first, one object at a time
-    for (r0, c0, info) in objects:
-        for name, ring in RINGS:
-            entry = info.get(name)
-            if entry is None:
+    # one motif at a time; inside a motif, complete its concentric bands
+    # from the centre outwards.  Every selection is read off I alone.
+    for (i, j) in _detect(I, bgc):
+        for ring in _RINGS_IN_OUT:
+            present = [(r, c) for r, c in ring if I[i + r, j + c] != bgc]
+            if len(present) in (0, 4):          # band unused, or already whole
                 continue
-            col, present = entry
-            missing = [(r0 + dr, c0 + dc) for (dr, dc) in ring
-                       if I[r0 + dr, c0 + dc] == bgc]
-            if not missing:
-                continue
-            ops.append(int(col))
+            col = Counter(int(I[i + r, j + c]) for r, c in present).most_common(1)[0][0]
+            missing = [(i + r, j + c) for (r, c) in ring if (r, c) not in present]
+            ops.append(col)
             sels.append(sel_of(missing))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
     return ops, sels
 
 
@@ -239,7 +285,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

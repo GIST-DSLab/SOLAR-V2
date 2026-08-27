@@ -39,119 +39,305 @@ from collections import Counter
 from maker.sel_helpers import sel_of
 
 
-VARIANTS = [{"center_dot": True}, {"center_dot": False}]
+# --------------------------------------------------------------------------
+# The task rule (re-implementation of verify_4290ef0e), shared by generate()
+# and derive_operations().  Each colour in the input is one "ring" object of a
+# concentric square; rings are ordered by (bbox extent + widest component),
+# oriented so their corner opens down-right, nested at offsets (i, i), and the
+# whole stack is stamped in all four rotations onto a (2k-1)x(2k-1) canvas.
+# --------------------------------------------------------------------------
+
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        a, b = b, a
+    lo = int(a + (b - a) * diff_lb)
+    hi = int(a + (b - a) * diff_ub)
+    lo = max(a, min(b, lo))
+    hi = max(a, min(b, hi))
+    if hi < lo:
+        lo, hi = hi, lo
+    return random.randint(lo, hi)
+
+
+def _normalize(cs):
+    r0 = min(r for r, _ in cs)
+    c0 = min(c for _, c in cs)
+    return frozenset((r - r0, c - c0) for r, c in cs)
+
+
+def _components(cs):
+    cs = set(cs)
+    seen, out = set(), []
+    for cell in sorted(cs):
+        if cell in seen:
+            continue
+        st, comp = [cell], [cell]
+        seen.add(cell)
+        while st:
+            r0, c0 = st.pop()
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                nb = (r0 + dr, c0 + dc)
+                if nb in cs and nb not in seen:
+                    seen.add(nb)
+                    st.append(nb)
+                    comp.append(nb)
+        out.append(comp)
+    return out
+
+
+def _rule(I):
+    """Returns (ring colours outermost->innermost, predicted output, ambiguous?)."""
+    I = np.asarray(I, dtype=int)
+    h, w = I.shape
+    cnt = Counter(I.reshape(-1).tolist())
+    ranked = cnt.most_common()
+    bgc = ranked[0][0]
+    ambiguous = len(ranked) > 1 and ranked[1][1] == ranked[0][1]
+    colors = [c for c in sorted(cnt) if c != bgc]
+    if not colors:
+        return [], I.copy(), True
+
+    cells = {c: [(r, cc) for r in range(h) for cc in range(w) if I[r, cc] == c]
+             for c in colors}
+
+    keys = {}
+    for c in colors:
+        cs = cells[c]
+        rs = [r for r, _ in cs]
+        cl = [x for _, x in cs]
+        bbm = max(max(rs) - min(rs) + 1, max(cl) - min(cl) + 1)
+        mw = max(max(x[1] for x in comp) - min(x[1] for x in comp) + 1
+                 for comp in _components(cs))
+        keys[c] = bbm + mw
+    if len(set(keys.values())) != len(colors):
+        ambiguous = True                       # tie -> DSL order() is arbitrary
+    ordered = sorted(colors, key=lambda c: (-keys[c], c))
+
+    ncol = len(colors)
+    has_unit = any(len(cells[c]) == 1 for c in colors)
+    k = ncol if has_unit else ncol + 1
+    n = 2 * k - 1
+
+    placed = []
+    for i, c in enumerate(ordered):
+        if i >= k:
+            continue
+        s = _normalize(cells[c])
+        H = max(r for r, _ in s) + 1
+        W = max(x for _, x in s) + 1
+        variants = [
+            s,                                                # identity
+            frozenset((r, W - 1 - x) for r, x in s),          # vmirror
+            frozenset((W - 1 - x, H - 1 - r) for r, x in s),  # cmirror
+            frozenset((H - 1 - r, x) for r, x in s),          # hmirror
+        ]
+        best, bs, tied = None, -1, []
+        for cd in variants:
+            cdn = _normalize(cd)
+            sc = int((1, 0) in cdn) + int((0, 1) in cdn)
+            if sc > bs:
+                bs, best, tied = sc, cdn, [cdn]
+            elif sc == bs and cdn not in tied:
+                tied.append(cdn)
+        if len(tied) > 1:
+            ambiguous = True                   # tie -> DSL argmax is arbitrary
+        placed.append((c, frozenset((r + i, x + i) for r, x in best)))
+
+    occupied = set()
+    for _, st in placed:
+        if occupied & st:
+            ambiguous = True                   # overlapping paint order arbitrary
+        occupied |= st
+
+    g = np.full((n, n), bgc, dtype=int)
+
+    def _paint(grid):
+        for col, st in placed:
+            for (r, x) in st:
+                if 0 <= r < n and 0 <= x < n:
+                    grid[r, x] = col
+        return grid
+
+    g = _paint(g)
+    for _ in range(3):
+        g = np.ascontiguousarray(np.rot90(g, k=-1))   # DSL rot90 == clockwise
+        g = _paint(g)
+    return ordered, g, ambiguous
+
+
+# ------------------------------- 1. sample_colors ---------------------------
+
+_VARIANTS = [{"has_center": True}, {"has_center": False}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
-    bgc = random.choice(cols)
+    bgc = random.choice(range(10))
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        ex = [dict(v) for v in VARIANTS]
-        ex += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+    if n_ex >= len(_VARIANTS):
+        ex = [dict(v) for v in _VARIANTS]
+        ex += [dict(random.choice(_VARIANTS)) for _ in range(n_ex - len(_VARIANTS))]
         random.shuffle(ex)
     else:
-        ex = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+        ex = [dict(v) for v in random.sample(_VARIANTS, n_ex)]
     plan = ex + [dict(random.choice(ex))]
     return {"bgc": bgc, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, center_dot=None) -> dict:
-    cols = interval(0, 10, 1)
-    if bgc is None:
-        bgc = choice(cols)
-    if center_dot is None:
-        center_dot = choice(VARIANTS)["center_dot"]
-    dmax = max(2, min(7, max_h // 4, max_w // 4))
+# --------------------------------- 2. generate ------------------------------
+
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, has_center=None) -> dict:
+    cols = list(range(10))
+    d_ub = max(2, min(7, min(max_h, max_w) // 4))
     while True:
-        d = unifint(diff_lb, diff_ub, (2, dmax))
-        h, w = d, d
-        fullh = unifint(diff_lb, diff_ub, (4 * d, max_h))
-        fullw = unifint(diff_lb, diff_ub, (4 * d, max_w))
-        remcols = remove(bgc, cols)
-        ccols = sample(remcols, d)
-        quad = canvas(bgc, (d + 1, d + 1))
+        hc = random.choice((True, False)) if has_center is None else bool(has_center)
+
+        d = _unifint(diff_lb, diff_ub, (2, d_ub))
+        n = 2 * d + 1
+        fullh = _unifint(diff_lb, diff_ub, (min(4 * d, max_h), max_h))
+        fullw = _unifint(diff_lb, diff_ub, (min(4 * d, max_w), max_w))
+        if fullh < n or fullw < n:
+            continue
+
+        remcols = [c for c in cols if c != bgc]
+        ccols = random.sample(remcols, d)
+
+        # nested corner quadrant: colour idx draws an L of length linlen at (idx,idx)
+        quad = [[bgc] * (d + 1) for _ in range(d + 1)]
         for idx, c in enumerate(ccols):
-            linlen = randint(2, w - idx + 1)
-            quad = fill(quad, c, (connect((idx, idx), (idx + linlen - 1, idx))))
-            quad = fill(quad, c, (connect((idx, idx), (idx, idx + linlen - 1))))
-        go = canvas(bgc, (d + 1, 2 * d + 1))
-        qobj1 = asobject(quad)
-        qobj2 = shift(asobject(vmirror(quad)), (0, d))
-        go = paint(go, qobj1)
-        go = paint(go, qobj2)
-        go = vconcat(go, hmirror(go)[1:])
-        if center_dot:
-            go = fill(go, choice(difference(remcols, ccols)), {center(asindices(go))})
-        objs = partition(go)
-        objs = sfilter(objs, lambda o: color(o) != bgc)
-        gi = canvas(bgc, (fullh, fullw))
-        objs = order(objs, width)
-        fullinds = asindices(gi)
-        inds = asindices(gi)
-        fullsuc = True
-        for obj in objs:
-            objn = normalize(obj)
-            obji = toindices(objn)
-            dd = width(obj)
+            linlen = random.randint(2, d - idx + 1)
+            for kk in range(linlen):
+                quad[idx + kk][idx] = c
+                quad[idx][idx + kk] = c
+
+        # mirror the quadrant out into the full concentric square
+        half = [[bgc] * (2 * d + 1) for _ in range(d + 1)]
+        for r in range(d + 1):
+            for c in range(d + 1):
+                half[r][c] = quad[r][c]
+        vq = [row[::-1] for row in quad]
+        for r in range(d + 1):
+            for c in range(d + 1):
+                half[r][d + c] = vq[r][c]
+        go = [row[:] for row in half] + [row[:] for row in half[::-1][1:]]
+
+        if hc:
+            others = [c for c in remcols if c not in ccols]
+            go[d][d] = random.choice(others)
+
+        # scatter every colour-object (whole ring, possibly clipped) on a canvas
+        objs = {}
+        for r in range(n):
+            for c in range(n):
+                v = go[r][c]
+                if v != bgc:
+                    objs.setdefault(v, []).append((r, c))
+        order_objs = sorted(
+            objs.items(),
+            key=lambda kv: max(x[1] for x in kv[1]) - min(x[1] for x in kv[1]) + 1)
+
+        gi = [[bgc] * fullw for _ in range(fullh)]
+        fullinds = {(r, c) for r in range(fullh) for c in range(fullw)}
+        inds = set(fullinds)
+        ok = True
+        for col, ocells in order_objs:
+            objn = sorted(_normalize(ocells))
+            dd = max(x[1] for x in ocells) - min(x[1] for x in ocells) + 1
             dh = max(0, dd // 2 - 1)
-            cands = sfilter(fullinds, lambda ij: ij[0] <= fullh - dd and ij[1] <= fullw - dd)
-            cands = cands | shift(cands, (-dh, 0)) | shift(cands, (0, -dh)) | shift(cands, (dh, 0)) | shift(cands, (0, dh))
-            maxtr = 10
-            tr = 0
-            succ = False
-            if len(cands) == 0:
+            base = [(r, c) for r in range(max(0, fullh - dd + 1))
+                    for c in range(max(0, fullw - dd + 1))]
+            cands = set(base)
+            for sr, sc in ((-dh, 0), (0, -dh), (dh, 0), (0, dh)):
+                cands |= {(r + sr, c + sc) for r, c in base}
+            cands = sorted(cands)
+            if not cands:
+                ok = False
                 break
-            while tr < maxtr and not succ:
-                tr += 1
-                loc = choice(totuple(cands))
-                if (shift(obji, loc) & fullinds).issubset(inds):
+            succ = False
+            for _ in range(10):
+                loc = random.choice(cands)
+                sh = {(r + loc[0], c + loc[1]) for r, c in objn}
+                vis = sh & fullinds
+                if vis and vis <= inds:
                     succ = True
                     break
             if not succ:
-                fullsuc = False
+                ok = False
                 break
-            gi = paint(gi, shift(objn, loc))
-            inds = inds - shift(obji, loc)
-        if not fullsuc:
+            for (r, c) in sh:
+                if 0 <= r < fullh and 0 <= c < fullw:
+                    gi[r][c] = col
+            inds -= sh
+        if not ok:
             continue
-        break
-    return {'input': gi, 'output': go}
 
+        gia = np.array(gi, dtype=int)
+        goa = np.array(go, dtype=int)
+        ordered, pred, amb = _rule(gia)
+        # accept only instances the task's own rule reproduces unambiguously
+        if amb or pred.shape != goa.shape or not np.array_equal(pred, goa):
+            continue
+        if len(set(int(v) for v in gia.reshape(-1))) - 1 != len(objs):
+            continue
+        return {"input": gia.tolist(), "output": goa.tolist()}
+
+
+# ----------------------------- 3. derive_operations -------------------------
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    ho, wo = O.shape
+    h, w = I.shape
+    bgc = int(Counter(I.reshape(-1).tolist()).most_common(1)[0][0])
+
+    ordered, P, _amb = _rule(I)
+    if P.shape != O.shape or not np.array_equal(P, O):   # safety net only
+        P = O
+        present = [c for c in sorted(set(O.reshape(-1).tolist())) if c != bgc]
+
+        def _ext(c):
+            cs = [(r, cc) for r in range(O.shape[0]) for cc in range(O.shape[1])
+                  if O[r, cc] == c]
+            rs = [r for r, _ in cs]
+            cl = [x for _, x in cs]
+            return max(max(rs) - min(rs), max(cl) - min(cl))
+        ordered = sorted(present, key=lambda c: -_ext(c))
+
+    n = P.shape[0]
+
+    # 1. shrink the canvas to an n x n working window (the busiest one, so the
+    #    clear below always has something to clear).  Full-rectangle selection:
+    #    a Resize acts on the whole rectangle by design.
+    best_rc, best_cnt = (0, 0), -1
+    for r in range(h - n + 1):
+        for c in range(w - n + 1):
+            cnt = int(np.count_nonzero(I[r:r + n, c:c + n] != bgc))
+            if cnt > best_cnt:
+                best_cnt, best_rc = cnt, (r, c)
+    R, C = best_rc
+
     ops, sels = [], []
+    ops.append(33); sels.append([R, C, n - 1, n - 1])
 
-    # 1. Shrink the canvas to the output size (keeps I's top-left corner content).
-    ops.append(33)
-    sels.append([0, 0, ho - 1, wo - 1])
+    # 2. lay the background base over the whole new canvas.
+    #    Full-rectangle selection: the entire canvas is the base layer.
+    ops.append(bgc); sels.append([0, 0, n - 1, n - 1])
 
-    # Working grid after the crop is exactly I[:ho, :wo] (zeros stay zero).
-    W = I[:ho, :wo]
+    # 3. draw the concentric rings on top, outermost ring first.
+    drawn = set()
+    for col in ordered:
+        cells = [(r, c) for r in range(n) for c in range(n) if P[r, c] == col]
+        if not cells:
+            continue
+        ops.append(int(col)); sels.append(sel_of(cells))
+        drawn.add(int(col))
+    for col in sorted(set(int(v) for v in P.reshape(-1))):
+        if col == bgc or col in drawn:
+            continue
+        cells = [(r, c) for r in range(n) for c in range(n) if P[r, c] == col]
+        ops.append(int(col)); sels.append(sel_of(cells))
 
-    cr, cc = ho // 2, wo // 2
-    targets = {}
-    for r in range(ho):
-        for c in range(wo):
-            col = int(O[r, c])
-            if W[r, c] != col:
-                targets.setdefault(col, []).append((r, c))
-
-    # Paint the concentric rings from the outermost inward.
-    def radius(col):
-        return max(max(abs(r - cr), abs(c - cc)) for r, c in targets[col])
-
-    for col in sorted(targets, key=radius, reverse=True):
-        ops.append(col)
-        sels.append(sel_of(targets[col]))
-
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34); sels.append([0, 0, n - 1, n - 1])
     return ops, sels
 
 
@@ -195,7 +381,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

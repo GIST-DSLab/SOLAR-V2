@@ -33,302 +33,338 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+from collections import Counter
+import numpy as np
+
+# ---------------------------------------------------------------- helpers ----
+_TF = [
+    ("identity", lambda a: a),
+    ("rot180",   lambda a: np.rot90(a, 2)),
+    ("rot90",    lambda a: np.rot90(a, 3)),   # DSL rot90 == clockwise
+    ("rot270",   lambda a: np.rot90(a, 1)),   # DSL rot270 == counterclockwise
+    ("hmirror",  lambda a: a[::-1, :]),
+    ("vmirror",  lambda a: a[:, ::-1]),
+    ("cmirror",  lambda a: a[::-1, ::-1].T),  # anti-transpose
+    ("dmirror",  lambda a: a.T),              # transpose
+]
+
+
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b <= a:
+        return a
+    d = random.uniform(max(0.0, min(1.0, diff_lb)), max(0.0, min(1.0, diff_ub)))
+    return min(max(a, int(round(a + (b - a) * d))), b)
+
+
+def _components(mask):
+    """4-connected components of a boolean mask -> list of cell lists."""
+    h, w = mask.shape
+    seen = np.zeros((h, w), bool)
+    out = []
+    for r in range(h):
+        for c in range(w):
+            if mask[r, c] and not seen[r, c]:
+                stack = [(r, c)]
+                seen[r, c] = True
+                cells = []
+                while stack:
+                    a, b = stack.pop()
+                    cells.append((a, b))
+                    for da, db in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        na, nb = a + da, b + db
+                        if 0 <= na < h and 0 <= nb < w and mask[na, nb] and not seen[na, nb]:
+                            seen[na, nb] = True
+                            stack.append((na, nb))
+                out.append(cells)
+    return out
+
+
+def _bbox(cells):
+    rs = [r for r, _ in cells]
+    cs = [c for _, c in cells]
+    return min(rs), min(cs), max(rs), max(cs)
+
+
+def _occ(sub, pat):
+    """All top-left positions where pat matches sub exactly."""
+    sh, sw = sub.shape
+    ph, pw = pat.shape
+    hits = []
+    if ph > sh or pw > sw:
+        return hits
+    for i in range(sh - ph + 1):
+        for j in range(sw - pw + 1):
+            if np.array_equal(sub[i:i + ph, j:j + pw], pat):
+                hits.append((i, j))
+    return hits
+
+
+def _analyse(I):
+    """Recover the rule from the input alone.
+
+    Non-background components split into (a) solid two-colour rectangles = the
+    "keys", and (b) the perforated square.  A key's square-coloured cells spell a
+    shape that appears inside the square as a background-coloured notch, in one
+    of the 8 dihedral orientations; the key rectangle is stamped over that notch.
+    """
+    A = np.asarray(I, dtype=int)
+    bg = Counter(A.flatten().tolist()).most_common(1)[0][0]
+    keys, rest = [], []
+    for cells in _components(A != bg):
+        r0, c0, r1, c1 = _bbox(cells)
+        solid = len(cells) == (r1 - r0 + 1) * (c1 - c0 + 1)
+        ncol = len({A[r, c] for r, c in cells})
+        (keys if (solid and ncol == 2) else rest).append(cells)
+    if not rest:
+        return None
+    rest_cells = [p for cells in rest for p in cells]
+    R0, C0, R1, C1 = _bbox(rest_cells)
+    sqc = Counter([int(A[r, c]) for r, c in rest_cells]).most_common(1)[0][0]
+    sub = A[R0:R1 + 1, C0:C1 + 1].copy()
+    out = sub.copy()
+    placements, clean = [], True
+    for cells in keys:
+        kr0, kc0, kr1, kc1 = _bbox(cells)
+        kg = A[kr0:kr1 + 1, kc0:kc1 + 1]
+        others = sorted(set(kg.flatten().tolist()) - {sqc})
+        if len(others) != 1:
+            clean = False
+            continue
+        col = others[0]
+        pat = np.where(kg == sqc, bg, sqc)      # the stencil as it looks in the square
+        found, seen_grids = None, {}
+        for _, f in _TF:
+            p = np.ascontiguousarray(f(pat))
+            sig = (p.shape, p.tobytes())
+            if sig in seen_grids:
+                continue
+            hits = _occ(sub, p)
+            seen_grids[sig] = hits
+            if hits and found is None:
+                found = (p, np.ascontiguousarray(f(kg)), hits)
+        n_matching = sum(1 for v in seen_grids.values() if v)
+        if found is None:
+            clean = False
+            continue
+        p, k, hits = found
+        if n_matching != 1 or len(hits) != 1:
+            clean = False                        # ambiguous for the reference rule
+        r, c = hits[0]
+        out[r:r + k.shape[0], c:c + k.shape[1]] = k
+        placements.append((r, c, p, col, bg, sqc))
+    return {"bg": bg, "sqc": sqc, "origin": (R0, C0), "sub": sub,
+            "out": out, "placements": placements, "clean": clean,
+            "nkeys": len(keys)}
+
+
+# --------------------------------------------------------- sample_colors ----
 def sample_colors(num_examples=None) -> dict:
-    # bgc/sqc are the two colours `sample(cols, 2)` draws in the generator, so both
-    # must be pinned for the whole episode.  bgc is pinned to 0 specifically: that
-    # keeps every square/marker cell non-zero, which is what makes CopyI/Paste
-    # (which treat 0 as "nothing") able to carry a key across the grid intact.
-    # The per-key marker colours stay free — the rule matches shapes, not colours.
-    bgc = 0
-    sqc = random.choice([c for c in range(1, 10)])
+    # bgc and sqc are the two structural roles (canvas / square).  The key
+    # colours are irrelevant to the rule (shape matching only), so they stay free.
+    cols = list(range(10))
+    bgc, sqc = random.sample(cols, 2)
     return {"bgc": bgc, "sqc": sqc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc) -> dict:
-    cols = interval(0, 10, 1)
-    h = unifint(diff_lb, diff_ub, (min(15, max_h), max_h))
-    w = unifint(diff_lb, diff_ub, (min(15, max_w), max_w))
-    sgh = randint(h // 3, h // 3 * 2)
-    sgw = randint(w // 3, w // 3 * 2)
-    remcols = remove(bgc, remove(sqc, cols))
-    gi = canvas(bgc, (h, w))
-    oh = randint(2, sgh // 2)
-    ow = randint(2, sgw // 2)
-    nobjs = unifint(diff_lb, diff_ub, (1, 8))
-    objs = set()
-    cands = asindices(canvas(-1, (oh, ow)))
-    forbidden = set()
-    tr = 0
-    maxtr = 4 * nobjs
+# --------------------------------------------------------------- generate ----
+def _idx_mirror(kind, obj):
+    ui = min(i for i, _ in obj); uj = min(j for _, j in obj)
+    li = max(i for i, _ in obj); lj = max(j for _, j in obj)
+    if kind == 'h':
+        d = ui + li
+        return {(d - i, j) for i, j in obj}
+    if kind == 'v':
+        d = uj + lj
+        return {(i, d - j) for i, j in obj}
+    if kind == 'd':
+        return {(j - uj + ui, i - ui + uj) for i, j in obj}
+    o = _idx_mirror('v', obj)                      # cmirror = v(d(v(obj)))
+    o = _idx_mirror('d', o)
+    return _idx_mirror('v', o)
+
+
+def _normalize(obj):
+    ui = min(i for i, _ in obj); uj = min(j for _, j in obj)
+    return frozenset((i - ui, j - uj) for i, j in obj)
+
+
+def _grid_tf(kind, g):
+    if kind == 'i':
+        return g
+    if kind == 'h':
+        return g[::-1, :]
+    if kind == 'v':
+        return g[:, ::-1]
+    if kind == 'd':
+        return g.T
+    return g[::-1, ::-1].T
+
+
+def _build(diff_lb, diff_ub, max_h, max_w, bgc, sqc):
+    h = _unifint(diff_lb, diff_ub, (min(15, max_h), max_h))
+    w = _unifint(diff_lb, diff_ub, (min(15, max_w), max_w))
+    if h < 12 or w < 12:
+        return None
+    sgh = random.randint(h // 3, h // 3 * 2)
+    sgw = random.randint(w // 3, w // 3 * 2)
+    if sgh < 4 or sgw < 4:
+        return None
+    oh = random.randint(2, sgh // 2)
+    ow = random.randint(2, sgw // 2)
+    nobjs = _unifint(diff_lb, diff_ub, (1, 8))
+
+    # ---- shape pool: connected blobs made symmetric, never a solid rectangle,
+    #      all distinct from one another under every dihedral transform.
+    cands = [(i, j) for i in range(oh) for j in range(ow)]
+    objs, forbidden = [], set()
+    tr, maxtr = 0, 4 * nobjs
     while len(objs) != nobjs and tr < maxtr:
         tr += 1
-        obj = {choice(totuple(cands))}
-        ncells = randint(1, oh * ow - 1)
-        for k in range(ncells - 1):
-            obj.add(choice(totuple((cands - obj) & mapply(neighbors, obj))))
-        obj |= choice((dmirror, cmirror, vmirror, hmirror))(obj)
-        if len(obj) == height(obj) * width(obj):
-            continue
-        obj = frozenset(obj)
-        objn = normalize(obj)
+        obj = {random.choice(cands)}
+        ncells = random.randint(1, oh * ow - 1)
+        for _ in range(ncells - 1):
+            nbrs = set()
+            for i, j in obj:
+                for di in (-1, 0, 1):
+                    for dj in (-1, 0, 1):
+                        if di or dj:
+                            nbrs.add((i + di, j + dj))
+            pool = list((set(cands) - obj) & nbrs)
+            if not pool:
+                break
+            obj.add(random.choice(pool))
+        obj = obj | _idx_mirror(random.choice('dvch'), obj)
+        oi, oj = min(i for i, _ in obj), min(j for _, j in obj)
+        li, lj = max(i for i, _ in obj), max(j for _, j in obj)
+        if len(obj) == (li - oi + 1) * (lj - oj + 1):
+            continue                                # solid rectangle -> no notch
+        objn = _normalize(obj)
         if objn not in forbidden:
-            objs.add(objn)
-        for augmf1 in (identity, dmirror, cmirror, hmirror, vmirror):
-            for augmf2 in (identity, dmirror, cmirror, hmirror, vmirror):
-                forbidden.add(augmf1(augmf2(objn)))
-    tr = 0
-    maxtr = 5 * nobjs
-    succ = 0
-    loci = randint(0, h - sgh)
-    locj = randint(0, w - sgw)
-    bd = backdrop(frozenset({(loci, locj), (loci + sgh - 1, locj + sgw - 1)}))
-    gi = fill(gi, sqc, bd)
-    go = canvas(sqc, (sgh, sgw))
-    goinds = asindices(go)
-    giinds = asindices(gi) - shift(goinds, (loci, locj))
-    giinds = giinds - mapply(neighbors, shift(goinds, (loci, locj)))
-    while succ < nobjs and tr < maxtr and len(objs) > 0:
+            objs.append(objn)
+        for f1 in 'ivdch':
+            for f2 in 'ivdch':
+                o = objn
+                if f2 != 'i':
+                    o = _idx_mirror(f2, o)
+                if f1 != 'i':
+                    o = _idx_mirror(f1, o)
+                forbidden.add(_normalize(o))
+    if not objs:
+        return None
+
+    loci = random.randint(0, h - sgh)
+    locj = random.randint(0, w - sgw)
+    gi = np.full((h, w), bgc, dtype=int)
+    gi[loci:loci + sgh, locj:locj + sgw] = sqc
+    go = np.full((sgh, sgw), sqc, dtype=int)
+
+    gi_free = np.ones((h, w), bool)
+    gi_free[max(0, loci - 1):loci + sgh + 1, max(0, locj - 1):locj + sgw + 1] = False
+    go_free = np.ones((sgh, sgw), bool)
+    remcols = [c for c in range(10) if c not in (bgc, sqc)]
+
+    succ, tr, maxtr = 0, 0, 5 * nobjs
+    while succ < nobjs and tr < maxtr and objs:
         tr += 1
-        obj = choice(totuple(objs))
-        col = choice(remcols)
-        subgi = fill(canvas(col, shape(obj)), sqc, obj)
-        if len(palette(subgi)) == 1:
+        obj = random.choice(objs)
+        col = random.choice(remcols)
+        oi = max(i for i, _ in obj) + 1
+        oj = max(j for _, j in obj) + 1
+        subgi = np.full((oi, oj), col, dtype=int)
+        for i, j in obj:
+            subgi[i, j] = sqc
+        subgo = np.ascontiguousarray(
+            _grid_tf(random.choice('ivdch'), _grid_tf(random.choice('ivdch'), subgi)))
+        ohi, owi = subgi.shape
+        oho, owo = subgo.shape
+        go_cands = [(i, j)
+                    for i in range(sgh - oho + 1) for j in range(sgw - owo + 1)
+                    if go_free[max(0, i - 1):i + oho + 1, max(0, j - 1):j + owo + 1].all()]
+        if not go_cands:
             continue
-        f1 = choice((identity, dmirror, vmirror, cmirror, hmirror))
-        f2 = choice((identity, dmirror, vmirror, cmirror, hmirror))
-        f = compose(f1, f2)
-        subgo = f(subgi)
-        giobj = asobject(subgi)
-        goobj = asobject(subgo)
-        ohi, owi = shape(giobj)
-        oho, owo = shape(goobj)
-        gocands = sfilter(goinds, lambda ij: ij[0] <= sgh - oho and ij[1] <= sgw - owo)
-        if len(gocands) == 0:
+        # the generator's own placement window for the keys (left strip)
+        gi_cands = [(i, j)
+                    for i in range(h - ohi + 1) for j in range(min(owi, w - owi) + 1)
+                    if gi_free[i:i + ohi, j:j + owi].all()]
+        if not gi_cands:
             continue
-        goloc = choice(totuple(gocands))
-        goplcd = shift(goobj, goloc)
-        goplcdi = toindices(goplcd)
-        if goplcdi.issubset(goinds):
-            gicands = sfilter(giinds, lambda ij: ij[0] <= h - ohi and ij[1] <= owi)
-            if len(gicands) == 0:
-                continue
-            giloc = choice(totuple(gicands))
-            giplcd = shift(giobj, giloc)
-            giplcdi = toindices(giplcd)
-            if giplcdi.issubset(giinds):
-                succ += 1
-                remcols = remove(col, remcols)
-                objs = remove(obj, objs)
-                goinds = goinds - goplcdi
-                giinds = (giinds - giplcdi) - mapply(neighbors, giplcdi)
-                gi = paint(gi, giplcd)
-                gi = fill(gi, bgc, sfilter(shift(goplcd, (loci, locj)), lambda cij: cij[0] == sqc))
-                go = paint(go, goplcd)
-    return {'input': gi, 'output': go}
+        gr, gc = random.choice(go_cands)
+        ir, ic = random.choice(gi_cands)
+        gi[ir:ir + ohi, ic:ic + owi] = subgi                 # the key, outside
+        go[gr:gr + oho, gc:gc + owo] = subgo                 # the stamped result
+        region = gi[loci + gr:loci + gr + oho, locj + gc:locj + gc + owo]
+        region[subgo == sqc] = bgc                           # punch the notch
+        gi_free[max(0, ir - 1):ir + ohi + 1, max(0, ic - 1):ic + owi + 1] = False
+        go_free[max(0, gr - 1):gr + oho + 1, max(0, gc - 1):gc + owo + 1] = False
+        objs.remove(obj)
+        remcols.remove(col)
+        succ += 1
+    if succ < 1:
+        return None
+
+    # Keep only instances the reference rule resolves unambiguously.
+    info = _analyse(gi)
+    if info is None or not info["clean"]:
+        return None
+    if info["bg"] != bgc or info["sqc"] != sqc or info["nkeys"] != succ:
+        return None
+    if info["origin"] != (loci, locj) or info["sub"].shape != (sgh, sgw):
+        return None
+    if not np.array_equal(info["out"], go):
+        return None
+    return {"input": gi.tolist(), "output": go.tolist()}
 
 
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, sqc=None, **kwargs) -> dict:
+    if bgc is None or sqc is None:
+        bgc, sqc = random.sample(range(10), 2)
+    for _ in range(400):
+        res = _build(diff_lb, diff_ub, max_h, max_w, bgc, sqc)
+        if res is not None:
+            return res
+    for _ in range(400):                       # easier settings as a fallback
+        res = _build(0.0, 0.3, max_h, max_w, bgc, sqc)
+        if res is not None:
+            return res
+    raise RuntimeError("generation failed")
+
+
+# ------------------------------------------------------- derive_operations ----
 def derive_operations(I, O):
-    # I holds one big square with notches punched out of it, plus a scatter of
-    # small solid two-colour rectangles ("keys").  Each key's marker cells mark
-    # where the square is still solid and its square-coloured cells mark the
-    # notch, so every key fits exactly one notch under one of the 8 symmetries.
-    # O = the square with each key dropped, turned, into its own notch.
-    # So: copy each key out of I, paste it onto the notch, turn it there, crop.
-    from collections import Counter, deque
+    try:
+        from maker.sel_helpers import sel_of
+    except Exception:
+        def sel_of(cells):
+            uniq = sorted({(int(r), int(c)) for r, c in cells})
+            return {"cells": [[r, c] for r, c in uniq]}
 
-    I = np.asarray(I, dtype=int); O = np.asarray(O, dtype=int)
-    hi, wi = I.shape; ho, wo = O.shape
-
-    def components(bg):
-        seen = np.zeros((hi, wi), bool); out = []
-        for r in range(hi):
-            for c in range(wi):
-                if seen[r, c] or I[r, c] == bg: continue
-                q = deque([(r, c)]); seen[r, c] = True; cells = []
-                while q:
-                    a, b = q.popleft(); cells.append((a, b))
-                    for da, db in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        na, nb = a + da, b + db
-                        if 0 <= na < hi and 0 <= nb < wi and not seen[na, nb] and I[na, nb] != bg:
-                            seen[na, nb] = True; q.append((na, nb))
-                out.append(cells)
-        return out
-
-    TRANSFORMS = [
-        ("id",     lambda a: a,                         []),
-        ("flipud", lambda a: np.flipud(a),              [27]),
-        ("fliplr", lambda a: np.fliplr(a),              [26]),
-        ("rot180", lambda a: np.rot90(a, 2),            [26, 27]),
-        ("ccw",    lambda a: np.rot90(a, 1),            [24]),
-        ("cw",     lambda a: np.rot90(a, 3),            [25]),
-        ("dmir",   lambda a: np.flipud(np.rot90(a, 1)), [24, 27]),
-        ("cmir",   lambda a: np.fliplr(np.rot90(a, 1)), [24, 26]),
-    ]
-    FLIPPY = ("id", "flipud", "fliplr", "rot180")
-
-    def rect(r, c, h, w): return (r, c, r + h, c + w)
-    def hits(a, b): return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
-    def cellsof(x): return {(r, c) for r in range(x[0], x[2]) for c in range(x[1], x[3])}
-
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    # Keys are the solid two-colour rectangles; everything else is square.
-    keys, rest = [], []
-    for cells in components(bgc):
-        rs = [p[0] for p in cells]; cs = [p[1] for p in cells]
-        r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
-        pal = {I[a, b] for a, b in cells}
-        if len(cells) == (r1 - r0 + 1) * (c1 - c0 + 1) and len(pal) == 2:
-            keys.append((r0, c0, r1 - r0 + 1, c1 - c0 + 1))
-        else:
-            rest.append((r0, r1, c0, c1, I[cells[0][0], cells[0][1]]))
-    sqc = rest[0][4]
-    r0 = min(x[0] for x in rest); r1 = max(x[1] for x in rest)
-    c0 = min(x[2] for x in rest); c1 = max(x[3] for x in rest)
-
-    def assign(cands, need):
-        order = sorted(range(len(cands)), key=lambda i: len(cands[i]))
-        chosen = [None] * len(cands)
-        def bt(k, used, cov):
-            if k == len(order): return cov.issuperset(need)
-            i = order[k]
-            for cand in cands[i]:
-                rc = rect(cand[2], cand[3], cand[4], cand[5])
-                if any(hits(rc, u) for u in used): continue
-                chosen[i] = cand
-                if bt(k + 1, used + [rc], cov | cellsof(rc)): return True
-            return False
-        return chosen if bt(0, [], set()) else None
-
-    # Place the square (its shape is O's) and solve every key -> notch match at
-    # once: the picks must tile disjointly and together account for every cell
-    # where the square and O disagree.  Matching keys one at a time is ambiguous.
-    picks = board = None
-    for br0 in range(max(0, r1 - ho + 1), min(r0, hi - ho) + 1):
-        for bc0 in range(max(0, c1 - wo + 1), min(c0, wi - wo) + 1):
-            bd = I[br0:br0 + ho, bc0:bc0 + wo]
-            if not np.isin(bd, [sqc, bgc]).all(): continue
-            if ((bd == bgc) & (O != sqc)).any(): continue
-            need = {(r, c) for r in range(ho) for c in range(wo) if bd[r, c] != O[r, c]}
-            cands = []
-            for (sr, sc, h, w) in keys:
-                sub = I[sr:sr + h, sc:sc + w]
-                pat = np.where(sub == sqc, bgc, sqc)   # the notch this key punched
-                lst = []
-                for name, fn, fops in TRANSFORMS:
-                    pf, cf = fn(pat), fn(sub)
-                    ph, pw = pf.shape
-                    for r in range(ho - ph + 1):
-                        for c in range(wo - pw + 1):
-                            if np.array_equal(bd[r:r + ph, c:c + pw], pf) and \
-                               np.array_equal(O[r:r + ph, c:c + pw], cf):
-                                lst.append((name, fops, r, c, ph, pw))
-                cands.append(lst)
-            picks = assign(cands, need)
-            if picks is not None:
-                board = (br0, bc0); break
-        if picks is not None: break
-    br0, bc0 = board
-    board_rect = rect(br0, bc0, ho, wo)
-    dests = [rect(br0 + p[2], bc0 + p[3], p[4], p[5]) for p in picks]
-
-    # ARCLE turns a hs*ws selection about its centre: the object comes back as
-    # ws*hs anchored at (R+(hs-ws)//2, C+(ws-hs)//2).  So a turn needs elbow room
-    # and must not reach into the square.
-    def plan_inplace(src, k, keep):
-        sr, sc, h, w = src
-        own = rect(sr, sc, h, w)
-        sizes = sorted((hs * ws, abs(hs - ws), hs, ws)
-                       for hs in range(h, h + 10) for ws in range(w, w + 10))
-        for _, __, hs, ws in sizes:
-            for R in range(sr - (hs - h), sr + 1):
-                for C in range(sc - (ws - w), sc + 1):
-                    if R < 0 or C < 0 or R + hs > hi or C + ws > wi: continue
-                    free = nz[R:R + hs, C:C + ws].copy()
-                    free[sr - R:sr - R + h, sc - C:sc - C + w] = False
-                    if free.any(): continue
-                    R2, C2 = R + (hs - ws) // 2, C + (ws - hs) // 2
-                    if R2 < 0 or C2 < 0 or R2 + ws > hi or C2 + hs > wi: continue
-                    a0, b0 = sr - R, sc - C
-                    rr, cc = (b0, hs - a0 - h) if k == 3 else (ws - b0 - w, a0)
-                    old, new = rect(R, C, hs, ws), rect(R2 + rr, C2 + cc, w, h)
-                    if any(hits(x, b) for x in (old, new) for b in keep if b != own): continue
-                    return R, C, hs, ws, R2 + rr, C2 + cc, [old, new]
-        return None
-
-    def plan_scratch(src, protect):
-        sr, sc, h, w = src
-        for R in range(hi - h + 1):
-            for C in range(wi - w + 1):
-                R2, C2 = R + (h - w) // 2, C + (w - h) // 2
-                if R2 < 0 or C2 < 0 or R2 + w > hi or C2 + h > wi: continue
-                old, new = rect(R, C, h, w), rect(R2, C2, w, h)
-                if any(hits(x, b) for x in (old, new) for b in protect): continue
-                return R, C, R2, C2, [old, new]
-        return None
-
-    nz = (I != bgc)
-    rot = [i for i, p in enumerate(picks) if p[0] not in FLIPPY]
-    # Last resort for a key too big to be turned anywhere off the square: turn it
-    # on its own notch, landing it from a pad offset by the turn's own shift.
-    pads = {}
-    for i in rot:
-        sr, sc, h, w = keys[i]
-        if plan_scratch(keys[i], [board_rect]) is None:
-            pads[i] = rect(br0 + picks[i][2] - (h - w) // 2,
-                           bc0 + picks[i][3] - (w - h) // 2, h, w)
-    keep = [rect(*k) for k in keys] + [board_rect] + list(pads.values())
-    plan = {}
-    for i in rot:
-        if i in pads: continue
-        got = plan_inplace(keys[i], 3 if picks[i][1][0] == 25 else 1, keep)
-        if got is not None:
-            keep.extend(got[6]); plan[i] = got
-
+    A = np.asarray(I, dtype=int)
+    O = np.asarray(O, dtype=int)
+    ho, wo = O.shape
     ops, sels = [], []
-    order = sorted(range(len(keys)), key=lambda j: j not in pads)
-    for pos, i in enumerate(order):
-        sr, sc, h, w = keys[i]
-        name, fops, dr, dc, ph, pw = picks[i]
-        dr += br0; dc += bc0
-        if name in FLIPPY:
-            # Key keeps its footprint: copy it, drop it on the notch, mirror it
-            # there.  The paste fills the whole box, so the mirror catches
-            # nothing but the key itself.
-            ops.append(28); sels.append([sr, sc, h - 1, w - 1])
-            ops.append(30); sels.append([dr, dc, 0, 0])
-            for o in fops:
-                ops.append(o); sels.append([dr, dc, h - 1, w - 1])
-            continue
-        if i in plan:                       # turn it right where it lies
-            R, C, hs, ws, nr, nc, _ = plan[i]
-        else:
-            if i in pads:
-                R, C = pads[i][0], pads[i][1]
-            else:                           # turn it on spare canvas
-                later = [board_rect] + [plan[j][6][0] for j in rot if j in plan and j > i]
-                R, C, _nr, _nc, _rc = plan_scratch(keys[i], later)
-            hs, ws = h, w
-            ops.append(28); sels.append([sr, sc, h - 1, w - 1])
-            ops.append(30); sels.append([R, C, 0, 0])
-            nr, nc = (dr, dc) if i in pads else (_nr, _nc)
-        ops.append(fops[0]); sels.append([R, C, hs - 1, ws - 1])
-        for o in fops[1:]:
-            ops.append(o); sels.append([nr, nc, w - 1, h - 1])
-        if (nr, nc) != (dr, dc):
-            ops.append(29); sels.append([nr, nc, w - 1, h - 1])
-            ops.append(30); sels.append([dr, dc, 0, 0])
-        else:
-            # The turn emptied the pad cells the key no longer covers; restore
-            # only those the square still needs and nothing later rewrites.
-            done = set()
-            for j in order[pos + 1:]:
-                done |= cellsof(dests[j])
-                if j in pads: done |= cellsof(pads[j])
-            gone = sorted(((cellsof(pads[i]) - cellsof(dests[i])) & cellsof(board_rect)) - done)
-            for (r, c) in gone:
-                ops.append(int(O[r - br0, c - bc0])); sels.append([r, c, 0, 0])
-    ops.append(33); sels.append([br0, bc0, ho - 1, wo - 1])
+
+    info = _analyse(A)
+    R0, C0 = info["origin"]
+    sqc = info["sqc"]
+
+    # Work in input coordinates while the key rectangles are still on screen, so
+    # each notch is filled next to the key that explains it; crop last.
+    for (r, c, pat, col, bg, _sqc) in sorted(info["placements"],
+                                             key=lambda p: (p[0], p[1])):
+        ph, pw = pat.shape
+        hole = [(R0 + r + i, C0 + c + j)
+                for i in range(ph) for j in range(pw) if pat[i, j] == bg]
+        body = [(R0 + r + i, C0 + c + j)
+                for i in range(ph) for j in range(pw) if pat[i, j] != bg]
+        if hole:
+            ops.append(int(sqc)); sels.append(sel_of(hole))   # heal this notch
+        if body:
+            ops.append(int(col)); sels.append(sel_of(body))   # stamp the key body
+
+    # Full-rectangle selection on purpose: crop the canvas down to the square.
+    ops.append(33); sels.append([int(R0), int(C0), ho - 1, wo - 1])
     ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
@@ -373,7 +409,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

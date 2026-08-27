@@ -34,126 +34,215 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
+from random import randint, choice, sample
 import numpy as np
 from maker.sel_helpers import sel_of
 
-SGN_VARIANTS = [(-1,), (1,), (-1, 1)]
-
 
 def sample_colors(num_examples=None) -> dict:
+    # generator samples: bgc, noisec = sample(remove(3, interval(0, 10, 1)), 2)
+    # 3 is the fill color and is hardcoded, so it is not a role here.
     cols = [c for c in range(10) if c != 3]
-    bgc, noisec = random.sample(cols, 2)
-    n_ex = num_examples if num_examples else 3
-    if n_ex >= len(SGN_VARIANTS):
-        examples = [{"sgns_choice": list(v)} for v in SGN_VARIANTS]
-        examples += [{"sgns_choice": list(random.choice(SGN_VARIANTS))}
-                     for _ in range(n_ex - len(SGN_VARIANTS))]
-        random.shuffle(examples)
-    else:
-        examples = [{"sgns_choice": list(v)}
-                    for v in random.sample(SGN_VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "noisec": noisec, "instance_plan": plan}
+    bgc, noisec = sample(cols, 2)
+    return {"bgc": bgc, "noisec": noisec}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, sgns_choice=None) -> dict:
-    if sgns_choice is None:
-        sgns_choice = list(random.choice(SGN_VARIANTS))
-    sgns = tuple(sgns_choice)
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        b = a
+    return randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
 
-    h = unifint(diff_lb, diff_ub, (min(18, max_h), min(30, max_h)))
-    w = unifint(diff_lb, diff_ub, (min(18, max_w), min(30, max_w)))
 
-    lb = int(0.4 * h * w)
-    ub = int(0.5 * h * w)
-    nbgc = unifint(diff_lb, diff_ub, (lb, ub))
-    gi = canvas(noisec, (h, w))
-    inds = totuple(asindices(gi))
-    bgcinds = sample(inds, nbgc)
-    gi = fill(gi, bgc, bgcinds)
-    sinds = asindices(canvas(-1, (3, 3)))
-    bgcf = recolor(bgc, sinds)
-    noisecf = recolor(noisec, sinds)
-    addn = set()
-    addb = set()
-    for occ in occurrences(gi, bgcf):
-        occi, occj = occ
-        addn.add((randint(0, 2) + occi, randint(0, 2) + occj))
-    for occ in occurrences(gi, noisecf):
-        occi, occj = occ
-        addb.add((randint(0, 2) + occi, randint(0, 2) + occj))
-    gi = fill(gi, noisec, addn)
-    gi = fill(gi, bgc, addb)
-    go = tuple(e for e in gi)
+def _rearc_verify(gi):
+    """Faithful reimplementation of verify_a64e4611: pad with bgc, seed 3 along the
+    mid-line of every 3x14 / 14x3 all-bgc block, light up the padding ring, prune
+    dead-end 3s (single cells and dominoes walled in on three sides) in all four
+    orientations 8 times, then trim the padding away."""
+    h = len(gi); w = len(gi[0])
+    vals = [v for r in gi for v in r]
+    bgc = max(set(vals), key=vals.count)
+    H, W = h + 2, w + 2
+    g = [[bgc] * W for _ in range(H)]
+    for r in range(h):
+        row = gi[r]
+        for c in range(w):
+            g[r + 1][c + 1] = row[c]
+    hr = [[0] * W for _ in range(H)]
+    for r in range(H):
+        run = 0; gr = g[r]; hrr = hr[r]
+        for c in range(W):
+            run = run + 1 if gr[c] == bgc else 0
+            hrr[c] = run
+    seeds = set()
+    for i in range(H - 2):
+        a, b, d = hr[i], hr[i + 1], hr[i + 2]
+        for j in range(13, W):
+            if a[j] >= 14 and b[j] >= 14 and d[j] >= 14:
+                for cc in range(j - 12, j):
+                    seeds.add((i + 1, cc))
+    vr = [[0] * W for _ in range(H)]
+    for c in range(W):
+        run = 0
+        for r in range(H):
+            run = run + 1 if g[r][c] == bgc else 0
+            vr[r][c] = run
+    for j in range(W - 2):
+        for i in range(13, H):
+            if vr[i][j] >= 14 and vr[i][j + 1] >= 14 and vr[i][j + 2] >= 14:
+                for rr in range(i - 12, i):
+                    seeds.add((rr, j + 1))
+    for (r, c) in seeds:
+        g[r][c] = 3
+    for c in range(W):
+        g[0][c] = 3; g[H - 1][c] = 3
+    for r in range(H):
+        g[r][0] = 3; g[r][W - 1] = 3
+    for _ in range(8):
+        HH = len(g); WW = len(g[0])
+        hits = []
+        for i in range(HH - 1):
+            r0 = g[i]; r1 = g[i + 1]
+            for j in range(WW - 3):
+                if (r1[j + 1] == 3 and r1[j + 2] == 3 and r0[j + 1] == bgc
+                        and r0[j + 2] == bgc and r1[j] == bgc and r1[j + 3] == bgc):
+                    hits.append((i, j))
+        for (i, j) in hits:
+            g[i + 1][j + 1] = bgc; g[i + 1][j + 2] = bgc
+        hits = []
+        for i in range(HH - 1):
+            r0 = g[i]; r1 = g[i + 1]
+            for j in range(WW - 2):
+                if r1[j + 1] == 3 and r0[j + 1] == bgc and r1[j] == bgc and r1[j + 2] == bgc:
+                    hits.append((i, j))
+        for (i, j) in hits:
+            g[i + 1][j + 1] = bgc
+        g = [list(row) for row in zip(*g[::-1])]
+    return [row[1:-1] for row in g[1:-1]]
 
-    dim = randint(randint(3, 8), 8)
-    locj = randint(3, min(h, w) - dim - 4)
-    spi = choice((0, randint(3, h // 2)))
-    for j in range(locj, locj + dim):
-        ln = connect((spi, j), (h - 1, j))
-        gi = fill(gi, bgc, ln)
-        go = fill(go, bgc, ln)
-    for j in range(locj + 1, locj + dim - 1):
-        ln = connect((spi + 1 if spi > 0 else spi, j), (h - 1, j))
-        go = fill(go, 3, ln)
 
-    startloc = choice((spi, randint(spi + 3, h - 6)))
-    hh = randint(3, min(8, h - startloc - 3))
-    for sgn in sgns:
-        for ii in range(startloc, startloc + hh, 1):
-            ln = shoot((ii, locj), (0, sgn))
-            gi = fill(gi, bgc, ln)
-            go = fill(go, bgc, ln - ofcolor(go, 3))
-    for sgn in sgns:
-        for ii in range(startloc + 1 if startloc > 0 else startloc, startloc + hh - 1, 1):
-            ln = shoot((ii, locj + dim - 2 if sgn == -1 else locj + 1), (0, sgn))
-            go = fill(go, 3, ln)
+def _params(diff_lb, diff_ub, max_h, max_w):
+    """Sample h, w, spi, dim, locj inside the sub-space where the generator's
+    intended output equals what the verifier measures:
+      spi <= h-13   band tall enough (with padding) to seed a 14-long vertical block
+      locj+dim >= 13 / locj <= w-13   left / right arm long enough to seed
+      dim >= 5 unless the band starts at the top edge (a 1- or 2-wide interior with a
+               free top end is pruned away by the dead-end eroder)"""
+    for _ in range(200):
+        h = _unifint(diff_lb, diff_ub, (min(18, max_h), max_h))
+        w = _unifint(diff_lb, diff_ub, (min(18, max_w), max_w))
+        if h < 18 or w < 18:
+            return None
+        spi_hi = min(h // 2, h - 13)
+        spi = 0 if (spi_hi < 3 or choice((0, 1)) == 0) else randint(3, spi_hi)
+        dlo = 3 if spi == 0 else 5
+        dim = randint(randint(dlo, 8), 8)
+        lo = max(3, 13 - dim)
+        hi = min(w - 13, min(h, w) - dim - 4)
+        if lo > hi:
+            continue
+        return h, w, spi, dim, randint(lo, hi)
+    return None
 
-    if len(sgns) == 1 and unifint(diff_lb, diff_ub, (0, 1)) == 1:
-        sgns2 = (-sgns[0],)
+
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec) -> dict:
+    for _attempt in range(80):
+        p = _params(diff_lb, diff_ub, max_h, max_w)
+        if p is None:
+            break
+        h, w, spi, dim, locj = p
+        nbgc = _unifint(diff_lb, diff_ub, (int(0.4 * h * w), int(0.5 * h * w)))
+        gi = [[noisec] * w for _ in range(h)]
+        inds = [(i, j) for i in range(h) for j in range(w)]
+        for (i, j) in sample(inds, nbgc):
+            gi[i][j] = bgc
+        # break up every 3x3 monochrome patch of the noise field
+        addn = set(); addb = set()
+        for i in range(h - 2):
+            for j in range(w - 2):
+                v = gi[i][j]
+                if all(gi[i + a][j + b] == v for a in range(3) for b in range(3)):
+                    if v == bgc:
+                        addn.add((randint(0, 2) + i, randint(0, 2) + j))
+                    else:
+                        addb.add((randint(0, 2) + i, randint(0, 2) + j))
+        for (i, j) in addn:
+            gi[i][j] = noisec
+        for (i, j) in addb:
+            gi[i][j] = bgc
+        go = [row[:] for row in gi]
+        # vertical band: bgc in input, interior filled with 3 in output
+        for j in range(locj, locj + dim):
+            for i in range(spi, h):
+                gi[i][j] = bgc; go[i][j] = bgc
+        for j in range(locj + 1, locj + dim - 1):
+            for i in range(spi + 1 if spi > 0 else spi, h):
+                go[i][j] = 3
+        # horizontal arm(s) shot out of the band, same treatment
+        sgns = choice(((-1,), (1,), (-1, 1)))
         startloc = choice((spi, randint(spi + 3, h - 6)))
-        hh = randint(3, min(8, h - startloc - 3))
-        for sgn in sgns2:
-            for ii in range(startloc, startloc + hh, 1):
-                ln = shoot((ii, locj), (0, sgn))
-                gi = fill(gi, bgc, ln)
-                go = fill(go, bgc, ln - ofcolor(go, 3))
-        for sgn in sgns2:
-            for ii in range(startloc + 1 if startloc > 0 else startloc, startloc + hh - 1, 1):
-                ln = shoot((ii, locj + dim - 2 if sgn == -1 else locj + 1), (0, sgn))
-                go = fill(go, 3, ln)
-
-    return {'input': gi, 'output': go}
+        plan = [(sgns, startloc, randint(3, min(8, h - startloc - 3)))]
+        if len(sgns) == 1 and _unifint(diff_lb, diff_ub, (0, 1)) == 1:
+            st2 = choice((spi, randint(spi + 3, h - 6)))
+            plan.append(((-sgns[0],), st2, randint(3, min(8, h - st2 - 3))))
+        for (ss, st, hh) in plan:
+            for sgn in ss:
+                for ii in range(st, st + hh):
+                    for j in (range(0, locj + 1) if sgn == -1 else range(locj, w)):
+                        gi[ii][j] = bgc
+                        if go[ii][j] != 3:
+                            go[ii][j] = bgc
+            for sgn in ss:
+                for ii in range(st + 1 if st > 0 else st, st + hh - 1):
+                    for j in (range(0, locj + dim - 1) if sgn == -1 else range(locj + 1, w)):
+                        go[ii][j] = 3
+        vals = [v for r in gi for v in r]
+        if max(set(vals), key=vals.count) != bgc:
+            continue  # verifier reads mostcolor as the background; keep it true
+        if _rearc_verify(gi) != go:
+            continue  # noise happened to thicken the structure; resample
+        return {"input": gi, "output": go}
+    raise ValueError("could not build a verifier-consistent instance")
 
 
 def derive_operations(I, O):
+    """The pipe of background color gets its interior painted 3: the vertical band's
+    interior columns, and each horizontal arm's interior rows out to the grid edge.
+    Every region is a solid rectangle, measured from I/O, painted whole with Color3."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     ho, wo = O.shape
-
-    # The only change is: interiors of the cleared corridors become 3.
-    # Those 3-cells form a few solid rectangles (vertical trunk + horizontal arms).
-    target = (O == 3)
-    covered = np.zeros_like(target, dtype=bool)
-
     ops, sels = [], []
-    for r in range(ho):
-        for c in range(wo):
-            if not target[r, c] or covered[r, c]:
-                continue
-            # grow right along this row
-            c1 = c
-            while c1 + 1 < wo and target[r, c1 + 1] and not covered[r, c1 + 1]:
-                c1 += 1
-            # grow down while the whole column span stays 3 and uncovered
-            r1 = r
-            while r1 + 1 < ho and all(target[r1 + 1, cc] and not covered[r1 + 1, cc]
-                                      for cc in range(c, c1 + 1)):
-                r1 += 1
-            covered[r:r1 + 1, c:c1 + 1] = True
-            # selection is exactly this full rectangle -> bbox form is the true cell set
-            ops.append(3)
-            sels.append([r, c, r1 - r, c1 - c])
+
+    # The band always runs to the bottom edge and the arms never reach it,
+    # so the last row exposes exactly the band's interior columns.
+    band_cols = [c for c in range(wo) if O[ho - 1, c] == 3]
+    cb0, cb1 = band_cols[0], band_cols[-1]
+    rb0 = min(r for r in range(ho) if O[r, cb0] == 3)   # band interior's top row
+    ops.append(3)
+    sels.append(sel_of([(r, c) for r in range(rb0, ho) for c in range(cb0, cb1 + 1)]))
+
+    def _runs(rows):
+        out, cur = [], []
+        for r in rows:
+            if cur and r == cur[-1] + 1:
+                cur.append(r)
+            else:
+                if cur:
+                    out.append(cur)
+                cur = [r]
+        if cur:
+            out.append(cur)
+        return out
+
+    # A left arm is the only thing that can put 3 in column 0; it runs from the far
+    # interior column of the band out to the left edge. Mirror image on the right.
+    for rows in _runs([r for r in range(ho) if O[r, 0] == 3]):
+        ops.append(3)
+        sels.append(sel_of([(r, c) for r in rows for c in range(0, cb1 + 1)]))
+    for rows in _runs([r for r in range(ho) if O[r, wo - 1] == 3]):
+        ops.append(3)
+        sels.append(sel_of([(r, c) for r in rows for c in range(cb0, wo)]))
 
     ops.append(34)
     sels.append([0, 0, ho - 1, wo - 1])
@@ -200,7 +289,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

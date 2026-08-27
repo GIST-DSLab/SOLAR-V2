@@ -34,113 +34,165 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-import numpy as np
-from collections import deque
-
-try:
-    from maker.sel_helpers import sel_of
-except Exception:
-    def sel_of(cells):
-        cells = list(cells)
-        rs = [r for r, _ in cells]
-        cs = [c for _, c in cells]
-        return [min(rs), min(cs), max(rs) - min(rs), max(cs) - min(cs)]
+from collections import Counter
 
 
 def sample_colors(num_examples=None) -> dict:
+    # generator: cols = interval(0,10,1) with 2 removed (2 is the reserved fill color)
     cols = [c for c in range(10) if c != 2]
     bgc = random.choice(cols)
+    # The rule keys only on the 4-corner frame pattern, never on which color a
+    # frame uses, so only the background needs to be fixed for the episode.
     return {"bgc": bgc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
-    from dsl import (canvas, asindices, backdrop, fill, sfilter, totuple,
-                     remove, interval)
-    from utils import unifint
-    from random import choice, sample, randint
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, **kwargs) -> dict:
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        if b < a:
+            a, b = b, a
+        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
 
-    cols = remove(2, interval(0, 10, 1))
-    lo_h = min(10, max_h)
-    lo_w = min(10, max_w)
-    h = unifint(diff_lb, diff_ub, (lo_h, max_h))
-    w = unifint(diff_lb, diff_ub, (lo_w, max_w))
-    h = max(h, 5)
-    w = max(w, 5)
+    def rule(gi, bg):
+        # Exact simulation of this task's verifier: sweep every frame size in
+        # 3..6 x 3..6 in ascending-area order (the DSL's product/order); for each
+        # size, find every window whose 4 corners hold one single input color and
+        # whose remaining cells are ALL background, then flood those windows'
+        # inner rectangles with 2.  Fills from a smaller size can invalidate a
+        # larger frame later, so the sweep must stay sequential.
+        g = [list(r) for r in gi]
+        h, w = len(g), len(g[0])
+        fg = set(v for row in gi for v in row if v != bg)
+        sizes = tuple(sorted(frozenset((i, j) for j in (3, 4, 5, 6) for i in (3, 4, 5, 6)),
+                             key=lambda t: t[0] * t[1]))
+        rects = []
+        for dh, dw in sizes:
+            if dh > h or dw > w:
+                continue
+            found = []
+            for i in range(h - dh + 1):
+                for j in range(w - dw + 1):
+                    c = g[i][j]
+                    if c == bg or c not in fg:
+                        continue
+                    if g[i][j + dw - 1] != c or g[i + dh - 1][j] != c or g[i + dh - 1][j + dw - 1] != c:
+                        continue
+                    ok = True
+                    for r in range(i, i + dh):
+                        for cc in range(j, j + dw):
+                            if (r == i or r == i + dh - 1) and (cc == j or cc == j + dw - 1):
+                                continue
+                            if g[r][cc] != bg:
+                                ok = False
+                                break
+                        if not ok:
+                            break
+                    if ok:
+                        found.append((i, j, dh, dw))
+            for (i, j, dh_, dw_) in found:
+                for r in range(i + 1, i + dh_ - 1):
+                    for cc in range(j + 1, j + dw_ - 1):
+                        g[r][cc] = 2
+            rects.extend(found)
+        return g, rects
 
-    remcols = remove(bgc, cols)
+    cols = [c for c in range(10) if c != 2]
+    if bgc is None:
+        bgc = random.choice(cols)
+    h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
+    w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
+    remcols = [c for c in cols if c != bgc]
     numcols = unifint(diff_lb, diff_ub, (1, 8))
-    ccols = sample(remcols, numcols)
+    ccols = random.sample(remcols, numcols)
     numsq = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 20)))
-    succ = 0
-    maxtr = 5 * numsq
-    tr = 0
-    gi = canvas(bgc, (h, w))
-    go = canvas(bgc, (h, w))
-    inds = asindices(gi)
+    gi = [[bgc] * w for _ in range(h)]
+    inds = set((i, j) for i in range(h) for j in range(w))
+    succ, tr, maxtr = 0, 0, 5 * numsq
     while tr < maxtr and succ < numsq:
         tr += 1
-        oh = randint(3, min(5, h))
-        ow = randint(3, min(5, w))
-        cands = sfilter(inds, lambda ij: ij[0] <= h - oh and ij[1] <= w - ow)
+        oh = random.randint(3, 5)
+        ow = random.randint(3, 5)
+        cands = [ij for ij in inds if ij[0] <= h - oh and ij[1] <= w - ow]
         if len(cands) == 0:
             continue
-        loc = choice(totuple(cands))
-        loci, locj = loc
-        sq = backdrop(frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)}))
-        if sq.issubset(inds):
-            inds = inds - sq
+        loci, locj = random.choice(sorted(cands))
+        sq = set((i, j) for i in range(loci, loci + oh) for j in range(locj, locj + ow))
+        if sq <= inds:
+            inds -= sq
             succ += 1
-            col = choice(ccols)
-            crns = frozenset({(loci, locj), (loci, locj + ow - 1),
-                              (loci + oh - 1, locj), (loci + oh - 1, locj + ow - 1)})
-            gi = fill(gi, col, crns)
-            go = fill(go, col, crns)
-            ins = frozenset((r, c) for r in range(loci + 1, loci + oh - 1)
-                            for c in range(locj + 1, locj + ow - 1))
-            go = fill(go, 2, ins)
-    return {'input': gi, 'output': go}
+            col = random.choice(ccols)
+            for (r, c) in ((loci, locj), (loci, locj + ow - 1),
+                           (loci + oh - 1, locj), (loci + oh - 1, locj + ow - 1)):
+                gi[r][c] = col
+    # the output is the verifier's rule applied to the sampled input (this also
+    # covers frames formed incidentally by corners of two different placements)
+    go, _ = rule(gi, bgc)
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
-    I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
+    try:
+        from maker.sel_helpers import sel_of
+    except Exception:
+        def sel_of(cells):
+            return {"cells": [[int(r), int(c)] for r, c in cells]}
+
+    def rule(gi, bg):
+        # same sweep as in generate(): detect corner-frames size by size
+        # (ascending area) on the grid as it stands, filling interiors with 2.
+        g = [list(r) for r in gi]
+        h, w = len(g), len(g[0])
+        fg = set(v for row in gi for v in row if v != bg)
+        sizes = tuple(sorted(frozenset((i, j) for j in (3, 4, 5, 6) for i in (3, 4, 5, 6)),
+                             key=lambda t: t[0] * t[1]))
+        rects = []
+        for dh, dw in sizes:
+            if dh > h or dw > w:
+                continue
+            found = []
+            for i in range(h - dh + 1):
+                for j in range(w - dw + 1):
+                    c = g[i][j]
+                    if c == bg or c not in fg:
+                        continue
+                    if g[i][j + dw - 1] != c or g[i + dh - 1][j] != c or g[i + dh - 1][j + dw - 1] != c:
+                        continue
+                    ok = True
+                    for r in range(i, i + dh):
+                        for cc in range(j, j + dw):
+                            if (r == i or r == i + dh - 1) and (cc == j or cc == j + dw - 1):
+                                continue
+                            if g[r][cc] != bg:
+                                ok = False
+                                break
+                        if not ok:
+                            break
+                    if ok:
+                        found.append((i, j, dh, dw))
+            for (i, j, dh_, dw_) in found:
+                for r in range(i + 1, i + dh_ - 1):
+                    for cc in range(j + 1, j + dw_ - 1):
+                        g[r][cc] = 2
+            rects.extend(found)
+        return g, rects
+
+    I = [[int(v) for v in row] for row in I]
+    O = [[int(v) for v in row] for row in O]
+    ho, wo = len(O), len(O[0])
+    # background = the canvas color the generator paints before dropping corners
+    bgc = Counter(v for row in I for v in row).most_common(1)[0][0]
+    _, rects = rule(I, bgc)
+
     ops, sels = [], []
-
-    # Each 4-corner marker box gets its interior filled with 2.
-    # Interiors are disjoint solid rectangles (boxes never overlap),
-    # so connected components of the I->O diff are exactly those interiors.
-    changed = np.zeros((hi, wi), dtype=bool)
-    for r in range(hi):
-        for c in range(wi):
-            if I[r, c] != O[r, c]:
-                changed[r, c] = True
-
-    seen = np.zeros((hi, wi), dtype=bool)
-    comps = []
-    for r in range(hi):
-        for c in range(wi):
-            if changed[r, c] and not seen[r, c]:
-                q = deque([(r, c)])
-                seen[r, c] = True
-                cells = []
-                while q:
-                    rr, cc = q.popleft()
-                    cells.append((rr, cc))
-                    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        nr, nc = rr + dr, cc + dc
-                        if 0 <= nr < hi and 0 <= nc < wi and changed[nr, nc] and not seen[nr, nc]:
-                            seen[nr, nc] = True
-                            q.append((nr, nc))
-                comps.append(cells)
-
-    comps.sort(key=lambda cs: (min(r for r, _ in cs), min(c for _, c in cs)))
-    for cells in comps:
-        ops.append(2)              # Color2: fill this box interior
+    # one Color2 per detected frame: fill that frame's whole interior region.
+    # Detection order is the rule's own order (small frames first), and a frame's
+    # interior is background at the moment it is filled, so every op paints new cells.
+    for (i, j, dh, dw) in rects:
+        cells = [(r, c) for r in range(i + 1, i + dh - 1) for c in range(j + 1, j + dw - 1)]
+        ops.append(2)
         sels.append(sel_of(cells))
-
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])  # bbox = whole grid, submit
     return ops, sels
 
 
@@ -184,7 +236,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

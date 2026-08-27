@@ -22,6 +22,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -58,6 +59,11 @@ parser.add_argument("--min_grid_dim", nargs=2, type=int, default=[1, 1],
                     help="Min grid size to accept (default 1 1 - no lower bound)")
 parser.add_argument("--parallel",     type=int, default=4,
                     help="Concurrent claude calls (default 4)")
+parser.add_argument("--llm_timeout",  type=int, default=2700,
+                    help="seconds one LLM call may take before it is killed "
+                         "(default 2700). With --attempts 3 a task can spend "
+                         "three of these, so lower it when a round has to fit "
+                         "in a known window")
 parser.add_argument("--save_log",     action="store_true",
                     help="Save full conversation JSON to conv_logs/<task_id>.json")
 parser.add_argument("--rand_seed",    type=int, default=42)
@@ -867,6 +873,18 @@ def call_claude(system: str, user: str, timeout: int = 2700,
         sf.write(system)
         sys_file = sf.name
 
+    # The user prompt goes through a file too, not through a pipe. `claude -p`
+    # waits 3 s for stdin and gives up if nothing has arrived ("no stdin data
+    # received in 3s, proceeding without it"), which then exits 1 with "Input
+    # must be provided". With --parallel this is a coin flip on a loaded box:
+    # four writers, tens of KB each, and a prompt that misses the window is a
+    # task lost for the round. A regular file is readable the moment it opens.
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, encoding="utf-8"
+    ) as uf:
+        uf.write(user)
+        user_file = uf.name
+
     cmd = [
         shutil.which("claude") or "claude", "-p",
         "--system-prompt-file", sys_file,
@@ -877,33 +895,49 @@ def call_claude(system: str, user: str, timeout: int = 2700,
     stdout = stderr = None
     returncode = None
     try:
-        result = subprocess.run(
-            cmd,
-            input=user,
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=timeout,
-        )
-        stdout = result.stdout
-        stderr = result.stderr
-        returncode = result.returncode
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "<no output>").strip()
+        # Not subprocess.run(timeout=...): on a timeout it kills the child and
+        # then calls communicate() again to drain the pipes, and if anything the
+        # CLI spawned still holds stdout that second call blocks forever — with
+        # the timeout already spent, nothing wakes it. One run sat wedged for
+        # three hours that way. Own the process group and kill all of it.
+        with open(user_file, "r", encoding="utf-8") as fh:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=fh,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace",
+                start_new_session=True,
+            )
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+                try:
+                    stdout, stderr = proc.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    stdout = stderr = ""
+                print(f"    claude timed out after {timeout}s")
+                return None
+        returncode = proc.returncode
+        if returncode != 0:
+            detail = (stderr or stdout or "<no output>").strip()
             if "session limit" in detail.lower():
                 first_limit = not CLAUDE_SESSION_LIMIT_REACHED.is_set()
                 CLAUDE_SESSION_LIMIT_REACHED.set()
                 if first_limit:
                     print("    Claude session limit reached; skipping remaining calls until next cycle.")
-            print(f"    claude failed (exit {result.returncode}): {detail[:500]}")
+            print(f"    claude failed (exit {returncode}): {detail[:500]}")
             return None
-        return result.stdout
-    except subprocess.TimeoutExpired:
-        print("    claude timed out")
-        return None
+        return stdout
     except FileNotFoundError:
         print("    ERROR: `claude` CLI not found in PATH")
         return None
     finally:
         os.unlink(sys_file)
+        os.unlink(user_file)
         if log_path:
             with open(log_path, "w", encoding="utf-8") as f:
                 _json.dump({
@@ -1557,7 +1591,8 @@ def process_task(tid: str) -> str:
                   "instead of hardcoding values seen in examples. A correct derive_operations must "
                   "work for ANY valid (I, O) pair this generator can produce."
             )
-        raw = call_llm(system_prompt, cur_user, log_path=log_path)
+        raw = call_llm(system_prompt, cur_user, timeout=args.llm_timeout,
+                       log_path=log_path)
         code = _extract_code(raw) if raw else None
         if not code:
             continue

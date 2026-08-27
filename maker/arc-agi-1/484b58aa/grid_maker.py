@@ -33,175 +33,260 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
 import numpy as np
-from collections import deque, Counter
+
+try:
+    from maker.sel_helpers import sel_of
+except Exception:  # pragma: no cover
+    def sel_of(cells):
+        uniq = sorted({(int(r), int(c)) for r, c in cells})
+        return {"cells": [[r, c] for r, c in uniq]}
 
 
+# ----------------------------------------------------------------- helpers ---
+# The task: a sheared periodic wallpaper is damaged by rectangular patches of one
+# "noise" colour.  The solver identifies that colour (it forms by far the fewest
+# 4-connected components), measures the wallpaper's vertical/horizontal periods
+# from the undamaged rows/columns, and restores every damaged cell from the
+# copies of the pattern living +-1/+-2 periods away.
+
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        a, b = b, a
+    return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
+
+
+def _count_objects(g):
+    """objects(I, T, F, F): univalued, 4-connected, background included."""
+    h, w = g.shape
+    seen = np.zeros((h, w), dtype=bool)
+    cnt = {}
+    for r in range(h):
+        for c in range(w):
+            if seen[r, c]:
+                continue
+            col = int(g[r, c])
+            cnt[col] = cnt.get(col, 0) + 1
+            stack = [(r, c)]
+            seen[r, c] = True
+            while stack:
+                x, y = stack.pop()
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < h and 0 <= ny < w and not seen[nx, ny] and g[nx, ny] == col:
+                        seen[nx, ny] = True
+                        stack.append((nx, ny))
+    return cnt
+
+
+def _noise_color(g):
+    """colour with the fewest connected components (ties broken by fewest cells)."""
+    cnt = _count_objects(g)
+    m = min(cnt.values())
+    cands = sorted([c for c, n in cnt.items() if n == m])
+    return min(cands, key=lambda c: int((g == c).sum())), cands
+
+
+def _hperiod(rows):
+    """smallest p with rows[:, p:] == rows[:, :-p], else the full width."""
+    n, m = rows.shape
+    for p in range(1, m):
+        if np.array_equal(rows[:, p:], rows[:, :m - p]):
+            return p
+    return m
+
+
+def _periods(g, noise):
+    """(vertical, horizontal) period, measured on the undamaged rows / columns."""
+    clean_rows = [r for r in range(g.shape[0]) if not (g[r] == noise).any()]
+    clean_cols = [c for c in range(g.shape[1]) if not (g[:, c] == noise).any()]
+    if not clean_rows or not clean_cols:
+        return None, None
+    return _hperiod(g[:, clean_cols].T), _hperiod(g[clean_rows, :])
+
+
+def _reconstruct(g, noise, vp, hp):
+    """paint g with all its non-noise cells shifted by (a*vp, b*hp), a,b in -2..2."""
+    h, w = g.shape
+    out = g.copy()
+    for a in range(-2, 3):
+        for b in range(-2, 3):
+            dr, dc = a * vp, b * hp
+            r0, r1 = max(0, -dr), min(h, h - dr)
+            c0, c1 = max(0, -dc), min(w, w - dc)
+            if r0 >= r1 or c0 >= c1:
+                continue
+            src = g[r0:r1, c0:c1]
+            msk = src != noise
+            out[r0 + dr:r1 + dr, c0 + dc:c1 + dc][msk] = src[msk]
+    return out
+
+
+# ------------------------------------------------------------ sample_colors --
 def sample_colors(num_examples=None) -> dict:
-    # only the noise colour carries a rule role (it marks the damaged patches);
-    # the pattern colours are irrelevant to the rule, so they stay per-instance.
-    return {"noisec": random.choice(list(range(10)))}
+    # noisec = the damage colour (a fixed role for the whole episode);
+    # ccols_pool = the fixed palette ordering the wallpaper draws its colours from.
+    cols = list(range(10))
+    noisec = random.choice(cols)
+    pool = [c for c in cols if c != noisec]
+    random.shuffle(pool)
+    return {"noisec": noisec, "ccols_pool": pool}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, noisec) -> dict:
-    cols = interval(0, 10, 1)
-    h = unifint(diff_lb, diff_ub, (10, max_h))
-    w = unifint(diff_lb, diff_ub, (10, max_w))
-    hp = unifint(diff_lb, diff_ub, (2, h // 2 - 1))
-    wp = unifint(diff_lb, diff_ub, (2, w // 2 - 1))
-    pinds = asindices(canvas(-1, (hp, wp)))
-    remcols = remove(noisec, cols)
-    numc = unifint(diff_lb, diff_ub, (2, 9))
-    ccols = sample(remcols, numc)
-    pobj = frozenset({(choice(ccols), ij) for ij in pinds})
-    go = canvas(-1, (h, w))
-    locs = set()
-    ofs = randint(1, hp - 1)
-    for a in range(2 * (h // hp + 1)):
-        for b in range(w // wp + 1):
-            loci = hp * a - ofs * b
-            locj = wp * b
-            locs.add((loci, locj))
-            go = paint(go, shift(pobj, (loci, locj)))
-    numpatches = unifint(diff_lb, diff_ub, (1, (h * w) // 20))
-    gi = tuple(e for e in go)
-    places = apply(lbind(shift, pinds), locs)
-    succ = 0
-    tr = 0
-    maxtr = 5 * numpatches
+# ----------------------------------------------------------------- generate --
+def _attempt(diff_lb, diff_ub, max_h, max_w, noisec, ccols_pool, few):
+    k = random.choice((0, 1, 2, 3))                     # final rotation (rotf)
+    if k % 2 == 1:
+        hub, wub = min(30, max_w), min(30, max_h)
+    else:
+        hub, wub = min(30, max_h), min(30, max_w)
+    if hub < 6 or wub < 6:
+        return None
+    h = _unifint(diff_lb, diff_ub, (min(10, hub), hub))
+    w = _unifint(diff_lb, diff_ub, (min(10, wub), wub))
+    hp = _unifint(diff_lb, diff_ub, (2, max(2, h // 2 - 1)))
+    wp = _unifint(diff_lb, diff_ub, (2, max(2, w // 2 - 1)))
+    numc = _unifint(diff_lb, diff_ub, (2, 9))
+    ccols = list(ccols_pool[:numc])
+    ofs = random.randint(1, hp - 1) if hp > 1 else 0
+
+    # sheared tiling of an hp x wp patch: go[i][j] = patt[(i + ofs*(j//wp)) % hp][j % wp]
+    patt = np.array([[random.choice(ccols) for _ in range(wp)] for _ in range(hp)], dtype=int)
+    ii = (np.arange(h)[:, None] + ofs * (np.arange(w)[None, :] // wp)) % hp
+    jj = np.broadcast_to(np.arange(w)[None, :] % wp, (h, w))
+    go = patt[ii, jj]
+
+    places = []                                          # lattice-aligned tile origins
+    for b in range(w // wp):
+        c0 = wp * b
+        for r0 in range((-ofs * b) % hp, h - hp + 1, hp):
+            places.append((r0, c0))
+    if not places:
+        return None
+
+    gi = go.copy()
+    numpatches = 1 if few else _unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 20)))
+    succ, tr, maxtr = 0, 0, 5 * numpatches
     while succ < numpatches and tr < maxtr:
         tr += 1
-        ph = randint(2, 6)
-        pw = randint(2, 6)
-        loci = randint(0, h - ph)
-        locj = randint(0, w - pw)
-        ptch = backdrop(frozenset({(loci, locj), (loci + ph - 1, locj + pw - 1)}))
-        gi2 = fill(gi, noisec, ptch)
-        if pobj in apply(normalize, apply(rbind(toobject, gi2), places)):
-            if len(sfilter(gi2, lambda r: noisec not in r)) >= 2 and len(sfilter(dmirror(gi2), lambda r: noisec not in r)) >= 2:
-                succ += 1
-                gi = gi2
-    rotopts = (identity, rot90, rot180, rot270) if (h <= max_w and w <= max_h) else (identity, rot180)
-    rotf = choice(rotopts)
-    gi = rotf(gi)
-    go = rotf(go)
-    return {'input': gi, 'output': go}
+        ph, pw = random.randint(2, 6), random.randint(2, 6)
+        if ph > h or pw > w:
+            continue
+        r = random.randint(0, h - ph)
+        c = random.randint(0, w - pw)
+        g2 = gi.copy()
+        g2[r:r + ph, c:c + pw] = noisec
+        if not any(not (g2[pr:pr + hp, pc:pc + wp] == noisec).any() for pr, pc in places):
+            continue                                     # one whole tile must stay intact
+        if sum(1 for x in range(h) if not (g2[x] == noisec).any()) < 2:
+            continue                                     # >= 2 undamaged rows
+        if sum(1 for y in range(w) if not (g2[:, y] == noisec).any()) < 2:
+            continue                                     # >= 2 undamaged columns
+        gi = g2
+        succ += 1
+    if succ == 0:
+        return None
+
+    gi, go = np.rot90(gi, k), np.rot90(go, k)
+    H, W = gi.shape
+    if H > max_h or W > max_w:
+        return None
+
+    # the instance must be one the reference solver reproduces exactly
+    nc, cands = _noise_color(gi)
+    if nc != noisec or len(cands) != 1:
+        return None
+    vp, hpd = _periods(gi, noisec)
+    if vp is None:
+        return None
+    if vp < H and not np.array_equal(go[vp:, :], go[:H - vp, :]):
+        return None
+    if hpd < W and not np.array_equal(go[:, hpd:], go[:, :W - hpd]):
+        return None
+    if not np.array_equal(_reconstruct(gi, noisec, vp, hpd), go):
+        return None
+    return {"input": gi.tolist(), "output": go.tolist()}
 
 
+def generate(diff_lb, diff_ub, max_h, max_w, noisec=None, ccols_pool=None, **kwargs) -> dict:
+    if noisec is None:
+        noisec = random.choice(range(10))
+    if ccols_pool is None:
+        ccols_pool = [c for c in range(10) if c != noisec]
+        random.shuffle(ccols_pool)
+    for t in range(400):
+        res = _attempt(diff_lb, diff_ub, max_h, max_w, noisec, ccols_pool, t > 250)
+        if res is not None:
+            return res
+    raise RuntimeError("484b58aa: could not build a valid instance")
+
+
+# ----------------------------------------------------------- derive_operations
 def derive_operations(I, O):
-    # Rule: the grid is one wallpaper pattern repeated on a translation lattice;
-    # solid patches of a single "noise" colour hide parts of it. Each damaged
-    # region is restored by copying the lattice-equivalent intact block of I.
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
     ops, sels = [], []
 
-    diff = (I != O)
-    if not diff.any():
-        ops.append(34); sels.append([0, 0, h - 1, w - 1])
-        return ops, sels
+    noise, _ = _noise_color(I)                 # the damage colour: fewest components
+    vp, hp = _periods(I, noise)                # wallpaper periods from undamaged rows/cols
+    if vp is None:
+        vp, hp = h, w
 
-    noisec = Counter(I[diff].tolist()).most_common(1)[0][0]
-    noise = (I == noisec)
-    clean = ~noise
-
-    def overlap(dr, dc):
-        r0, r1 = max(0, -dr), min(h, h - dr)
-        c0, c1 = max(0, -dc), min(w, w - dc)
-        return r0, r1, c0, c1
-
-    # the pattern's translation lattice, measured from I alone:
-    # shifts under which every pair of intact cells agrees (with real support).
-    lattice = []
-    for dr in range(-h + 1, h):
-        for dc in range(-w + 1, w):
-            if dr == 0 and dc == 0:
-                continue
-            r0, r1, c0, c1 = overlap(dr, dc)
-            if r1 <= r0 or c1 <= c0:
-                continue
-            A = I[r0:r1, c0:c1]
-            B = I[r0 + dr:r1 + dr, c0 + dc:c1 + dc]
-            m = clean[r0:r1, c0:c1] & clean[r0 + dr:r1 + dr, c0 + dc:c1 + dc]
-            if int(m.sum()) < max(20, (r1 - r0) * (c1 - c0) // 8):
-                continue
-            if (A[m] == B[m]).all():
-                lattice.append((abs(dr) + abs(dc), dr, dc))
-    lattice.sort()
-    lattice = lattice[:120]
-
-    # per lattice shift: where an intact source block is available
-    masks = []
-    for _, dr, dc in lattice:
-        m = np.zeros((h, w), bool)
-        r0, r1, c0, c1 = overlap(dr, dc)
-        m[r0:r1, c0:c1] = clean[r0 + dr:r1 + dr, c0 + dc:c1 + dc]
-        masks.append((dr, dc, m))
-
-    # damaged regions as connected blobs
-    seen = np.zeros((h, w), bool)
-    comps = []
+    # what the wallpaper says each damaged cell should be: read it off a copy of the
+    # pattern one or two periods away (all visible in I)
+    target = {}
+    offs = [(a * vp, b * hp) for a in range(-2, 3) for b in range(-2, 3) if (a, b) != (0, 0)]
     for r in range(h):
         for c in range(w):
-            if diff[r, c] and not seen[r, c]:
-                q = deque([(r, c)]); seen[r, c] = True; comp = []
-                while q:
-                    x, y = q.popleft(); comp.append((x, y))
-                    for dx in (-1, 0, 1):
-                        for dy in (-1, 0, 1):
-                            nx, ny = x + dx, y + dy
-                            if 0 <= nx < h and 0 <= ny < w and diff[nx, ny] and not seen[nx, ny]:
-                                seen[nx, ny] = True; q.append((nx, ny))
-                comps.append(sorted(comp))
-
-    remaining = diff.copy()
-    cur = I.copy()
-    for comp in comps:                      # finish one blob before the next
-        while True:
-            todo = [p for p in comp if remaining[p[0], p[1]]]
-            if not todo:
-                break
-            sr, sc = todo[0]
-            ii = np.zeros((h + 1, w + 1), int)
-            ii[1:, 1:] = np.cumsum(np.cumsum(remaining.astype(int), 0), 1)
-            # largest block anchored here whose lattice-shifted source is intact
-            best = None
-            for dr, dc, m in masks:
-                if not m[sr, sc]:
-                    continue
-                maxw = w - sc
-                for r1 in range(sr, h):
-                    if not m[r1, sc]:
-                        break
-                    run = 0
-                    while sc + run < w and m[r1, sc + run]:
-                        run += 1
-                    if run < maxw:
-                        maxw = run
-                    for ww in range(1, maxw + 1):
-                        cov = ii[r1 + 1, sc + ww] - ii[sr, sc + ww] - ii[r1 + 1, sc] + ii[sr, sc]
-                        key = (-cov, (r1 - sr + 1) * ww, abs(dr) + abs(dc))
-                        if best is None or key < best[0]:
-                            best = (key, dr, dc, r1 - sr, ww - 1)
-            if best is None:
-                ops.append(int(O[sr, sc])); sels.append([sr, sc, 0, 0])
-                cur[sr, sc] = O[sr, sc]; remaining[sr, sc] = False
+            if I[r, c] != noise:
                 continue
-            _, dr, dc, dh, dw = best
-            src = I[sr + dr:sr + dr + dh + 1, sc + dc:sc + dc + dw + 1]
-            tgt = cur[sr:sr + dh + 1, sc:sc + dw + 1]
-            # clear first only where the source carries 0 (Paste is transparent there)
-            if ((src == 0) & (tgt != 0)).any():
-                ops.append(0); sels.append([sr, sc, dh, dw])
-                tgt[:] = 0
-            if ((src != 0) & (tgt != src)).any():
-                ops.append(28); sels.append([sr + dr, sc + dc, dh, dw])   # CopyI intact block
-                ops.append(30); sels.append([sr, sc, 0, 0])               # Paste over damage
-                tgt[src != 0] = src[src != 0]
-            remaining[sr:sr + dh + 1, sc:sc + dw + 1] = False
+            val = None
+            for dr, dc in offs:
+                sr, sc = r - dr, c - dc
+                if 0 <= sr < h and 0 <= sc < w and I[sr, sc] != noise:
+                    val = int(I[sr, sc])
+                    break
+            if val is None or val != int(O[r, c]):
+                val = int(O[r, c])             # safety net; the read-off already agrees
+            if val != noise:
+                target[(r, c)] = val
 
-    ops.append(34); sels.append([0, 0, h - 1, w - 1])
+    # work patch by patch: each connected blob of noise is one damaged region
+    seen, regions = set(), []
+    for r in range(h):
+        for c in range(w):
+            if I[r, c] != noise or (r, c) in seen:
+                continue
+            stack, comp = [(r, c)], []
+            seen.add((r, c))
+            while stack:
+                x, y = stack.pop()
+                comp.append((x, y))
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < h and 0 <= ny < w and (nx, ny) not in seen and I[nx, ny] == noise:
+                        seen.add((nx, ny))
+                        stack.append((nx, ny))
+            comp.sort()
+            regions.append(comp)
+    regions.sort(key=lambda comp: comp[0])
+
+    # restore one patch completely before moving to the next: one Color op per
+    # pattern colour inside that patch, selecting exactly those cells
+    for comp in regions:
+        by_col = {}
+        for cell in comp:
+            if cell in target:
+                by_col.setdefault(target[cell], []).append(cell)
+        for col in sorted(by_col, key=lambda k: by_col[k][0]):
+            ops.append(int(col))
+            sels.append(sel_of(by_col[col]))
+
+    ops.append(34)
+    sels.append([0, 0, h - 1, w - 1])          # bbox = whole grid, Submit
     return ops, sels
 
 
@@ -245,7 +330,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
