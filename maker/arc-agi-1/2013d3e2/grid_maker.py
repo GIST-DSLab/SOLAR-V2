@@ -33,34 +33,17 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-import numpy as np
-from collections import Counter
-
-try:
-    from dsl import *
-except Exception:
-    pass
-try:
-    from utils import *
-except Exception:
-    pass
-
-
 def sample_colors(num_examples=None) -> dict:
-    # Rule depends only on the block's presence/structure, not on foreground colors.
-    # Only the background must be fixed across the episode. Background is never 0 here
-    # (generator samples bgc from 1..9).
-    cols = list(range(1, 10))
-    bgc = random.choice(cols)
+    # Only the background color needs to be shared across the episode: the rule
+    # ("find the pinwheel of non-background cells, read out its generating tile")
+    # depends on which color is background, not on the object's palette.
+    bgc = choice(interval(1, 10, 1))
     return {"bgc": bgc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
     cols = interval(1, 10, 1)
-    # h==w in the original; full symmetric block is 2h x 2w and must fit in the canvas.
-    hmax = min(10, max_h // 2, max_w // 2)
-    hmax = max(3, hmax)
+    hmax = min(10, max(3, min(max_h, max_w) // 2))
     h = unifint(diff_lb, diff_ub, (3, hmax))
     w = h
     remcols = remove(bgc, cols)
@@ -72,7 +55,10 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
     obj = {(choice(remcols), choice(totuple(bx)))}
     for kk in range(nc - 1):
         dns = mapply(neighbors, toindices(obj))
-        ch = choice(totuple(bx & dns))
+        cnds = totuple(bx & dns)
+        if len(cnds) == 0:
+            break
+        ch = choice(cnds)
         obj.add((choice(remcols), ch))
         bx = bx - {ch}
     gi = paint(canv, obj)
@@ -92,31 +78,78 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
 
 
 def derive_operations(I, O):
-    # Rule (measured from I): the non-background cells form a 2h x 2w four-fold
-    # symmetric block. The output is its top-left quadrant (h x w). So:
-    #   1. measure the non-bg block's bbox from I,
-    #   2. halve its height/width,
-    #   3. crop the top-left quadrant.
+    import numpy as np
+    from collections import Counter
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-
-    # Background is the dominant color (canvas fill); never 0 for this task.
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    ys, xs = np.where(I != bgc)
-    rmin, rmax = int(ys.min()), int(ys.max())
-    cmin, cmax = int(xs.min()), int(xs.max())
-    H = rmax - rmin + 1          # == 2h
-    W = cmax - cmin + 1          # == 2w
-    hh = H // 2                  # h  (top half)
-    ww = W // 2                  # w  (left half)
-
+    ho, wo = O.shape
     ops, sels = [], []
-    # CropGrid to the top-left quadrant of the block (whole rectangle incl. bgc cells;
-    # bgc != 0 so transparent copy preserves them).
-    ops.append(33); sels.append([rmin, cmin, hh - 1, ww - 1])
-    ops.append(34); sels.append([0, 0, hh - 1, ww - 1])
+
+    # --- Find the pinwheel: the block of non-background cells.
+    # The background is the color whose complement has a SQUARE bounding box that
+    # is invariant under a quarter turn (that invariance is the whole point of the
+    # picture: four rotated copies of one tile). Testing candidates by that
+    # property is robust even when the background is not the majority color.
+    bgc, box = None, None
+    for cand, _ in Counter(I.flatten().tolist()).most_common():
+        mask = (I != cand)
+        if not mask.any():
+            continue
+        rs = np.where(mask.any(axis=1))[0]
+        cs = np.where(mask.any(axis=0))[0]
+        r0, r1, c0, c1 = int(rs[0]), int(rs[-1]), int(cs[0]), int(cs[-1])
+        bh, bw = r1 - r0 + 1, c1 - c0 + 1
+        if bh != bw or bh % 2:
+            continue
+        win = I[r0:r0 + bh, c0:c0 + bw]
+        if not np.array_equal(np.rot90(win), win):
+            continue
+        bgc, box = cand, (r0, c0, bh)
+        break
+    if box is None:
+        bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+        mask = (I != bgc)
+        rs = np.where(mask.any(axis=1))[0]
+        cs = np.where(mask.any(axis=0))[0]
+        box = (int(rs[0]), int(cs[0]), int(rs[-1]) - int(rs[0]) + 1)
+
+    r0, c0, size = box
+    m = size // 2
+    if m != ho:                      # uniform border rows are trimmed symmetrically
+        k = m - ho
+        r0 += k
+        c0 += k
+        m = ho
+        size = 2 * m
+
+    # 1) Crop the canvas down to the pinwheel itself.
+    #    Intended cells ARE exactly this full square rectangle -> bbox selection ok.
+    if not (r0 == 0 and c0 == 0 and size == hi and size == wi):
+        ops.append(33)
+        sels.append([int(r0), int(c0), int(size) - 1, int(size) - 1])
+
+    blk = I[r0:r0 + size, c0:c0 + size]
+    bl = blk[m:, :m]                 # bottom-left blade = tile turned a quarter turn CCW
+    upright = np.rot90(bl, k=3)      # turning it CW puts the tile upright
+
+    if not np.array_equal(bl, upright):
+        # 2) Take one blade of the pinwheel (bottom-left), full rectangle -> bbox ok.
+        ops.append(33)
+        sels.append([int(m), 0, int(m) - 1, int(m) - 1])
+        # 3) Turn that blade upright: quarter turn clockwise (op25) on the whole
+        #    square grid. This is the rotation the task is built on, performed.
+        ops.append(25)
+        sels.append([0, 0, int(m) - 1, int(m) - 1])
+    else:
+        # Degenerate case: the tile is itself quarter-turn symmetric, so rotating
+        # would change nothing (a no-op). Read the upright blade directly.
+        ops.append(33)
+        sels.append([0, 0, int(m) - 1, int(m) - 1])
+
+    ops.append(34)
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -160,7 +193,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
