@@ -174,13 +174,16 @@ responsible for one thing: the operations. Drop both flags and the maker's own
 was rolled out from; [`pipeline/README.md`](pipeline/README.md) covers the rest
 of the flags, and what the other set in `maker/` needs.
 
-`--num_samples` is the only thing standing between 4,000 trajectories and
-40,000. The makers are generators, so the published dataset is one draw rather
-than a ceiling, and a different `--rand_seed` gives a disjoint one.
+The generators are unbounded, so the published dataset is one draw rather than a
+ceiling: a different `--rand_seed` gives a disjoint one, and `--num_samples`
+sets how deep the draw goes.
 
 A sample reaches disk only if its final grid matches the target, so a rollout
-**drops** what it cannot solve rather than repairing it. The released draw kept
-3,975 of 4,000, with every task yielding at least 6.
+**drops** what it cannot solve rather than repairing it. The released draw asked
+for 25 per task and 9,981 of 9,998 attempts landed, the thinnest task keeping 19.
+The exporter then packs a fixed **10 episodes per task**, which is where the
+4,000 rows come from; raise that in `export_release.py` to publish a deeper
+draw.
 
 Every recorded tensor is padded to `--max_grid_dim` with fill value **10**
 (colours occupy 0-9); the true extent lives in `grid_dim`, `clip_dim`,
