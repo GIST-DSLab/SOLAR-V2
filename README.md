@@ -210,13 +210,10 @@ it: the instance it failed, and what its ops produced instead. Naming the cause
 is the model's job. Rounds run until the maker passes, and each task keeps its
 best one.
 
-Where the set stands, measured rather than asserted: every maker reaches its
-target on fresh instances and on the generator's own, and the critic passes 365
-of the 400. Most of what it flags is `ANSWER_RECONSTRUCTION` — the route takes a
-parameter from O rather than measuring it from I. Not all of those are defects:
-where the rule is fixed only by the worked examples and not by the test input —
-an arbitrary colour mapping, say — reading it off O is what a policy holding the
-demonstrations would also do. The flag marks where to look, not what to fix.
+Most tasks took more than one round: 321 of the 400 were regenerated at least
+once from a check's finding. Every maker here reaches its target on fresh
+instances and on the generator's own; the route checks are judgement calls and
+not every maker satisfies all of them.
 
 The checks were built at different times and ran in different combinations from
 round to round, so this is a set of filters rather than a fixed sequence. That
