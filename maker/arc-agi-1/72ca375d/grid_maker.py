@@ -39,156 +39,203 @@ from collections import Counter
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
+    # bgc and trgc are the only randomly sampled colours the rule depends on
+    # (distractor colours are irrelevant - the rule is about mirror symmetry).
+    # Both are kept NON-ZERO on purpose: the extracted object's bounding box is then
+    # entirely non-zero, so CopyI / Paste / FlipH (all of which treat 0 as "nothing")
+    # act on the whole region exactly as intended.
+    cols = list(range(1, 10))
     bgc = random.choice(cols)
     trgc = random.choice([c for c in cols if c != bgc])
     return {"bgc": bgc, "trgc": trgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int = 0, trgc: int = 1) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, trgc) -> dict:
     cols = interval(0, 10, 1)
-    h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
-    w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
-    nobjs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 25)))
-    srcobjh = unifint(diff_lb, diff_ub, (2, min(8, h)))
-    srcobjwh = unifint(diff_lb, diff_ub, (1, min(4, max(1, w // 2))))
-    bnds = asindices(canvas(-1, (srcobjh, srcobjwh)))
-    spi = randint(0, srcobjh - 1)
-    sp = (spi, srcobjwh - 1)
-    srcobj = {sp}
-    bnds = remove(sp, bnds)
-    ncellsd = unifint(diff_lb, diff_ub, (0, (srcobjh * srcobjwh) // 2))
-    ncells1 = choice((ncellsd, srcobjh * srcobjwh - ncellsd))
-    ncells2 = unifint(diff_lb, diff_ub, (1, srcobjh * srcobjwh))
-    ncells = (ncells1 + ncells2) // 2
-    ncells = min(max(1, ncells), srcobjh * srcobjwh, (h * w) // 2 - 1)
-    for k in range(ncells - 1):
-        cands = totuple((bnds - srcobj) & mapply(neighbors, srcobj))
-        if len(cands) == 0:
-            break
-        srcobj.add(choice(cands))
-    srcobj = normalize(srcobj)
-    srcobj = srcobj | shift(vmirror(srcobj), (0, width(srcobj)))
-    srcobjh, srcobjw = shape(srcobj)
-    if srcobjh > h or srcobjw > w:
-        srcobj = frozenset({(0, 0), (0, 1)})
-        srcobjh, srcobjw = 1, 2
     remcols = remove(bgc, cols)
-    go = canvas(bgc, (srcobjh, srcobjw))
-    go = fill(go, trgc, srcobj)
-    loci = randint(0, h - srcobjh)
-    locj = randint(0, w - srcobjw)
-    locc = (loci, locj)
-    gi = canvas(bgc, (h, w))
-    shftd = shift(srcobj, locc)
-    gi = fill(gi, trgc, shftd)
-    indss = asindices(gi)
-    indss = (indss - shftd) - mapply(neighbors, shftd)
-    maxtrials = 4 * nobjs
-    tr = 0
-    succ = 0
-    remcands = asindices(canvas(-1, (8, 8))) - srcobj
-    while succ < nobjs and tr <= maxtrials:
-        if len(indss) == 0:
-            break
-        guard = 0
-        newobj = None
-        while guard < 100:
-            guard += 1
-            cand = {e for e in srcobj}
-            numperti = unifint(diff_lb, diff_ub, (1, 63))
-            numpert = 64 - numperti
-            for _p in range(numpert):
-                isadd = choice((True, False))
-                if isadd and len(cand) < 64:
-                    cndds = totuple((remcands - cand) & mapply(neighbors, cand))
-                    if len(cndds) == 0:
-                        break
-                    cand.add(choice(cndds))
-                if not isadd and len(cand) > 2:
-                    cand = remove(choice(totuple(cand)), cand)
-            cand = normalize(cand)
-            a, b = shape(cand)
-            cc = canvas(-1, (a + 2, b + 2))
-            cc2 = compress(fill(cc, -2, shift(cand, (1, 1))))
-            cand = toindices(argmax(colorfilter(objects(cc2, T, T, F), -2), size))
-            if cand != vmirror(cand) and len(cand) > 1:
-                newobj = cand
+    while True:
+        h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
+        w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
+        nobjs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 25)))
+
+        # ---- the target object: a half glued to its own vmirror ----
+        while True:
+            srcobjh = unifint(diff_lb, diff_ub, (2, 8))
+            srcobjwh = unifint(diff_lb, diff_ub, (1, 4))
+            bnds = asindices(canvas(-1, (srcobjh, srcobjwh)))
+            spi = randint(0, srcobjh - 1)
+            sp = (spi, srcobjwh - 1)
+            half = {sp}
+            bnds = remove(sp, bnds)
+            ncellsd = unifint(diff_lb, diff_ub, (0, (srcobjh * srcobjwh) // 2))
+            ncells1 = choice((ncellsd, srcobjh * srcobjwh - ncellsd))
+            ncells2 = unifint(diff_lb, diff_ub, (1, srcobjh * srcobjwh))
+            ncells = (ncells1 + ncells2) // 2
+            ncells = min(max(1, ncells), srcobjh * srcobjwh, (h * w) // 2 - 1)
+            for _k in range(ncells - 1):
+                cands = totuple((bnds - half) & mapply(neighbors, half))
+                if len(cands) == 0:
+                    break
+                half.add(choice(cands))
+            half = normalize(half)
+            # the generating half must itself be asymmetric, so that reflecting it is
+            # a visible act (a palindromic half would make FlipH a no-op)
+            if half != vmirror(half):
                 break
-        if newobj is None:
-            break
-        col = choice(remcols)
-        loccands = sfilter(indss, lambda ij: shift(newobj, ij).issubset(indss))
-        if len(loccands) == 0:
-            tr += 1
+
+        srcobj = half | shift(vmirror(half), (0, width(half)))
+        srcobjh, srcobjw = shape(srcobj)
+        if srcobjh > h or srcobjw > w:
             continue
-        locc = choice(totuple(loccands))
-        newobj = shift(newobj, locc)
-        gi = fill(gi, col, newobj)
-        succ += 1
-        indss = (indss - newobj) - mapply(neighbors, newobj)
-    return {'input': gi, 'output': go}
+
+        go = canvas(bgc, (srcobjh, srcobjw))
+        go = fill(go, trgc, srcobj)
+
+        loci = randint(0, h - srcobjh)
+        locj = randint(0, w - srcobjw)
+        gi = canvas(bgc, (h, w))
+        shftd = shift(srcobj, (loci, locj))
+        gi = fill(gi, trgc, shftd)
+
+        indss = asindices(gi)
+        # keep the whole bounding box of the target (plus a one-cell margin) free of
+        # distractors, so the extracted subgrid really is the symmetric object alone
+        prot = frozenset(
+            (i, j)
+            for i in range(loci - 1, loci + srcobjh + 1)
+            for j in range(locj - 1, locj + srcobjw + 1)
+        )
+        indss = indss - prot
+
+        remcands = asindices(canvas(-1, (8, 8))) - srcobj
+        maxtrials = 4 * nobjs
+        tr = 0
+        succ = 0
+        while succ < nobjs and tr <= maxtrials:
+            if len(indss) == 0:
+                break
+            newobj = None
+            for _try in range(50):
+                cand = {e for e in srcobj}
+                numperti = unifint(diff_lb, diff_ub, (1, 63))
+                numpert = 64 - numperti
+                for _p in range(numpert):
+                    isadd = choice((True, False))
+                    if isadd and len(cand) < 64:
+                        cndds = totuple((remcands - cand) & mapply(neighbors, cand))
+                        if len(cndds) == 0:
+                            break
+                        cand.add(choice(cndds))
+                    if not isadd and len(cand) > 2:
+                        cand = remove(choice(totuple(cand)), cand)
+                cand = normalize(cand)
+                a, b = shape(cand)
+                cc = canvas(-1, (a + 2, b + 2))
+                cc2 = compress(fill(cc, -2, shift(cand, (1, 1))))
+                cand = toindices(argmax(colorfilter(objects(cc2, T, T, F), -2), size))
+                if cand != vmirror(cand):          # distractors are never symmetric
+                    newobj = cand
+                    break
+            if newobj is None:
+                break
+            col = choice(remcols)
+            loccands = sfilter(indss, lambda ij: shift(newobj, ij).issubset(indss))
+            if len(loccands) == 0:
+                tr += 1
+                continue
+            locc = choice(totuple(loccands))
+            newobj = shift(newobj, locc)
+            gi = fill(gi, col, newobj)
+            succ += 1
+            indss = (indss - newobj) - mapply(neighbors, newobj)
+
+        # background must stay dominant (derive_operations infers bgc that way)
+        cnt = Counter([v for row in gi for v in row])
+        if cnt.most_common(1)[0][0] != bgc or cnt[bgc] * 2 <= h * w:
+            continue
+        # the target's bounding box must show exactly the symmetric object
+        sub = tuple(tuple(gi[i][locj:locj + srcobjw]) for i in range(loci, loci + srcobjh))
+        if sub != go:
+            continue
+        return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    """
+    Rule: exactly one object in I is its own left-right mirror; the answer is that
+    object's bounding box.  The route performs that reflection instead of merely
+    landing on its result: crop down to the object's LEFT HALF (the half that
+    generates it), widen the canvas, copy that half into the empty right side and
+    FlipH it - which is literally `half | vmirror(half)`.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
 
+    # background = the colour the generator paints the canvas with (dominant colour)
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # 8-connected same-color components of non-background cells (= objects(I,T,T,T))
+    # 8-connected, single-colour components of the non-background cells
     seen = np.zeros((hi, wi), dtype=bool)
     comps = []
     for r in range(hi):
         for c in range(wi):
-            if seen[r, c] or I[r, c] == bgc:
-                continue
-            col = I[r, c]
-            stack = [(r, c)]
-            seen[r, c] = True
-            cells = []
-            while stack:
-                cr, cc = stack.pop()
-                cells.append((cr, cc))
-                for dr in (-1, 0, 1):
-                    for dc in (-1, 0, 1):
-                        nr, nc = cr + dr, cc + dc
-                        if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] and I[nr, nc] == col:
-                            seen[nr, nc] = True
-                            stack.append((nr, nc))
-            comps.append(cells)
+            if I[r, c] != bgc and not seen[r, c]:
+                col = I[r, c]
+                stack = [(r, c)]
+                seen[r, c] = True
+                cells = []
+                while stack:
+                    y, x = stack.pop()
+                    cells.append((y, x))
+                    for dy in (-1, 0, 1):
+                        for dx in (-1, 0, 1):
+                            ny, nx = y + dy, x + dx
+                            if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] and I[ny, nx] == col:
+                                seen[ny, nx] = True
+                                stack.append((ny, nx))
+                comps.append(cells)
 
-    # the target object is the one whose cell-pattern equals its own left-right mirror
-    best = None
+    # the target is the component equal to its own vmirror
+    target = None
     for cells in comps:
         rs = [p[0] for p in cells]
         cs = [p[1] for p in cells]
         r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
-        mask = np.zeros((r1 - r0 + 1, c1 - c0 + 1), dtype=bool)
-        for (r, c) in cells:
-            mask[r - r0, c - c0] = True
-        if not np.array_equal(mask, np.fliplr(mask)):
-            continue
-        # tie-break by size (measured from I only): the mirrored source object
-        # is the largest symmetric component
-        key = (len(cells), (r1 - r0 + 1) * (c1 - c0 + 1))
-        if best is None or key > best[0]:
-            best = (key, r0, c0, r1 - r0 + 1, c1 - c0 + 1)
-
-    if best is None:
-        r0, c0, bh, bw = 0, 0, hi, wi
-    else:
-        _, r0, c0, bh, bw = best
+        s = set(cells)
+        if all((y, c0 + c1 - x) in s for (y, x) in cells):
+            if target is None or len(cells) > len(target[0]):
+                target = (cells, (r0, c0, r1 - r0 + 1, c1 - c0 + 1))
 
     ops, sels = [], []
-    if (r0, c0, bh, bw) != (0, 0, hi, wi):
-        ops.append(33)
-        sels.append([r0, c0, bh - 1, bw - 1])
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+
+    if target is None:
+        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+        return ops, sels
+
+    cells, (r0, c0, h, w) = target
+    hw = w // 2
+    left = I[r0:r0 + h, c0:c0 + hw] if hw > 0 else None
+
+    if hw > 0 and w % 2 == 0 and not np.array_equal(left, np.fliplr(left)):
+        # 1. crop the canvas down to the object's generating half
+        #    (full rectangle, background included -> bbox selection is exact)
+        ops.append(33); sels.append([r0, c0, h - 1, hw - 1])
+        # 2. widen the canvas to the object's full width; the right half is empty
+        ops.append(33); sels.append([0, 0, h - 1, w - 1])
+        # 3. take the half from the input ...
+        ops.append(28); sels.append([r0, c0, h - 1, hw - 1])
+        # 4. ... and lay it into the empty right half
+        ops.append(30); sels.append([0, hw, 0, 0])
+        # 5. reflect that copy in place: the reflection the rule is about
+        #    (full rectangle of the right half, background included)
+        ops.append(26); sels.append([0, hw, h - 1, hw - 1])
+    else:
+        # degenerate half (a reflection would be invisible): just take the object
+        ops.append(33); sels.append([r0, c0, h - 1, w - 1])
+
+    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -232,7 +279,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

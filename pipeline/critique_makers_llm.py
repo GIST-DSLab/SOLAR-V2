@@ -109,7 +109,6 @@ FINDING_CODES = {
     "OBJECT_SCATTER":            "Edits to one object are split across non-adjacent stretches of the trajectory.",
     "REDUNDANT_CYCLE":           "A sub-sequence returns the grid to a state it already visited.",
     "BOOKKEEPING_OP":            "An op emitted only to help the Python side compute something; no real grid effect.",
-    "OVERPAINT_WIDER_THAN_DIFF": "Painted/filled cells that already held their target value.",
     "INPLACE_OP_SWEEP":          "In-place Flip/Rotate caught pre-existing content it should not have transformed.",
     "WRONG_CLIPBOARD_SOURCE":    "CopyO used where CopyI was correct, or vice versa.",
     "HARDCODED_CONSTANT":        "A value true of only some instances is hardcoded instead of measured from I/O.",
@@ -495,8 +494,8 @@ If the solver says `sort` but the evidence shows each object arriving intact at 
 new position, the concept is MOVEMENT and you must judge it as such.
 
 CONCRETE TRIGGERS — when you observe one of these, FIRE this code at >= medium.
-Do NOT file the observation under a lesser code (OVERPAINT_WIDER_THAN_DIFF,
-UNIDIOMATIC_OP) and move on: the opaque route IS the finding, and describing it
+Do NOT file the observation under a lesser code (UNIDIOMATIC_OP) and move on:
+the opaque route IS the finding, and describing it
 in your summary without firing is a miss.
   - The rule is a TRANSLATION and the trajectory ERASES the object's old region
     and REPAINTS it at the new location (Color/FloodFill sweep) instead of

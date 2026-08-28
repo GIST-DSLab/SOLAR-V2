@@ -37,119 +37,172 @@ import random
 import numpy as np
 from collections import Counter
 
-DIHEDRAL = ["identity", "dmirror", "cmirror", "vmirror",
-            "hmirror", "rot90", "rot180", "rot270"]
+from maker.sel_helpers import sel_of
+
+# The 8 orientations of D4 the generator can apply to the finished picture.
+TRANSFORMS = ('identity', 'vmirror', 'hmirror', 'rot180',
+              'dmirror', 'cmirror', 'rot90', 'rot270')
+
+
+def _apply_tf(g, name):
+    if name == 'identity':
+        return g.copy()
+    if name == 'vmirror':
+        return np.fliplr(g).copy()
+    if name == 'hmirror':
+        return np.flipud(g).copy()
+    if name == 'rot180':
+        return np.rot90(g, 2).copy()
+    if name == 'dmirror':
+        return np.transpose(g).copy()
+    if name == 'cmirror':
+        return np.rot90(np.transpose(g), 2).copy()
+    if name == 'rot90':
+        return np.rot90(g, 3).copy()
+    if name == 'rot270':
+        return np.rot90(g, 1).copy()
+    raise ValueError(name)
+
+
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    lo = a + int((b - a) * diff_lb)
+    hi = a + int((b - a) * diff_ub)
+    if hi < lo:
+        lo, hi = hi, lo
+    return random.randint(max(a, lo), min(b, hi))
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = [c for c in range(10) if c != 2]
     bgc, linc = random.sample(cols, 2)
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(DIHEDRAL):
-        examples = [{"mf": m} for m in DIHEDRAL]
-        examples += [{"mf": random.choice(DIHEDRAL)} for _ in range(n_ex - len(DIHEDRAL))]
+    if n_ex >= len(TRANSFORMS):
+        examples = [{'transform': t} for t in TRANSFORMS]
+        examples += [{'transform': random.choice(TRANSFORMS)}
+                     for _ in range(n_ex - len(TRANSFORMS))]
         random.shuffle(examples)
     else:
-        examples = [{"mf": m} for m in random.sample(DIHEDRAL, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "linc": linc, "instance_plan": plan}
+        examples = [{'transform': t} for t in random.sample(TRANSFORMS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]   # test orientation was shown
+    return {'bgc': bgc, 'linc': linc, 'instance_plan': plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, mf=None) -> dict:
-    mfs = {'identity': identity, 'dmirror': dmirror, 'cmirror': cmirror,
-           'vmirror': vmirror, 'hmirror': hmirror, 'rot90': rot90,
-           'rot180': rot180, 'rot270': rot270}
-    if mf is None:
-        mf = random.choice(DIHEDRAL)
-    swaps = mf in ('dmirror', 'cmirror', 'rot90', 'rot270')
-    hub = max_w if swaps else max_h
-    wub = max_h if swaps else max_w
-    hub = max(4, hub)
-    wub = max(4, wub)
-    h = unifint(diff_lb, diff_ub, (4, hub))
-    w = unifint(diff_lb, diff_ub, (4, wub))
-    nsps = unifint(diff_lb, diff_ub, (1, (w - 1) // 2))
-    ngps = unifint(diff_lb, diff_ub, (1, (h - 1) // 2))
-    spsj = sorted(sample(interval(1, w - 1, 1), nsps))
-    gpsi = sorted(sample(interval(1, h - 1, 1), ngps))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, transform=None) -> dict:
+    if transform is None:
+        transform = random.choice(TRANSFORMS)
+    max_h = max(4, min(30, int(max_h)))
+    max_w = max(4, min(30, int(max_w)))
+    h = _unifint(diff_lb, diff_ub, (4, max_h))
+    w = _unifint(diff_lb, diff_ub, (4, max_w))
+    nsps = _unifint(diff_lb, diff_ub, (1, (w - 1) // 2))
+    ngps = _unifint(diff_lb, diff_ub, (1, (h - 1) // 2))
+    spsj = sorted(random.sample(range(1, w - 1), nsps))
+    gpsi = sorted(random.sample(range(1, h - 1), ngps))
+
+    gi = np.full((h, w), bgc, dtype=int)
+    for jj in spsj:
+        gi[0, jj] = linc
+    for ii in gpsi:
+        gi[ii, 0] = 2
+
+    go = gi.copy()
     ofs = 0
-    gi = canvas(bgc, (h, w))
-    gi = fill(gi, linc, {(0, jj) for jj in spsj})
-    gi = fill(gi, 2, {(ii, 0) for ii in gpsi})
-    go = tuple(e for e in gi)
     for a, b in zip([0] + gpsi, [x - 1 for x in gpsi] + [h - 1]):
         for jj in spsj:
-            go = fill(go, linc, connect((a, jj + ofs), (b, jj + ofs)))
+            cc = jj + ofs
+            if 0 <= cc < w:
+                go[a:b + 1, cc] = linc
         ofs += 1
-    fn = mfs[mf]
-    gi = fn(gi)
-    go = fn(go)
-    return {'input': gi, 'output': go}
+
+    gi = _apply_tf(gi, transform)
+    go = _apply_tf(go, transform)
+    return {'input': tuple(tuple(int(v) for v in row) for row in gi),
+            'output': tuple(tuple(int(v) for v in row) for row in go)}
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
+    h, w = I.shape
     ho, wo = O.shape
 
-    # background = the colour the canvas was painted with (dominant in I)
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-    # I holds exactly three colours: bgc, the 2-markers, and the line colour
-    linc = None
-    for c in np.unique(I).tolist():
-        if c != bgc and c != 2:
-            linc = c
-    if linc is None:
-        return [34], [[0, 0, ho - 1, wo - 1]]
+    # palette is exactly {bgc, linc, 2}; 2 is the divider marker colour
+    cnt = Counter(I.flatten().tolist())
+    bgc = cnt.most_common(1)[0][0]
+    linc = [c for c in cnt if c != bgc and c != 2][0]
 
-    # Canonicalise: 2-markers on the left edge, line seeds on the top edge.
-    # The 2-line and the seed-line are perpendicular edge lines, so exactly one
-    # dihedral view satisfies both -> orientation is read from I, not assumed.
-    idx = np.arange(hi * wi).reshape(hi, wi)
-    C = IX = None
-    for k in range(4):
-        for flip in (False, True):
-            g = np.rot90(I, k)
-            ix = np.rot90(idx, k)
-            if flip:
-                g = np.fliplr(g)
-                ix = np.fliplr(ix)
-            r2, c2 = np.where(g == 2)
-            rl, cl = np.where(g == linc)
-            if r2.size and rl.size and np.all(c2 == 0) and np.all(rl == 0):
-                C, IX = g, ix
-                break
-        if C is not None:
-            break
-    if C is None:
-        return [34], [[0, 0, ho - 1, wo - 1]]
+    two = [(int(r), int(c)) for r, c in zip(*np.where(I == 2))]
+    lin = [(int(r), int(c)) for r, c in zip(*np.where(I == linc))]
 
-    hc, wc = C.shape
-    gps = sorted(set(np.where(C == 2)[0].tolist()))          # marker rows
-    sps = sorted(np.where(C[0] == linc)[0].tolist())         # seed columns
-    starts = [0] + gps
-    ends = [x - 1 for x in gps] + [hc - 1]
+    def edge_of(cells, hh, ww):
+        if all(r == 0 for r, _ in cells):
+            return 'top'
+        if all(r == hh - 1 for r, _ in cells):
+            return 'bottom'
+        if all(c == 0 for _, c in cells):
+            return 'left'
+        return 'right'
+
+    e2 = edge_of(two, h, w)      # edge carrying the 2 dividers
+    el = edge_of(lin, h, w)      # perpendicular edge carrying the seeds
 
     ops, sels = [], []
-    # one stripe object per seed: it runs from its seed to the far edge,
-    # stepping one column sideways at every 2-marker it passes.
-    for j in sps:
-        for ofs, (a, b) in enumerate(zip(starts, ends)):
-            col = j + ofs
-            if col >= wc:
-                break
-            ra, rb = a, b
-            while ra <= rb and C[ra, col] == linc:   # seed cell already drawn
-                ra += 1
-            if ra > rb:
+    full = [0, 0, h - 1, w - 1]  # bbox == the ENTIRE grid rectangle, background included
+
+    # --- 1. reflect the picture into reading orientation: seeds on the leading
+    #        edge, dividers on the perpendicular leading edge ---
+    flips = []
+    vertical_rays = el in ('top', 'bottom')
+    if vertical_rays:                 # seeds live on a row -> bring it to row 0, dividers to col 0
+        if el == 'bottom':
+            flips.append(27)          # FlipV (up<->down)
+        if e2 == 'right':
+            flips.append(26)          # FlipH (left<->right)
+    else:                             # seeds live on a column -> bring it to col 0, dividers to row 0
+        if el == 'right':
+            flips.append(26)          # FlipH
+        if e2 == 'bottom':
+            flips.append(27)          # FlipV
+
+    J = I.copy()
+    for op in flips:
+        ops.append(op)
+        sels.append(list(full))       # whole-grid rectangle: the reflection acts on everything
+        J = np.fliplr(J) if op == 26 else np.flipud(J)
+
+    # --- 2. draw each staircase ray, seed by seed, band by band, away from the seed ---
+    if vertical_rays:
+        seeds = sorted(int(c) for c in np.where(J[0, :] == linc)[0])
+        divs = sorted(int(r) for r in np.where(J[:, 0] == 2)[0])
+        span_end, lat_max = h - 1, w - 1
+    else:
+        seeds = sorted(int(r) for r in np.where(J[:, 0] == linc)[0])
+        divs = sorted(int(c) for c in np.where(J[0, :] == 2)[0])
+        span_end, lat_max = w - 1, h - 1
+
+    bands = list(zip([0] + divs, [d - 1 for d in divs] + [span_end]))
+
+    for s in seeds:
+        for k, (a, b) in enumerate(bands):
+            lat = s + k               # each divider crossed shifts the ray one step sideways
+            if lat > lat_max:
+                break                 # the ray has run off the grid
+            if vertical_rays:
+                cells = [(t, lat) for t in range(a, b + 1) if J[t, lat] != linc]
+            else:
+                cells = [(lat, t) for t in range(a, b + 1) if J[lat, t] != linc]
+            if not cells:             # segment is just the seed cell itself
                 continue
-            p1 = int(IX[ra, col])
-            p2 = int(IX[rb, col])
-            r1, c1 = divmod(p1, wi)
-            r2, c2 = divmod(p2, wi)
+            for r, c in cells:
+                J[r, c] = linc
             ops.append(int(linc))
-            sels.append([min(r1, r2), min(c1, c2), abs(r1 - r2), abs(c1 - c2)])
+            sels.append(sel_of(cells))
+
+    # --- 3. reflect the drawn picture back into the original orientation ---
+    for op in reversed(flips):
+        ops.append(op)
+        sels.append(list(full))       # whole-grid rectangle
 
     ops.append(34)
     sels.append([0, 0, ho - 1, wo - 1])
@@ -196,7 +249,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

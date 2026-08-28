@@ -206,9 +206,17 @@ original ARC pairs. What comes back is checked five ways:
 | **originals** | does the same solution replay on the task's own original ARC pairs. The generator is the reference, so where its rule and an original pair part ways that pair is excluded rather than blamed on the maker | `pipeline/probe_originals.py` |
 
 A maker that fails a check is written again, and what the check found goes with
-it: the instance it failed, and what its ops produced instead. Naming the cause is
-the model's job. Rounds run until the maker passes, and each task keeps its
-best one — every maker in this repository passes all four checks.
+it: the instance it failed, and what its ops produced instead. Naming the cause
+is the model's job. Rounds run until the maker passes, and each task keeps its
+best one.
+
+Where the set stands, measured rather than asserted: every maker reaches its
+target on fresh instances and on the generator's own, and the critic passes 365
+of the 400. Most of what it flags is `ANSWER_RECONSTRUCTION` — the route takes a
+parameter from O rather than measuring it from I. Not all of those are defects:
+where the rule is fixed only by the worked examples and not by the test input —
+an arbitrary colour mapping, say — reading it off O is what a policy holding the
+demonstrations would also do. The flag marks where to look, not what to fix.
 
 The checks were built at different times and ran in different combinations from
 round to round, so this is a set of filters rather than a fixed sequence. That

@@ -40,208 +40,223 @@ import numpy as np
 
 from maker.sel_helpers import sel_of
 
-# ── the four concentric "rings" of the 5x5 motif ─────────────────────────────
-_R1 = ((0, 0), (0, 4), (4, 0), (4, 4))          # outer corners
-_R2 = ((2, 0), (0, 2), (4, 2), (2, 4))          # outer edge midpoints
-_R3 = ((1, 1), (3, 1), (1, 3), (3, 3))          # inner corners
-_R4 = ((2, 2),)                                 # centre
-_RINGS_IN_OUT = [                               # inner -> outer, for op emission
-    [(1, 1), (1, 3), (3, 1), (3, 3)],
-    [(0, 2), (2, 0), (2, 4), (4, 2)],
-    [(0, 0), (0, 4), (4, 0), (4, 4)],
-]
-_CORE = [(r, c) for r in range(5) for c in range(5)]
-_PERIM5 = [(r, c) for (r, c) in _CORE if r in (0, 4) or c in (0, 4)]
-_INNER5 = [(r, c) for r in range(1, 4) for c in range(1, 4) if r in (1, 3) or c in (1, 3)]
-_ODD5 = [(r, c) for (r, c) in _CORE if (r + c) % 2 == 1]
-
-
-def _is_motif(I, bgc, i, j):
-    """Exactly the verifier's acceptance test for a 5x5 motif whose ulcorner is (i, j)."""
-    hi, wi = I.shape
-    if i - 1 < 0 or j - 1 < 0 or i + 5 > hi - 1 or j + 5 > wi - 1:
-        return False
-    for c in range(j - 1, j + 6):                      # 7x7 halo must be pure background
-        if I[i - 1, c] != bgc or I[i + 5, c] != bgc:
-            return False
-    for r in range(i - 1, i + 6):
-        if I[r, j - 1] != bgc or I[r, j + 5] != bgc:
-            return False
-    if I[i + 2, j + 2] == bgc:                          # centre lit
-        return False
-    if not any(I[i + r, j + c] != bgc for r, c in _PERIM5):     # outer band used
-        return False
-    if not any(I[i + r, j + c] != bgc for r, c in _INNER5):     # inner band used
-        return False
-    if any(I[i + r, j + c] != bgc for r, c in _ODD5):           # odd parity always empty
-        return False
-    pts = [(r, c) for r, c in _CORE if I[i + r, j + c] != bgc]
-    rs = [p[0] for p in pts]
-    cs = [p[1] for p in pts]
-    return max(rs) - min(rs) == 4 and max(cs) - min(cs) == 4     # spans the full 5x5
-
-
-def _detect(I, bgc):
-    hi, wi = I.shape
-    return [(i, j) for i in range(1, hi - 5) for j in range(1, wi - 5)
-            if _is_motif(I, bgc, i, j)]
-
-
-def _closure(I, bgc):
-    """Symmetric completion of every detected motif; ok=False on colour conflicts."""
-    O = I.copy()
-    assigned = {}
-    ok = True
-    for (i, j) in _detect(I, bgc):
-        for (r, c) in _CORE:
-            v = I[i + r, j + c]
-            if v == bgc:
-                continue
-            for (a, b) in [(r, c), (c, r), (4 - c, 4 - r), (4 - r, c), (r, 4 - c)]:
-                key = (i + a, j + b)
-                if key in assigned and assigned[key] != v:
-                    ok = False
-                assigned[key] = v
-                O[key] = v
-    return O, ok
-
-
-def _detectable(block, bgc):
-    if block[2, 2] == bgc:
-        return False
-    if not any(block[r, c] != bgc for r, c in _PERIM5):
-        return False
-    if not any(block[r, c] != bgc for r, c in _INNER5):
-        return False
-    pts = [(r, c) for r, c in _CORE if block[r, c] != bgc]
-    rs = [p[0] for p in pts]
-    cs = [p[1] for p in pts]
-    return max(rs) - min(rs) == 4 and max(cs) - min(cs) == 4
-
 
 def sample_colors(num_examples=None) -> dict:
+    """Fix background and the palette the ring-patterns are drawn from.
+
+    0 is kept out of the object palette whenever bgc != 0: the completion is done by
+    Copy/Flip/Paste layering, and Copy/Paste treat 0 as 'nothing'."""
     cols = list(range(10))
     bgc = random.choice(cols)
-    remcols = [c for c in cols if c != bgc]
-    numc = random.randint(1, 9)
-    ccols = random.sample(remcols, numc)
+    pool = [c for c in cols if c != bgc and c != 0]
+    numc = random.randint(1, len(pool))
+    ccols = random.sample(pool, numc)
     return {"bgc": bgc, "ccols": ccols}
 
 
-def _one(diff_lb, diff_ub, max_h, max_w, bgc, ccols, force=False):
-    rings = [_R4, _R3, _R2, _R1]
-    bx = backdrop(frozenset(_R1))
-    h = unifint(diff_lb, diff_ub, (7, max(7, max_h)))
-    w = unifint(diff_lb, diff_ub, (7, max(7, max_w)))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols, **kwargs) -> dict:
+    r1 = ((0, 0), (0, 4), (4, 0), (4, 4))
+    r2 = ((2, 0), (0, 2), (4, 2), (2, 4))
+    r3 = ((1, 1), (3, 1), (1, 3), (3, 3))
+    r4 = ((2, 2),)
+    rings = [r4, r3, r2, r1]
+    bx = backdrop(frozenset(r1))
+    hub = max(7, min(30, int(max_h)))
+    wub = max(7, min(30, int(max_w)))
     ccols = list(ccols)
-    gi = canvas(bgc, (h, w))
-    go = canvas(bgc, (h, w))
-    inds = shift(asindices(trim(gi)), UNITY)
-    nobjs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 36)))
-    succ = 0
-    tr = 0
-    maxtr = 10 * nobjs
-    while succ < nobjs and tr < maxtr:
-        tr += 1
-        cands = sfilter(inds, lambda ij: ij[0] <= h - 5 and ij[0] <= w - 5)
-        if len(cands) == 0:
-            break
-        loc = choice(totuple(cands))
-        plcd = shift(bx, loc)
-        if plcd.issubset(inds):
-            inds = (inds - plcd) - outbox(plcd)
-            ringcols = [choice(ccols) for k in range(4)]
-            plcdrings = [shift(r, loc) for r in rings]
-            gi = fill(gi, ringcols[0], plcdrings[0])
-            go = fill(go, ringcols[0], plcdrings[0])
-            idx = randint(1, 3)
-            gi = fill(gi, ringcols[idx], plcdrings[idx])
-            go = fill(go, ringcols[idx], plcdrings[idx])
-            remrings = plcdrings[1:idx] + plcdrings[idx + 1:]
-            remringcols = ringcols[1:idx] + ringcols[idx + 1:]
-            numrs = unifint(diff_lb, diff_ub, (1, 2))
-            if idx != 1:
-                # the inner band must carry at least one cell or the motif is
-                # not readable at all (the verifier ignores it entirely)
-                numrs = 2
-            locs = sample((0, 1), numrs)
-            remrings = [rr for j, rr in enumerate(remrings) if j in locs]
-            remringcols = [rr for j, rr in enumerate(remringcols) if j in locs]
-            ncells = [4 - unifint(diff_lb, diff_ub, (0, 3)) for _ in remrings]
-            if force:
-                ncells[0] = min(ncells[0], 3)
-            tofillgi = merge(frozenset(
-                recolor(col, frozenset(sample(totuple(remring), n)))
-                for remring, col, n in zip(remrings, remringcols, ncells)))
-            tofillgo = merge(frozenset(
-                recolor(col, remring) for remring, col in zip(remrings, remringcols)))
-            if min(shape(tofillgi)) == 5:
-                cgi = paint(gi, tofillgi)
-                blk = np.array(crop(cgi, loc, (5, 5)))
-                if _detectable(blk, bgc):
+    res = None
+    for _attempt in range(40):
+        h = unifint(diff_lb, diff_ub, (7, hub))
+        w = unifint(diff_lb, diff_ub, (7, wub))
+        gi = canvas(bgc, (h, w))
+        go = canvas(bgc, (h, w))
+        inds = shift(asindices(trim(gi)), (1, 1))
+        nobjs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 36)))
+        succ = 0
+        tr = 0
+        maxtr = 10 * nobjs
+        while succ < nobjs and tr < maxtr:
+            tr += 1
+            cands = sfilter(inds, lambda ij: ij[0] <= h - 5 and ij[0] <= w - 5)
+            if len(cands) == 0:
+                break
+            loc = choice(totuple(cands))
+            plcd = shift(bx, loc)
+            if plcd.issubset(inds):
+                inds = (inds - plcd) - outbox(plcd)
+                ringcols = [choice(ccols) for k in range(4)]
+                plcdrings = [shift(r, loc) for r in rings]
+                gi = fill(gi, ringcols[0], plcdrings[0])
+                go = fill(go, ringcols[0], plcdrings[0])
+                idx = randint(1, 3)
+                gi = fill(gi, ringcols[idx], plcdrings[idx])
+                go = fill(go, ringcols[idx], plcdrings[idx])
+                remrings = plcdrings[1:idx] + plcdrings[idx + 1:]
+                remringcols = ringcols[1:idx] + ringcols[idx + 1:]
+                numrs = unifint(diff_lb, diff_ub, (1, 2))
+                locs = sample((0, 1), numrs)
+                remrings = [rr for j, rr in enumerate(remrings) if j in locs]
+                remringcols = [rr for j, rr in enumerate(remringcols) if j in locs]
+                tofillgi = merge(frozenset(
+                    recolor(col, frozenset(sample(totuple(remring),
+                                                  4 - unifint(diff_lb, diff_ub, (0, 3)))))
+                    for remring, col in zip(remrings, remringcols)
+                ))
+                tofillgo = merge(frozenset(
+                    recolor(col, remring) for remring, col in zip(remrings, remringcols)
+                ))
+                if min(shape(tofillgi)) == 5:
                     succ += 1
-                    gi = cgi
+                    gi = paint(gi, tofillgi)
                     go = paint(go, tofillgo)
-    return gi, go, succ
-
-
-def _fallback(max_h, max_w, bgc, ccols):
-    """Minimal guaranteed-valid instance: one motif with a half-drawn outer ring."""
-    h, w = max(7, min(9, max_h)), max(7, min(9, max_w))
-    ccols = list(ccols)
-    ci, cm, co = (choice(ccols) for _ in range(3))
-    i = randint(1, h - 6)
-    j = randint(1, w - 6)
-    gi = canvas(bgc, (h, w))
-    gi = fill(gi, cm, shift(_R4, (i, j)))
-    gi = fill(gi, ci, shift(_R3, (i, j)))
-    go = fill(gi, co, shift(_R1, (i, j)))
-    gi = fill(gi, co, shift(frozenset({(0, 0), (4, 4)}), (i, j)))
-    return {'input': gi, 'output': go}
-
-
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols) -> dict:
-    best = None
-    for attempt in range(80):
-        gi, go, succ = _one(diff_lb, diff_ub, max_h, max_w, bgc, ccols,
-                            force=attempt >= 5)
-        if succ == 0:
-            continue
-        I, G = np.array(gi), np.array(go)
-        if Counter(I.flatten().tolist()).most_common(1)[0][0] != bgc:
-            continue
-        O, ok = _closure(I, bgc)
-        if not ok or not (O == G).all():
-            continue                       # ambiguous / undetectable -> resample
-        if not (I == G).all():
-            return {'input': gi, 'output': go}
-        best = {'input': gi, 'output': go}
-    if best is not None:
-        return best
-    return _fallback(max_h, max_w, bgc, ccols)
+        res = {'input': gi, 'output': go}
+        if gi != go:
+            return res
+    return res
 
 
 def derive_operations(I, O):
+    """Each 5x5 patch holds concentric 4-fold-symmetric rings; broken rings are
+    completed by reflecting the patch onto itself (mirror h, mirror v, then a quarter
+    turn), each reflection layered over the kept copy of the patch."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
+    h, w = I.shape
+    bgc = int(Counter(I.flatten().tolist()).most_common(1)[0][0])
     ops, sels = [], []
-    # one motif at a time; inside a motif, complete its concentric bands
-    # from the centre outwards.  Every selection is read off I alone.
-    for (i, j) in _detect(I, bgc):
-        for ring in _RINGS_IN_OUT:
-            present = [(r, c) for r, c in ring if I[i + r, j + c] != bgc]
-            if len(present) in (0, 4):          # band unused, or already whole
+
+    R1 = [(0, 0), (0, 4), (4, 0), (4, 4)]
+    R2 = [(0, 2), (2, 0), (2, 4), (4, 2)]
+    R3 = [(1, 1), (1, 3), (3, 1), (3, 3)]
+    R4 = [(2, 2)]
+    RINGSET = set(R1 + R2 + R3 + R4)
+
+    def d4_imgs(r, c):
+        return [(r, c), (r, 4 - c), (4 - r, c), (4 - r, 4 - c),
+                (c, r), (c, 4 - r), (4 - c, r), (4 - c, 4 - r)]
+
+    def closure(sub):
+        out = np.zeros((5, 5), dtype=int)
+        for r in range(5):
+            for c in range(5):
+                v = int(sub[r, c])
+                if v != bgc:
+                    for (rr, cc) in d4_imgs(r, c):
+                        out[rr, cc] = v
+        return out
+
+    def valid(r0, c0):
+        sub = I[r0:r0 + 5, c0:c0 + 5]
+        if sub[2, 2] == bgc:
+            return False
+        for r in range(5):
+            for c in range(5):
+                if sub[r, c] != bgc and (r, c) not in RINGSET:
+                    return False
+        full = False
+        for ring in (R1, R2, R3):
+            vals = [int(sub[r, c]) for (r, c) in ring if sub[r, c] != bgc]
+            if len(set(vals)) > 1:
+                return False
+            if len(vals) == 4:
+                full = True
+        if not full:
+            return False
+        for r in range(r0 - 1, r0 + 6):
+            for c in range(c0 - 1, c0 + 6):
+                if r0 <= r < r0 + 5 and c0 <= c < c0 + 5:
+                    continue
+                if 0 <= r < h and 0 <= c < w and I[r, c] != bgc:
+                    return False
+        tgt = O[r0:r0 + 5, c0:c0 + 5]
+        return np.array_equal(closure(sub), np.where(tgt == bgc, 0, tgt))
+
+    chset = {(r, c) for r in range(h) for c in range(w) if I[r, c] != O[r, c]}
+
+    blocks = []
+    if chset:
+        scored = []
+        for r0 in range(h - 4):
+            for c0 in range(w - 4):
+                cnt = sum(1 for (r, c) in chset if r0 <= r < r0 + 5 and c0 <= c < c0 + 5)
+                if cnt and valid(r0, c0):
+                    scored.append((cnt, r0, c0))
+        scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+        used, covered = set(), set()
+        for cnt, r0, c0 in scored:
+            cells = {(r0 + i, c0 + j) for i in range(5) for j in range(5)}
+            if cells & used:
                 continue
-            col = Counter(int(I[i + r, j + c]) for r, c in present).most_common(1)[0][0]
-            missing = [(i + r, j + c) for (r, c) in ring if (r, c) not in present]
-            ops.append(col)
-            sels.append(sel_of(missing))
+            newly = (chset & cells) - covered
+            if not newly:
+                continue
+            used |= cells
+            covered |= newly
+            blocks.append((r0, c0))
+        blocks.sort()
+
+    G = I.copy()
+    for (r0, c0) in blocks:
+        tgt = O[r0:r0 + 5, c0:c0 + 5].copy()
+        if np.array_equal(G[r0:r0 + 5, c0:c0 + 5], tgt):
+            continue
+        if bgc != 0 and np.any(G[r0:r0 + 5, c0:c0 + 5] == 0):
+            continue  # 0 used as a ring colour here -> clipboard layering unusable
+
+        # clear this patch's background so the mirrored copies can be layered on it
+        if bgc != 0:
+            bgcells = [(r0 + i, c0 + j) for i in range(5) for j in range(5)
+                       if G[r0 + i, c0 + j] == bgc]
+            if bgcells:
+                ops.append(0)
+                sels.append(sel_of(bgcells))
+                for (r, c) in bgcells:
+                    G[r, c] = 0
+
+        target_obj = np.where(tgt == bgc, 0, tgt)
+        # mirror the patch onto itself: left<->right, up<->down, then a quarter turn
+        for opcode, fn in ((26, np.fliplr), (27, np.flipud), (24, lambda a: np.rot90(a, 1))):
+            blk = G[r0:r0 + 5, c0:c0 + 5].copy()
+            if np.array_equal(blk, target_obj):
+                break
+            t = np.array(fn(blk))
+            if np.array_equal(t, blk):
+                continue  # patch already symmetric this way: the op would change nothing
+            ops.append(29)
+            sels.append([r0, c0, 4, 4])          # keep a copy of the whole 5x5 patch
+            ops.append(opcode)
+            sels.append([r0, c0, 4, 4])          # bbox == exactly the 5x5 patch, reflected whole
+            ops.append(30)
+            sels.append([r0, c0, 0, 0])          # lay the kept copy back over the reflection
+            union = t.copy()
+            union[blk != 0] = blk[blk != 0]
+            G[r0:r0 + 5, c0:c0 + 5] = union
+
+        # put the patch's background back
+        if bgc != 0:
+            zc = [(r0 + i, c0 + j) for i in range(5) for j in range(5)
+                  if G[r0 + i, c0 + j] == 0]
+            if zc:
+                ops.append(int(bgc))
+                sels.append(sel_of(zc))
+                for (r, c) in zc:
+                    G[r, c] = bgc
+
+    # safety net: anything a patch could not be reflected into place (never hit for
+    # normal instances) gets painted per colour
+    rem = {}
+    for r in range(h):
+        for c in range(w):
+            if G[r, c] != O[r, c]:
+                rem.setdefault(int(O[r, c]), []).append((r, c))
+    for col in sorted(rem):
+        ops.append(int(col))
+        sels.append(sel_of(rem[col]))
+        for (r, c) in rem[col]:
+            G[r, c] = col
 
     ops.append(34)
-    sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
+    sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 

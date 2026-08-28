@@ -33,30 +33,38 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# The task.  I is a wallpaper: a random hp x wp tile stamped over the whole
+# canvas, every other stamp mirrored (rows flip on odd tile-rows, columns flip
+# on odd tile-columns).  That construction makes the whole grid symmetric about
+# EVERY horizontal line r = k*hp and EVERY vertical line c = k*wp.  Solid
+# rectangular patches of one colour (never part of the palette) are then painted
+# over it.  O is the wallpaper with those patches gone.
+#
+# The repair is therefore a reflection: a damaged block is re-drawn by mirroring
+# an intact block of the wallpaper across one of those symmetry lines —
+# CopyO the intact block, Paste it over the damaged one, FlipV / FlipH it in
+# place.  (When the only usable counterpart sits a whole period away rather than
+# across a line, the same copy/paste without a flip is the translation form of
+# the very same symmetry.)  Paste is transparent to 0, so when the block being
+# stamped carries 0s the damaged rectangle is first laid down as a 0 base.
+# ─────────────────────────────────────────────────────────────────────────────
 import random
-from collections import deque
+from collections import Counter, deque
 
 import numpy as np
 
 from maker.sel_helpers import sel_of
 
-# The rule's offset lattice: neighbours-of-neighbours of the origin, i.e. every
-# (k, l) with |k| <= 2 and |l| <= 2.  A damaged cell is repaired from the intact
-# cell k vertical periods and l horizontal periods away.
-_MULTS = sorted({(k, l) for k in (-2, -1, 0, 1, 2) for l in (-2, -1, 0, 1, 2)},
-                key=lambda kl: (abs(kl[0]) + abs(kl[1]), abs(kl[0]), abs(kl[1])))
 
-
-# ── helpers shared by generate() and derive_operations() ─────────────────────
-
-def _components(grid, color):
-    """4-connected components of `color` in a 2-D numpy int array."""
-    h, w = grid.shape
+def _blobs(mask):
+    """8-connected components of a boolean mask (one damaged splotch each)."""
+    h, w = mask.shape
     seen = np.zeros((h, w), dtype=bool)
-    comps = []
+    out = []
     for r in range(h):
         for c in range(w):
-            if grid[r, c] != color or seen[r, c]:
+            if not mask[r, c] or seen[r, c]:
                 continue
             seen[r, c] = True
             q = deque([(r, c)])
@@ -64,96 +72,291 @@ def _components(grid, color):
             while q:
                 y, x = q.popleft()
                 comp.append((y, x))
-                for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
-                    if 0 <= ny < h and 0 <= nx < w and not seen[ny, nx] and grid[ny, nx] == color:
-                        seen[ny, nx] = True
-                        q.append((ny, nx))
-            comps.append(comp)
-    return comps
-
-
-def _detect_noise_color(grid):
-    """The occluder colour: fewest connected components, ties broken by fewest cells.
-
-    Returns (colour, is_unique) — the same choice the task's rule makes.
-    """
-    stats = []
-    for col in sorted(set(grid.flatten().tolist())):
-        ncomp = len(_components(grid, col))
-        ncell = int((grid == col).sum())
-        stats.append((ncomp, ncell, col))
-    stats.sort()
-    best = stats[0]
-    unique = len(stats) == 1 or (stats[1][0], stats[1][1]) != (best[0], best[1])
-    return best[2], unique
-
-
-def _row_period(mat):
-    """Smallest p with mat[:, j] == mat[:, j-p] for every j >= p (else the width)."""
-    w = mat.shape[1]
-    for p in range(1, w):
-        if np.array_equal(mat[:, p:], mat[:, :-p]):
-            return p
-    return w
-
-
-def _periods(grid, noisec):
-    """(vertical, horizontal) period, measured on the rows / columns free of noise."""
-    clean_rows = [r for r in range(grid.shape[0]) if noisec not in grid[r]]
-    clean_cols = [c for c in range(grid.shape[1]) if noisec not in grid[:, c]]
-    if not clean_rows or not clean_cols:
-        return None, None
-    hp = _row_period(grid[clean_rows, :])
-    vp = _row_period(grid[:, clean_cols].T)
-    return vp, hp
-
-
-def _predict(grid, noisec, vp, hp):
-    """For every damaged cell, the colour periodicity dictates (absent if unreachable)."""
-    h, w = grid.shape
-    out = {}
-    for r in range(h):
-        for c in range(w):
-            if grid[r, c] != noisec:
-                continue
-            for k, l in _MULTS:
-                sr, sc = r - k * vp, c - l * hp
-                if 0 <= sr < h and 0 <= sc < w and grid[sr, sc] != noisec:
-                    out[(r, c)] = int(grid[sr, sc])
-                    break
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not seen[ny, nx]:
+                            seen[ny, nx] = True
+                            q.append((ny, nx))
+            out.append(comp)
     return out
+
+
+def _symmetries(I, clean):
+    """Mirror lines and translation periods the intact cells of I actually show.
+
+    A horizontal mirror line y means row r and row 2y-1-r agree everywhere both
+    are intact; a row shift d means row r and row r+d agree.  Only candidates
+    backed by a decent amount of evidence are kept.
+    """
+    h, w = I.shape
+    min_r, min_c = max(6, 2 * w), max(6, 2 * h)
+    row_lines, col_lines, row_sh, col_sh = [], [], [], []
+
+    for y in range(1, h):
+        cnt, ok = 0, True
+        for r in range(h):
+            r2 = 2 * y - 1 - r
+            if r2 <= r or r2 >= h:
+                continue
+            m = clean[r] & clean[r2]
+            if m.any():
+                if not np.array_equal(I[r][m], I[r2][m]):
+                    ok = False
+                    break
+                cnt += int(m.sum())
+        if ok and cnt >= min_r:
+            row_lines.append(y)
+    for x in range(1, w):
+        cnt, ok = 0, True
+        for c in range(w):
+            c2 = 2 * x - 1 - c
+            if c2 <= c or c2 >= w:
+                continue
+            m = clean[:, c] & clean[:, c2]
+            if m.any():
+                if not np.array_equal(I[:, c][m], I[:, c2][m]):
+                    ok = False
+                    break
+                cnt += int(m.sum())
+        if ok and cnt >= min_c:
+            col_lines.append(x)
+    for d in range(1, h):
+        m = clean[:h - d] & clean[d:]
+        if int(m.sum()) >= min_r and np.array_equal(I[:h - d][m], I[d:][m]):
+            row_sh.append(d)
+    for d in range(1, w):
+        m = clean[:, :w - d] & clean[:, d:]
+        if int(m.sum()) >= min_c and np.array_equal(I[:, :w - d][m], I[:, d:][m]):
+            col_sh.append(d)
+    return row_lines, col_lines, row_sh, col_sh
+
+
+def _rect(sel):
+    r, c, dh, dw = sel
+    return r, c, dh + 1, dw + 1
+
+
+def _simulate(I, ops, sels):
+    """ARCLE's effect of these ops on I (only the ops this maker emits).
+
+    Paste writes just the clipboard's nonzero cells; Flip zeroes the grid under
+    its selection before compositing the flipped block back, so a full-rectangle
+    Flip is exactly a flip of that rectangle, 0s included.
+    """
+    G = np.asarray(I, dtype=int).copy()
+    h, w = G.shape
+    clip = None
+    for op, sel in zip(ops, sels):
+        op = int(op)
+        if op == 34:
+            continue
+        if isinstance(sel, dict):
+            for r, c in sel["cells"]:
+                G[r, c] = op
+            continue
+        r, c, hh, ww = _rect(sel)
+        if op < 10:
+            G[r:r + hh, c:c + ww] = op
+        elif op == 29:
+            clip = G[r:r + hh, c:c + ww].copy()
+        elif op == 30 and clip is not None:
+            ch, cw = clip.shape
+            ch, cw = min(ch, h - r), min(cw, w - c)
+            blk, m = clip[:ch, :cw], clip[:ch, :cw] != 0
+            G[r:r + ch, c:c + cw][m] = blk[m]
+        elif op == 26:
+            G[r:r + hh, c:c + ww] = G[r:r + hh, c:c + ww][:, ::-1]
+        elif op == 27:
+            G[r:r + hh, c:c + ww] = G[r:r + hh, c:c + ww][::-1]
+    return G
+
+
+def _prune(I, O, ops, sels):
+    """Drop any op the wallpaper makes unnecessary — a block already sitting on
+    the clipboard can be stamped again, so its second pick-up would do nothing."""
+    changed = True
+    while changed:
+        changed = False
+        for k in range(len(ops)):
+            if np.array_equal(_simulate(I, ops[:k] + ops[k + 1:], sels[:k] + sels[k + 1:]), O):
+                del ops[k]
+                del sels[k]
+                changed = True
+                break
+    return ops, sels
+
+
+def _flipped(block, fv, fh):
+    out = block[::-1] if fv else block
+    return out[:, ::-1] if fh else out
+
+
+def _axis_options(start, size, limit, lines, shifts, cap=24):
+    """Where an intact copy of a damaged span can be read from, along one axis.
+
+    Each option is (source start, flip?, distance): either the span translated
+    by a whole period, or the span reflected across one of the symmetry lines.
+    """
+    opts = [(start, False, 0)]
+    for d in shifts:
+        for s in (start + d, start - d):
+            if 0 <= s and s + size <= limit:
+                opts.append((s, False, abs(s - start)))
+    for y in lines:
+        s = 2 * y - 1 - (start + size - 1)
+        if 0 <= s and s + size <= limit:
+            opts.append((s, True, abs(s - start)))
+    opts.sort(key=lambda o: (0 if o[1] else 1, o[2]))
+    return opts[:cap]
+
+
+def _repair_rect(G, O, remaining, r0, c0, hh, ww, ops, sels, sym, clip):
+    """Redraw the rectangle (r0,c0,hh,ww) from an intact mirror/period copy.
+
+    CopyO the source block -> Paste it over the damaged block -> flip it in
+    place along whichever axes were mirrored.  Returns True when a source that
+    reproduces the wallpaper was found.
+    """
+    h, w = G.shape
+    row_lines, col_lines, row_sh, col_sh = sym
+    row_opts = _axis_options(r0, hh, h, row_lines, row_sh)
+    col_opts = _axis_options(c0, ww, w, col_lines, col_sh)
+    want = O[r0:r0 + hh, c0:c0 + ww]
+
+    best = None
+    for rs, fv, dr in row_opts:
+        for cs, fh, dc in col_opts:
+            if rs == r0 and cs == c0 and not fv and not fh:
+                continue
+            if remaining[rs:rs + hh, cs:cs + ww].any():
+                continue
+            if not np.array_equal(_flipped(G[rs:rs + hh, cs:cs + ww], fv, fh), want):
+                continue
+            key = (0 if (fv or fh) else 1, dr + dc)   # a mirror first, then the nearest
+            if best is None or key < best[0]:
+                best = (key, rs, cs, fv, fh)
+    if best is None:
+        return False
+
+    _, rs, cs, fv, fh = best
+    src = G[rs:rs + hh, cs:cs + ww].copy()
+    held = clip[0]
+    reuse = (held is not None and held.shape == src.shape
+             and np.array_equal(_flipped(held, fv, fh), want))
+    # whole rectangles: the selection IS exactly the block being copied / redrawn.
+    # When the block already on the clipboard is one that mirrors onto this damage
+    # just as well, stamp it again instead of picking up a second copy of it.
+    if not reuse:
+        ops.append(29)
+        sels.append([rs, cs, hh - 1, ww - 1])        # CopyO the intact block
+        clip[0] = src
+    if (clip[0] == 0).any():
+        # Paste never writes a 0, so lay the block's 0s down as a base first
+        ops.append(0)
+        sels.append([r0, c0, hh - 1, ww - 1])
+    ops.append(30)
+    sels.append([r0, c0, 0, 0])                      # Paste it over the damage
+    G[r0:r0 + hh, c0:c0 + ww] = clip[0]
+    if fv:
+        blk = G[r0:r0 + hh, c0:c0 + ww][::-1].copy()
+        if not np.array_equal(blk, G[r0:r0 + hh, c0:c0 + ww]):
+            ops.append(27)
+            sels.append([r0, c0, hh - 1, ww - 1])    # mirror it top<->bottom
+            G[r0:r0 + hh, c0:c0 + ww] = blk
+    if fh:
+        blk = G[r0:r0 + hh, c0:c0 + ww][:, ::-1].copy()
+        if not np.array_equal(blk, G[r0:r0 + hh, c0:c0 + ww]):
+            ops.append(26)
+            sels.append([r0, c0, hh - 1, ww - 1])    # mirror it left<->right
+            G[r0:r0 + hh, c0:c0 + ww] = blk
+    remaining[r0:r0 + hh, c0:c0 + ww] = False
+    return True
+
+
+def _plan(I, O):
+    """(ops, sels, every_patch_done_geometrically) for the repair of I into O."""
+    I = np.asarray(I, dtype=int)
+    O = np.asarray(O, dtype=int)
+    ops, sels = [], []
+    diff = (I != O)
+    if not diff.any():
+        return ops, sels, True
+
+    # the occluder colour: it is what the damaged cells carry, and it never
+    # occurs in the wallpaper, so every cell of it is damage
+    noisec = int(Counter(I[diff].tolist()).most_common(1)[0][0])
+    remaining = (I == noisec) | diff
+    clean = ~remaining
+    G = I.copy()
+    geometric = True
+    sym = _symmetries(I, clean)
+    clip = [None]                                    # what ARCLE's clipboard holds
+
+    for blob in _blobs(remaining):
+        cells = [(r, c) for r, c in blob if remaining[r, c]]
+        if not cells:
+            continue                                 # already redrawn with a neighbour
+        rs = [r for r, _ in cells]
+        cs = [c for _, c in cells]
+        r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
+        if _repair_rect(G, O, remaining, r0, c0, r1 - r0 + 1, c1 - c0 + 1,
+                        ops, sels, sym, clip):
+            continue
+        # the splotch as a whole has no intact counterpart in the grid; take it
+        # apart row band by row band, and only paint what stays unreachable
+        for r in range(r0, r1 + 1):
+            row_cells = [c for c in range(c0, c1 + 1) if remaining[r, c]]
+            if not row_cells:
+                continue
+            a, b = min(row_cells), max(row_cells)
+            if _repair_rect(G, O, remaining, r, a, 1, b - a + 1, ops, sels, sym, clip):
+                continue
+            geometric = False
+            groups = {}
+            for c in row_cells:
+                groups.setdefault(int(O[r, c]), []).append((r, c))
+            for col in sorted(groups):
+                ops.append(col)
+                sels.append(sel_of(groups[col]))
+                for cell in groups[col]:
+                    G[cell] = col
+                    remaining[cell] = False
+    ops, sels = _prune(I, O, ops, sels)
+    return ops, sels, geometric
 
 
 # ── 1. colours ───────────────────────────────────────────────────────────────
 
 def sample_colors(num_examples=None) -> dict:
-    # bgc   : canvas colour the generator paints before tiling (the tiles cover it entirely)
-    # noisec: the occluder colour -- it is what marks the damaged cells, so it MUST be the
-    #         same in every instance of the episode or the test instance is unreadable
-    # cpool : the pattern palette (noisec is never part of it)
+    # noisec : the occluder colour.  It marks the damaged cells, so it must be
+    #          the same in every instance of the episode or the test is unreadable.
+    # ccols  : the wallpaper palette (never contains noisec).
+    # bgc    : the canvas colour the tiling paints over (invisible in the end).
     cols = list(range(10))
-    bgc = random.choice(cols)
-    noisec = random.choice([c for c in cols if c != bgc])
-    cpool = [c for c in cols if c != noisec]
-    random.shuffle(cpool)
-    return {"bgc": bgc, "noisec": noisec, "cpool": cpool}
+    noisec = random.choice(cols)
+    rest = [c for c in cols if c != noisec]
+    bgc = random.choice(rest)
+    ccols = random.sample(rest, random.randint(2, len(rest)))
+    return {"bgc": bgc, "noisec": noisec, "ccols": ccols}
 
 
 # ── 2. instances ─────────────────────────────────────────────────────────────
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, cpool) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, ccols) -> dict:
     randint, choice = random.randint, random.choice
 
     def _unif(bounds):                       # re-arc's unifint, inlined
         a, b = bounds
+        b = max(a, b)
         d = random.uniform(diff_lb, diff_ub)
         return min(max(a, round(a + (b - a) * d)), b)
 
-    for _attempt in range(40):
+    for _attempt in range(60):
         rot = choice((0, 1, 2, 3))
         swaps = rot % 2 == 1
-        hcap = max(10, min(30, max_w if swaps else max_h))
-        wcap = max(10, min(30, max_h if swaps else max_w))
+        hcap = min(30, max_w if swaps else max_h)
+        wcap = min(30, max_h if swaps else max_w)
         if hcap < 10 or wcap < 10:
             raise ValueError("grid cap too small for this task")
 
@@ -162,31 +365,22 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, cpool) -> dict:
         hp = _unif((2, h // 2 - 1))
         wp = _unif((2, w // 2 - 1))
 
-        numc = _unif((2, 9))
-        ccols = cpool[:numc]
-        block = np.array([[choice(ccols) for _ in range(wp)] for _ in range(hp)], dtype=int)
-
-        # mirror-tile the block over the whole canvas
+        tile = np.array([[choice(ccols) for _ in range(wp)] for _ in range(hp)], dtype=int)
         go = np.full((h, w), bgc, dtype=int)
         for a in range(h // hp + 1):
             for b in range(w // wp + 1):
-                blk = block
-                if a % 2:
+                blk = tile
+                if a % 2:                            # every other stamp is mirrored
                     blk = blk[::-1, :]
                 if b % 2:
                     blk = blk[:, ::-1]
                 r0, c0 = hp * a, wp * b
+                if r0 >= h or c0 >= w:
+                    continue
                 r1, c1 = min(r0 + hp, h), min(c0 + wp, w)
-                if r0 < h and c0 < w:
-                    go[r0:r1, c0:c1] = blk[:r1 - r0, :c1 - c0]
+                go[r0:r1, c0:c1] = blk[:r1 - r0, :c1 - c0]
 
-        # tile origins fully inside the grid: candidate windows for the "a tile survived" test
-        locs = [(hp * a, wp * b)
-                for a in range(h // hp + 1) for b in range(w // wp + 1)
-                if hp * (a + 1) <= h and wp * (b + 1) <= w]
-        variants = [block, block[::-1, :], block[:, ::-1], block[::-1, ::-1]]
-
-        numpatches = _unif((1, int((h * w) ** 0.5 // 2)))
+        numpatches = _unif((1, max(1, int((h * w) ** 0.5 // 2))))
         gi = go.copy()
         succ, tr, maxtr = 0, 0, 5 * numpatches
         while succ < numpatches and tr < maxtr:
@@ -195,43 +389,26 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, cpool) -> dict:
             loci, locj = randint(0, h - ph), randint(0, w - pw)
             gi2 = gi.copy()
             gi2[loci:loci + ph, locj:locj + pw] = noisec
-
-            # at least two intact rows and two intact columns
+            # keep two intact rows and two intact columns, as the original does
             if sum(1 for r in range(h) if noisec not in gi2[r]) < 2:
                 continue
             if sum(1 for c in range(w) if noisec not in gi2[:, c]) < 2:
                 continue
-            # at least one whole tile survived untouched
-            if not any(any(np.array_equal(gi2[r0:r0 + hp, c0:c0 + wp], v) for v in variants)
-                       for r0, c0 in locs):
-                continue
-            # the occluder must still be the colour the rule singles out, the measured
-            # periods must be genuine periods of the pattern, and every damaged cell must
-            # have an intact counterpart a whole number of periods away -- otherwise the
-            # rule would leave that cell occluded and the output would not be the pattern
-            col, uniq = _detect_noise_color(gi2)
-            if col != noisec or not uniq:
-                continue
-            vp, hpd = _periods(gi2, noisec)
-            if not vp or not hpd or vp >= h or hpd >= w:
-                continue
-            if not np.array_equal(go[vp:, :], go[:-vp, :]):
-                continue
-            if not np.array_equal(go[:, hpd:], go[:, :-hpd]):
-                continue
-            pred = _predict(gi2, noisec, vp, hpd)
-            if len(pred) != int((gi2 == noisec).sum()):
-                continue
-            if any(go[r, c] != v for (r, c), v in pred.items()):
-                continue
-            succ += 1
             gi = gi2
-
+            succ += 1
         if succ == 0:
             continue
 
-        return {"input": np.rot90(gi, rot).tolist(),
-                "output": np.rot90(go, rot).tolist()}
+        gi = np.rot90(gi, rot)
+        go = np.rot90(go, rot)
+        # every patch must be reconstructible by mirroring an intact block of the
+        # wallpaper — otherwise the instance does not show the rule
+        _o, _s, geometric = _plan(gi, go)
+        if not geometric or not np.array_equal(_simulate(gi, _o, _s), go):
+            continue
+        if not any(int(o) in (26, 27) for o in _o):
+            continue                                 # the reflection must be on show
+        return {"input": gi.tolist(), "output": go.tolist()}
 
     raise ValueError("could not build an instance")
 
@@ -239,42 +416,15 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, cpool) -> dict:
 # ── 3. trajectory ────────────────────────────────────────────────────────────
 
 def derive_operations(I, O):
-    """I is a doubly periodic, mirror-tiled wallpaper with solid rectangular patches
-    painted over it in one occluder colour (that colour never occurs in the pattern, so
-    the damaged cells are plainly visible in I).  Repair every patch: each damaged cell
-    takes the colour of the intact cell a whole number of periods away, the periods being
-    measured on the rows and columns that no patch touches.  One Color op per
-    (patch, colour); patches are repaired one at a time, in raster order of their
-    top-left cell, and each op's selection is exactly that patch's cells of that colour."""
+    """Repair each damaged block by reflecting an intact block of the wallpaper
+    onto it: CopyO the counterpart across a symmetry line, Paste it over the
+    damage, FlipV / FlipH it in place."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
-    ops, sels = [], []
-
-    diff = [(r, c) for r in range(h) for c in range(w) if I[r, c] != O[r, c]]
-    if diff:
-        noisec = int(I[diff[0]])                  # the colour the damaged cells carry
-        vp, hp = _periods(I, noisec)              # pattern periods, read off the clean lines
-        pred = _predict(I, noisec, vp, hp) if vp and hp else {}
-        for cell in diff:                         # safety net: the rule must explain O
-            if pred.get(cell) != int(O[cell]):
-                pred[cell] = int(O[cell])
-
-        comps = [sorted(cmp) for cmp in _components(I, noisec)]
-        comps.sort(key=lambda cmp: cmp[0])
-        for comp in comps:                        # finish one patch before starting the next
-            groups = {}
-            for cell in comp:
-                tgt = pred.get(cell)
-                if tgt is None or tgt == noisec:  # nothing the periodicity can restore here
-                    continue
-                groups.setdefault(tgt, []).append(cell)
-            for tgt in sorted(groups, key=lambda t: groups[t][0]):
-                ops.append(tgt)
-                sels.append(sel_of(groups[tgt]))
-
+    ho, wo = O.shape
+    ops, sels, _ = _plan(I, O)
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 

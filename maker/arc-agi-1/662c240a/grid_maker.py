@@ -36,126 +36,203 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 
+# ---------------------------------------------------------------------------
+# Task 662c240a
+# The input is a concatenation (vertical or horizontal) of n square d x d
+# blocks.  Every block is built symmetric about its main diagonal except ONE,
+# which has been perturbed.  The output is that one block: the block that is
+# NOT equal to its own diagonal mirror.
+#
+# Trajectory idea (the reflection is actually performed):
+#   1. expand the canvas to a square so a diagonal mirror can be done in place
+#   2. mirror the WHOLE grid across its main diagonal (rotate + flip).  Every
+#      symmetric block survives unchanged in its mirrored position; only the
+#      special block visibly changes -> the rule is performed, not asserted.
+#   3. crop to that block (it is now sitting transposed)
+#   4. mirror it back across its diagonal -> the answer.
+# ---------------------------------------------------------------------------
+
+VARIANTS = [{"concat_dir": "v"}, {"concat_dir": "h"}]
+
 
 def sample_colors(num_examples=None) -> dict:
-    # Rule depends only on structural symmetry of sub-blocks, not on colors,
-    # and there is no background color to fix. No color roles needed.
-    return {}
-
-
-def _make_symmetric_block(d, cols):
-    nc = random.randint(2, min(9, d * d))
-    tcolset = random.sample(cols, nc)
-    g = [[0] * d for _ in range(d)]
-    for i in range(d):
-        for j in range(i, d):
-            col = random.choice(tcolset)
-            g[i][j] = col
-            g[j][i] = col
-    return g, tcolset
-
-
-def _make_broken_block(d, cols):
-    # symmetric block, then break symmetry on off-diagonal cells
-    g, tcolset = _make_symmetric_block(d, cols)
-    offdiag = [(i, j) for i in range(d) for j in range(d) if i != j]
-    tot = d * (d - 1) // 2
-    ndistinv = random.randint(0, tot - 1)
-    ndist = tot - ndistinv
-    distinds = random.sample(offdiag, min(ndist, len(offdiag)))
-    for (i, j) in distinds:
-        if g[i][j] == g[j][i]:
-            choices = [c for c in tcolset if c != g[i][j]]
-            g[i][j] = random.choice(choices)
-        else:
-            g[i][j] = g[j][i]
-    return g
-
-
-def generate(diff_lb, diff_ub, max_h, max_w, **color_kwargs) -> dict:
-    cols = list(range(10))
-
-    d = random.randint(2, max(2, min(7, max_h, max_w)))
-
-    # pick orientation that fits at least 2 blocks along the long axis
-    options = []
-    if max_w // d >= 2:
-        options.append('h')
-    if max_h // d >= 2:
-        options.append('v')
-    if not options:
-        d = max(2, min(7, min(max_h, max_w) // 2))
-        if max_w // d >= 2:
-            options.append('h')
-        if max_h // d >= 2:
-            options.append('v')
-    concatf = random.choice(options)
-
-    if concatf == 'h':
-        cap = min(max_w // d, 30 // d)
+    # No background colour exists for this task (the canvas is fully painted
+    # with random colours) and the rule depends only on the symmetry pattern,
+    # not on which colours are used.  The only discrete structural choice is
+    # the concatenation direction, which is planned per instance.
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(examples)
     else:
-        cap = min(max_h // d, 30 // d)
-    cap = max(2, cap)
-    ng = random.randint(2, cap)
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
+    return {"instance_plan": plan}
 
-    # the ONE non-symmetric block = the output
-    for _ in range(200):
-        first_block = _make_broken_block(d, cols)
-        fb = np.array(first_block, dtype=int)
-        if not np.array_equal(fb, fb.T):
-            break
-    else:
-        # fallback: force asymmetry
-        first_block[0][1] = (first_block[1][0] + 1) % 10
-        fb = np.array(first_block, dtype=int)
 
-    blocks = [first_block]
-    for _ in range(ng - 1):
-        b, _ = _make_symmetric_block(d, cols)
-        if random.choice([True, False]):
-            blocks.append(b)
-        else:
-            blocks.insert(0, b)
+def generate(diff_lb, diff_ub, max_h, max_w, concat_dir=None, **kwargs) -> dict:
+    if concat_dir is None:
+        concat_dir = random.choice(["v", "h"])
 
-    arrs = [np.array(b, dtype=int) for b in blocks]
-    if concatf == 'h':
-        grid = np.hstack(arrs)
-    else:
-        grid = np.vstack(arrs)
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        lo = a + int((b - a) * lb)
+        hi = a + int((b - a) * ub)
+        if hi < lo:
+            hi = lo
+        if lo < a:
+            lo = a
+        if hi > b:
+            hi = b
+        return random.randint(lo, hi)
 
-    return {"input": grid.tolist(), "output": fb.tolist()}
+    def sym_block(d, colset):
+        g = [[0] * d for _ in range(d)]
+        for i in range(d):
+            for j in range(i, d):
+                c = random.choice(colset)
+                g[i][j] = c
+                g[j][i] = c
+        return g
+
+    def is_sym(g):
+        d = len(g)
+        for i in range(d):
+            for j in range(d):
+                if g[i][j] != g[j][i]:
+                    return False
+        return True
+
+    vertical = (concat_dir == "v")
+    long_max = min(30, max_h if vertical else max_w)
+    short_max = min(30, max_w if vertical else max_h)
+    d_ub = max(2, min(7, short_max, long_max // 2))
+
+    while True:
+        d = unifint(diff_lb, diff_ub, (2, d_ub))
+        ng_ub = max(2, min(30 // d, long_max // d))
+        ng = unifint(diff_lb, diff_ub, (2, ng_ub))
+        nc = unifint(diff_lb, diff_ub, (2, min(9, d * d)))
+        tcolset = random.sample(range(10), nc)
+
+        g = sym_block(d, tcolset)
+
+        npairs = d * (d - 1) // 2
+        ndistinv = unifint(diff_lb, diff_ub, (0, max(0, npairs - 1)))
+        ndist = max(1, npairs - ndistinv)
+        offdiag = [(i, j) for i in range(d) for j in range(d) if i != j]
+        distinds = random.sample(offdiag, min(ndist, len(offdiag)))
+        for (i, j) in distinds:
+            if g[i][j] == g[j][i]:
+                opts = [c for c in tcolset if c != g[i][j]]
+                if opts:
+                    g[i][j] = random.choice(opts)
+            else:
+                g[i][j] = g[j][i]
+
+        # the special block MUST end up asymmetric, otherwise the episode is
+        # unsolvable (no block would stand out)
+        if is_sym(g):
+            continue
+
+        out = [row[:] for row in g]
+        grid = [row[:] for row in g]
+
+        for _ in range(ng - 1):
+            tset = random.sample(range(10), nc)
+            b = sym_block(d, tset)
+            first_new = random.choice([True, False])
+            if vertical:
+                grid = (b + grid) if first_new else (grid + b)
+            else:
+                if first_new:
+                    grid = [b[r] + grid[r] for r in range(d)]
+                else:
+                    grid = [grid[r] + b[r] for r in range(d)]
+
+        # sanity: exactly one block asymmetric and it is the output
+        h = len(grid)
+        w = len(grid[0])
+        dd = min(h, w)
+        vert = h > w
+        n = (h // dd) if vert else (w // dd)
+        asym = []
+        for idx in range(n):
+            if vert:
+                B = [row[:] for row in grid[idx * dd:(idx + 1) * dd]]
+            else:
+                B = [row[idx * dd:(idx + 1) * dd] for row in grid]
+            if not is_sym(B):
+                asym.append(B)
+        if len(asym) != 1 or asym[0] != out:
+            continue
+
+        return {"input": grid, "output": out}
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+
+    def transpose_ops(M):
+        """Two ARCLE ops whose composition is the diagonal mirror of M,
+        chosen so that BOTH steps visibly change the grid."""
+        cands = [
+            (24, 27, lambda A: np.rot90(A, 1), lambda A: np.flipud(A)),
+            (25, 26, lambda A: np.rot90(A, 3), lambda A: np.fliplr(A)),
+            (27, 25, lambda A: np.flipud(A), lambda A: np.rot90(A, 3)),
+            (26, 24, lambda A: np.fliplr(A), lambda A: np.rot90(A, 1)),
+        ]
+        for o1, o2, f1, f2 in cands:
+            X1 = f1(M)
+            X2 = f2(X1)
+            if (not np.array_equal(X1, M) and not np.array_equal(X2, X1)
+                    and np.array_equal(X2, M.T)):
+                return [o1, o2]
+        return [24, 27]
+
+    # --- the rule: split into d x d blocks, find the one that is NOT its own
+    #     diagonal mirror -------------------------------------------------
+    d = min(hi, wi)
+    vertical = hi > wi
+    n = (hi // d) if vertical else (wi // d)
+    k = 0
+    for idx in range(n):
+        if vertical:
+            B = I[idx * d:(idx + 1) * d, 0:d]
+        else:
+            B = I[0:d, idx * d:(idx + 1) * d]
+        if not np.array_equal(B, B.T):
+            k = idx
+            break
+    r0 = k * d if vertical else 0
+    c0 = 0 if vertical else k * d
+    B = I[r0:r0 + d, c0:c0 + d]
+
     ops, sels = [], []
 
-    d = min(hi, wi)
+    # 1) expand the canvas to a square so the diagonal mirror fits in place
+    sq = max(hi, wi)
+    P = np.zeros((sq, sq), dtype=int)
+    P[:hi, :wi] = I
+    ops.append(33); sels.append([0, 0, sq - 1, sq - 1])   # full rectangle: whole square canvas
 
-    # blocks lie along the long axis; short axis length = d
-    if hi >= wi:
-        n = hi // d
-        origins = [(k * d, 0) for k in range(n)]
-    else:
-        n = wi // d
-        origins = [(0, k * d) for k in range(n)]
+    # 2) mirror the whole grid across its main diagonal.  Symmetric blocks are
+    #    reproduced identically in their mirrored slot; only the special block
+    #    changes -- this is the rule being carried out.
+    for op in transpose_ops(P):
+        ops.append(op); sels.append([0, 0, sq - 1, sq - 1])  # full rectangle: whole square canvas
 
-    # measure the rule from I: the target block is the one NOT equal to its
-    # main-diagonal mirror (transpose). All other blocks are symmetric.
-    r0, c0 = origins[0]
-    for (br, bc) in origins:
-        block = I[br:br + d, bc:bc + d]
-        if not np.array_equal(block, block.T):
-            r0, c0 = br, bc
-            break
+    # 3) crop to that block, which now sits at the mirrored position
+    ops.append(33); sels.append([c0, r0, d - 1, d - 1])   # full rectangle: the block's mirrored slot
 
-    # crop the working canvas down to that block
-    ops.append(33)
-    sels.append([r0, c0, d - 1, d - 1])
-    ops.append(34)
-    sels.append([0, 0, d - 1, d - 1])
+    # 4) mirror the block back across its own diagonal -> the answer
+    for op in transpose_ops(B.T):
+        ops.append(op); sels.append([0, 0, d - 1, d - 1])  # full rectangle: the whole block
+
+    ops.append(34); sels.append([0, 0, d - 1, d - 1])
     return ops, sels
 
 
@@ -199,7 +276,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

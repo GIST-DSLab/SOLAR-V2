@@ -34,79 +34,113 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-from collections import Counter
-
 import numpy as np
 
-from maker.sel_helpers import sel_of
+try:
+    from maker.sel_helpers import sel_of
+except Exception:  # fallback: mask expressed as explicit cell list
+    def sel_of(cells):
+        return {"cells": [[int(r), int(c)] for r, c in cells]}
+
+
+# Discrete structural variant: the whole scene is rotated by one of 4 rotations,
+# which decides WHICH edge the bars are anchored to (bottom / left / top / right).
+VARIANTS = [{"rot": "identity"}, {"rot": "rot90"}, {"rot": "rot180"}, {"rot": "rot270"}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    """Episode-level colours + the per-instance rotation plan.
-
-    The generator samples: bgc, and ncols/ccols (the block palette).
-    Object colours exclude 0 here: ARCLE's object ops treat 0 as transparent,
-    so a 0-coloured block cannot be carried by a Move (derive_operations still
-    handles that case by painting, for pairs coming from the raw RE-ARC gen).
-    `rot` is the discrete structural variant (which edge the blocks sit on).
-    """
     cols = list(range(10))
     bgc = random.choice(cols)
-    avail = [c for c in cols if c != bgc and c != 0]
-    ncols = random.randint(2, len(avail))
-    ccols = random.sample(avail, ncols)
+    remcols = [c for c in cols if c != bgc]
+    ncols = random.randint(2, 9)
+    ccols = random.sample(remcols, ncols)
 
-    ROTS = ["identity", "rot90", "rot180", "rot270"]
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(ROTS):
-        examples = [{"rot": r} for r in ROTS]
-        examples += [{"rot": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
         random.shuffle(examples)
     else:
-        examples = [{"rot": r} for r in random.sample(ROTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]  # test variant was shown
     return {"bgc": bgc, "ccols": ccols, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols, rot=None) -> dict:
-    """Bars grow from one edge; each bar jumps away from that edge by its own
-    thickness (clipped at the far edge). `rot` picks which edge."""
-
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, ccols=None, rot=None, **kw) -> dict:
     def _unifint(lb, ub, bounds):
         a, b = bounds
         if b < a:
-            b = a
-        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
+            a, b = b, a
+        lo = int(a + (b - a) * lb)
+        hi = int(a + (b - a) * ub)
+        lo = max(a, min(b, lo))
+        hi = max(a, min(b, hi))
+        if hi < lo:
+            lo, hi = hi, lo
+        return random.randint(lo, hi)
 
+    def rot_cw(g):
+        H = len(g); W = len(g[0])
+        return [[g[H - 1 - j][i] for j in range(H)] for i in range(W)]
+
+    def rot_ccw(g):
+        H = len(g); W = len(g[0])
+        return [[g[j][W - 1 - i] for j in range(H)] for i in range(W)]
+
+    def rot_180(g):
+        return [row[::-1] for row in g[::-1]]
+
+    cols = list(range(10))
+    if bgc is None:
+        bgc = random.choice(cols)
+    if ccols is None:
+        remcols = [c for c in cols if c != bgc]
+        ccols = random.sample(remcols, random.randint(2, 9))
+    ccols = list(ccols)
     if rot is None:
-        rot = random.choice(["identity", "rot90", "rot180", "rot270"])
+        rot = random.choice([v["rot"] for v in VARIANTS])
 
-    # a 90/270 rotation swaps the axes -> bound h,w so the rotated grid fits
+    max_h = min(30, int(max_h))
+    max_w = min(30, int(max_w))
+
+    # rot90/rot270 swap the final grid dimensions
     if rot in ("rot90", "rot270"):
-        h_ub, w_ub = max_w, max_h
+        cap_h, cap_w = max_w, max_h
     else:
-        h_ub, w_ub = max_h, max_w
-    h_ub = max(4, min(30, int(h_ub)))
-    w_ub = max(6, min(30, int(w_ub)))
+        cap_h, cap_w = max_h, max_w
+    if cap_h < 4 or cap_w < 6:
+        rot = "identity"
+        cap_h, cap_w = max_h, max_w
+    cap_h = max(4, cap_h)
+    cap_w = max(6, cap_w)
 
-    h = _unifint(diff_lb, diff_ub, (4, h_ub))
-    w = _unifint(diff_lb, diff_ub, (6, w_ub))
+    h = _unifint(diff_lb, diff_ub, (4, cap_h))
+    w = _unifint(diff_lb, diff_ub, (6, cap_w))
 
     inds = list(range(w))
-    while True:
-        nobjs = _unifint(diff_lb, diff_ub, (1, w // 3))
-        speps = random.sample(inds, nobjs * 2)
-        if 0 not in speps and (w - 1) not in speps:
+    nobjs = _unifint(diff_lb, diff_ub, (1, max(1, w // 3)))
+    speps = random.sample(inds, nobjs * 2)
+    guard = 0
+    while (0 in speps) or ((w - 1) in speps):
+        guard += 1
+        if guard > 2000:
+            nobjs = 1
+            speps = sorted(random.sample(inds[1:-1], 2))
             break
+        nobjs = _unifint(diff_lb, diff_ub, (1, max(1, w // 3)))
+        speps = random.sample(inds, nobjs * 2)
     speps = sorted(speps)
-    starts, ends = speps[::2], speps[1::2]
+    starts = speps[::2]
+    ends = speps[1::2]
 
     gi = [[bgc] * w for _ in range(h)]
     go = [[bgc] * w for _ in range(h)]
     forb = -1
     for sp, ep in zip(starts, ends):
-        pool = [c for c in ccols if c != forb] or list(ccols)
-        col = random.choice(pool)
+        cands = [c for c in ccols if c != forb]
+        if not cands:
+            cands = list(ccols)
+        col = random.choice(cands)
         forb = col
         hdev = _unifint(diff_lb, diff_ub, (0, h // 2))
         hei = random.choice((hdev, h - hdev))
@@ -114,118 +148,113 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols, rot=None) -> dict:
         for r in range(h - hei, h):
             for c in range(sp, ep + 1):
                 gi[r][c] = col
-        for r in range(h - 2 * hei, h - hei):          # shifted up by its own height
-            if 0 <= r < h:                              # clipped at the far edge
+        for r in range(h - 2 * hei, h - hei):   # reflected across the bar's far edge, clipped
+            if 0 <= r < h:
                 for c in range(sp, ep + 1):
                     go[r][c] = col
 
-    def _rot(g):
-        if rot == "identity":
-            return [list(r) for r in g]
-        if rot == "rot90":                              # clockwise
-            return [list(r) for r in zip(*g[::-1])]
-        if rot == "rot180":
-            return [list(r)[::-1] for r in g[::-1]]
-        return [list(r) for r in zip(*g)][::-1]         # counter-clockwise
+    if rot == "rot90":
+        gi, go = rot_cw(gi), rot_cw(go)
+    elif rot == "rot180":
+        gi, go = rot_180(gi), rot_180(go)
+    elif rot == "rot270":
+        gi, go = rot_ccw(gi), rot_ccw(go)
 
-    return {"input": _rot(gi), "output": _rot(go)}
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
-    """Every bar touches ONE grid edge; it slides away from that edge by its own
-    thickness (stopping when it hits the opposite wall). Pure translation ->
-    Move ops: one grab, then empty selections to keep the same object gliding."""
+    """Rule: every bar grows out of one grid edge; it is REFLECTED across its own
+    far edge, i.e. the strip made of the bar plus an equally long stretch of
+    background beyond it is mirrored.  That mirror is one Flip on that strip.
+    When the mirror image would run off the grid, the strip is clipped to the
+    grid and the part of the bar whose reflection landed off-grid is erased."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
+    ho, wo = O.shape
+
+    # bars never touch the two edges parallel to them, so all 4 corners are background
+    bgc = int(I[0, 0])
+
+    # --- find the bars (solid one-colour rectangles) -------------------------
+    seen = np.zeros((h, w), dtype=bool)
+    comps = []
+    for r in range(h):
+        for c in range(w):
+            if seen[r, c] or I[r, c] == bgc:
+                continue
+            col = int(I[r, c])
+            stack = [(r, c)]
+            seen[r, c] = True
+            cells = []
+            while stack:
+                rr, cc = stack.pop()
+                cells.append((rr, cc))
+                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nr, nc = rr + dr, cc + dc
+                    if 0 <= nr < h and 0 <= nc < w and not seen[nr, nc] and I[nr, nc] == col:
+                        seen[nr, nc] = True
+                        stack.append((nr, nc))
+            rs = [p[0] for p in cells]
+            cs = [p[1] for p in cells]
+            comps.append((min(rs), min(cs), max(rs), max(cs)))
+
     ops, sels = [], []
-
-    # background: 3 of the 4 border lines are always fully background here
-    border = ([(0, c) for c in range(w)] + [(h - 1, c) for c in range(w)]
-              + [(r, 0) for r in range(h)] + [(r, w - 1) for r in range(h)])
-    bgc = Counter(int(I[r, c]) for r, c in border).most_common(1)[0][0]
-
-    # which edge the bars grow from (only one border line carries non-bgc cells)
-    lines = [
-        ("bottom", [(h - 1, c) for c in range(w)]),
-        ("top",    [(0, c) for c in range(w)]),
-        ("left",   [(r, 0) for r in range(h)]),
-        ("right",  [(r, w - 1) for r in range(h)]),
-    ]
-    side = None
-    for name, cells in lines:
-        if any(I[r, c] != bgc for r, c in cells):
-            side = name
-            break
-    if side is None:                                    # no bars at all
-        ops.append(34); sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
+    if not comps:
+        ops.append(34)
+        sels.append([0, 0, ho - 1, wo - 1])
         return ops, sels
 
-    # canonical view V: bars sit on V's LAST row and travel upward in V
-    if side == "bottom":
-        V = I
-        back = lambda i, j: (i, j)
-        mop = 20                                        # MoveU
-    elif side == "top":
-        V = I[::-1, :]
-        back = lambda i, j: (h - 1 - i, j)
-        mop = 21                                        # MoveD
-    elif side == "left":
-        V = np.rot90(I, 1)
-        back = lambda i, j: (j, w - 1 - i)
-        mop = 22                                        # MoveR
+    # --- which edge do all bars grow from? (unique: bars avoid the opposite edge)
+    anchor = None
+    for cand, test in (("bottom", lambda b: b[2] == h - 1),
+                       ("top",    lambda b: b[0] == 0),
+                       ("left",   lambda b: b[1] == 0),
+                       ("right",  lambda b: b[3] == w - 1)):
+        if all(test(b) for b in comps):
+            anchor = cand
+            break
+    if anchor is None:
+        anchor = "bottom"
+
+    if anchor in ("bottom", "top"):
+        comps.sort(key=lambda b: b[1])      # along the anchoring edge
     else:
-        V = np.rot90(I, 3)
-        back = lambda i, j: (h - 1 - j, i)
-        mop = 23                                        # MoveL
-    H, W = V.shape
+        comps.sort(key=lambda b: b[0])
 
-    # bars = maximal runs of columns sharing (colour, top row) — measured from I
-    objs = []
-    for c in range(W):
-        if V[H - 1, c] == bgc:
-            continue
-        col = int(V[H - 1, c]); r = H - 1
-        while r - 1 >= 0 and V[r - 1, c] == col:
-            r -= 1
-        if objs and objs[-1][0] == col and objs[-1][1] == r and objs[-1][3] == c - 1:
-            objs[-1][3] = c
-        else:
-            objs.append([col, r, c, c])
+    def rect(r0, c0, r1, c1):
+        return [(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)]
 
-    for col, r, c0, c1 in objs:
-        ht = H - r                                      # bar thickness
-        src = [back(i, j) for i in range(r, H) for j in range(c0, c1 + 1)]
-        dst_rows = [i for i in range(r - ht, r) if 0 <= i < H]
+    for (r0, c0, r1, c1) in comps:
+        if anchor == "bottom":
+            L = h - r0                       # bar length
+            R0 = max(0, h - 2 * L)           # strip = bar + equal stretch above, clipped
+            # bbox selection is intentional: the WHOLE strip (bar + background) is mirrored
+            ops.append(27); sels.append(sel_of(rect(R0, c0, h - 1, c1)))
+            if 2 * L > h:                    # reflection ran off the top edge
+                ops.append(bgc); sels.append(sel_of(rect(h - L, c0, L - 1, c1)))
+        elif anchor == "top":
+            L = r1 + 1
+            R1 = min(h - 1, 2 * L - 1)
+            ops.append(27); sels.append(sel_of(rect(0, c0, R1, c1)))
+            if 2 * L > h:
+                ops.append(bgc); sels.append(sel_of(rect(h - L, c0, L - 1, c1)))
+        elif anchor == "left":
+            L = c1 + 1
+            C1 = min(w - 1, 2 * L - 1)
+            ops.append(26); sels.append(sel_of(rect(r0, 0, r1, C1)))
+            if 2 * L > w:
+                ops.append(bgc); sels.append(sel_of(rect(r0, w - L, r1, L - 1)))
+        else:  # right
+            L = w - c0
+            C0 = max(0, w - 2 * L)
+            ops.append(26); sels.append(sel_of(rect(r0, C0, r1, w - 1)))
+            if 2 * L > w:
+                ops.append(bgc); sels.append(sel_of(rect(r0, w - L, r1, L - 1)))
 
-        if col == 0:
-            # 0 is transparent to ARCLE object ops: this bar cannot be carried
-            # by a Move, so erase it and draw it at its destination.
-            ops.append(bgc); sels.append(sel_of(src))
-            dst = [back(i, j) for i in dst_rows for j in range(c0, c1 + 1)]
-            if dst:
-                ops.append(0); sels.append(sel_of(dst))
-            continue
-
-        # slide by its own thickness; when the bar is thicker than the gap it
-        # simply stops against the far wall (further steps only push cells off).
-        steps = ht if bgc == 0 else min(ht, r)
-        if steps > 0:
-            ops.append(mop); sels.append(sel_of(src))            # grab the bar
-            for _ in range(steps - 1):
-                ops.append(mop); sels.append(sel_of([]))         # keep it gliding
-
-        # the grab zeroed the bar's original footprint; restore it to background
-        # (and clear any part of the bar still standing there after the slide)
-        need = []
-        for i in range(r, H):
-            still_bar = (max(0, r - steps) <= i <= H - 1 - steps)
-            if bgc != 0 or still_bar:
-                need.extend(back(i, j) for j in range(c0, c1 + 1))
-        if need:
-            ops.append(bgc); sels.append(sel_of(need))
-
-    ops.append(34); sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
+    ops.append(34)
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -269,7 +298,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

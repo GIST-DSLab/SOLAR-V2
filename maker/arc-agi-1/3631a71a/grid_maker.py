@@ -34,7 +34,8 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import numpy as np
-from collections import Counter, deque
+from itertools import product
+from collections import Counter
 from maker.sel_helpers import sel_of
 
 
@@ -45,197 +46,244 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "patchcol": patchcol}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int, patchcol: int) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, patchcol) -> dict:
     cols = interval(0, 10, 1)
-    # grid side = 2*h-2  ->  h <= (max+2)//2
-    hcap = min(15, (min(max_h, max_w) + 2) // 2)
-    if hcap < 6:
-        hcap = 6
-    h = unifint(diff_lb, diff_ub, (6, hcap))
-    w = h
+    hub = min(15, (min(max_h, max_w) + 2) // 2)
+    hub = max(6, hub)
     remcols = difference(cols, (bgc, patchcol))
-    c = canvas(bgc, (h, w))
-    inds = sfilter(asindices(c), lambda ij: ij[0] >= ij[1])
-    ncols = unifint(diff_lb, diff_ub, (1, 8))
-    ccols = sample(remcols, ncols)
-    ncells = unifint(diff_lb, diff_ub, (1, len(inds)))
-    cells = set(sample(totuple(inds), ncells))
-    obj = {(choice(ccols), ij) for ij in cells}
-    c = paint(dmirror(paint(c, obj)), obj)
-    c = hconcat(c, vmirror(c))
-    c = vconcat(c, hmirror(c))
-    cutoff = 2
-    go = dmirror(dmirror(c[:-cutoff])[:-cutoff])
-    gi = tuple(e for e in go)
-    forbidden = asindices(canvas(-1, (cutoff, cutoff)))
-    dmirrareaL = shift(asindices(canvas(-1, (h * 2 - 2 * cutoff, cutoff))), (cutoff, 0))
-    dmirrareaT = shift(asindices(canvas(-1, (cutoff, 2 * w - 2 * cutoff))), (0, cutoff))
-    inds1 = sfilter(asindices(gi), lambda ij: cutoff <= ij[0] < h and cutoff <= ij[1] < w and ij[0] >= ij[1])
-    inds2 = dmirror(inds1)
-    inds3 = shift(hmirror(inds1), (h - cutoff, 0))
-    inds4 = shift(hmirror(inds2), (h - cutoff, 0))
-    inds5 = shift(vmirror(inds1), (0, w - cutoff))
-    inds6 = shift(vmirror(inds2), (0, w - cutoff))
-    inds7 = shift(hmirror(vmirror(inds1)), (h - cutoff, w - cutoff))
-    inds8 = shift(hmirror(vmirror(inds2)), (h - cutoff, w - cutoff))
-    f1 = identity
-    f2 = dmirror
-    f3 = lambda x: hmirror(shift(x, invert((h - cutoff, 0))))
-    f4 = lambda x: dmirror(hmirror(shift(x, invert((h - cutoff, 0)))))
-    f5 = lambda x: vmirror(shift(x, invert((0, w - cutoff))))
-    f6 = lambda x: dmirror(vmirror(shift(x, invert((0, w - cutoff)))))
-    f7 = lambda x: vmirror(hmirror(shift(x, invert((h - cutoff, w - cutoff)))))
-    f8 = lambda x: dmirror(vmirror(hmirror(shift(x, invert((h - cutoff, w - cutoff))))))
-    indsarr = [inds1, inds2, inds3, inds4, inds5, inds6, inds7, inds8]
-    farr = [f1, f2, f3, f4, f5, f6, f7, f8]
-    ndist = unifint(diff_lb, diff_ub, (1, int((2 * h * 2 * w) ** 0.5)))
-    succ = 0
-    tr = 0
-    maxtr = 10 * ndist
-    fullh, fullw = shape(gi)
-    while succ < ndist and tr < maxtr:
-        tr += 1
-        oh = randint(2, h // 2 + 1)
-        ow = randint(2, w // 2 + 1)
-        loci = randint(0, fullh - oh)
-        locj = randint(0, fullw - ow)
-        bd = backdrop(frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)}))
-        isleft = set()
-        gi2 = fill(gi, patchcol, bd)
-        if patchcol in palette(toobject(forbidden, gi2)):
-            continue
-        oo1 = toindices(sfilter(toobject(dmirrareaL, gi2), lambda cij: cij[0] != patchcol))
-        oo2 = toindices(sfilter(toobject(dmirrareaT, gi2), lambda cij: cij[0] != patchcol))
-        oo2 = frozenset({(ij[1], ij[0]) for ij in oo2})
-        if oo1 | oo2 != dmirrareaL:
-            continue
-        for ii, ff in zip(indsarr, farr):
-            oo = toobject(ii, gi2)
-            rem = toindices(sfilter(oo, lambda cij: cij[0] != patchcol))
-            if len(rem) > 0:
-                isleft = isleft | ff(rem)
-        if isleft != inds1:
-            continue
-        succ += 1
-        gi = gi2
-    return {'input': gi, 'output': go}
+    while True:
+        h = unifint(diff_lb, diff_ub, (6, hub))
+        w = h
+        c = canvas(bgc, (h, w))
+        inds = sfilter(asindices(c), lambda ij: ij[0] >= ij[1])
+        ncols = unifint(diff_lb, diff_ub, (1, 8))
+        ccols = sample(remcols, ncols)
+        ncells = unifint(diff_lb, diff_ub, (1, len(inds)))
+        cells = set(sample(totuple(inds), ncells))
+        obj = {(choice(ccols), ij) for ij in cells}
+        c = paint(dmirror(paint(c, obj)), obj)
+        c = hconcat(c, vmirror(c))
+        c = vconcat(c, hmirror(c))
+        cutoff = 2
+        go = dmirror(dmirror(c[:-cutoff])[:-cutoff])
+        gi = tuple(e for e in go)
+        forbidden = asindices(canvas(-1, (cutoff, cutoff)))
+        dmirrareaL = shift(asindices(canvas(-1, (h * 2 - 2 * cutoff, cutoff))), (cutoff, 0))
+        dmirrareaT = shift(asindices(canvas(-1, (cutoff, 2 * w - 2 * cutoff))), (0, cutoff))
+        inds1 = sfilter(asindices(gi), lambda ij: cutoff <= ij[0] < h and cutoff <= ij[1] < w and ij[0] >= ij[1])
+        inds2 = dmirror(inds1)
+        inds3 = shift(hmirror(inds1), (h - cutoff, 0))
+        inds4 = shift(hmirror(inds2), (h - cutoff, 0))
+        inds5 = shift(vmirror(inds1), (0, w - cutoff))
+        inds6 = shift(vmirror(inds2), (0, w - cutoff))
+        inds7 = shift(hmirror(vmirror(inds1)), (h - cutoff, w - cutoff))
+        inds8 = shift(hmirror(vmirror(inds2)), (h - cutoff, w - cutoff))
+        f1 = identity
+        f2 = dmirror
+        f3 = lambda x: hmirror(shift(x, invert((h - cutoff, 0))))
+        f4 = lambda x: dmirror(hmirror(shift(x, invert((h - cutoff, 0)))))
+        f5 = lambda x: vmirror(shift(x, invert((0, w - cutoff))))
+        f6 = lambda x: dmirror(vmirror(shift(x, invert((0, w - cutoff)))))
+        f7 = lambda x: vmirror(hmirror(shift(x, invert((h - cutoff, w - cutoff)))))
+        f8 = lambda x: dmirror(vmirror(hmirror(shift(x, invert((h - cutoff, w - cutoff))))))
+        indsarr = [inds1, inds2, inds3, inds4, inds5, inds6, inds7, inds8]
+        farr = [f1, f2, f3, f4, f5, f6, f7, f8]
+        ndist = unifint(diff_lb, diff_ub, (1, int((2 * h * 2 * w) ** 0.5)))
+        succ = 0
+        tr = 0
+        maxtr = 10 * ndist
+        fullh, fullw = shape(gi)
+        while succ < ndist and tr < maxtr:
+            tr += 1
+            oh = randint(2, h // 2 + 1)
+            ow = randint(2, w // 2 + 1)
+            loci = randint(0, fullh - oh)
+            locj = randint(0, fullw - ow)
+            bd = backdrop(frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)}))
+            isleft = set()
+            gi2 = fill(gi, patchcol, bd)
+            if patchcol in palette(toobject(forbidden, gi2)):
+                continue
+            oo1 = toindices(sfilter(toobject(dmirrareaL, gi2), lambda cij: cij[0] != patchcol))
+            oo2 = toindices(sfilter(toobject(dmirrareaT, gi2), lambda cij: cij[0] != patchcol))
+            oo2 = frozenset({(ij[1], ij[0]) for ij in oo2})
+            if oo1 | oo2 != dmirrareaL:
+                continue
+            for ii, ff in zip(indsarr, farr):
+                oo = toobject(ii, gi2)
+                rem = toindices(sfilter(oo, lambda cij: cij[0] != patchcol))
+                if len(rem) > 0:
+                    isleft = isleft | ff(rem)
+            if isleft != inds1:
+                continue
+            succ += 1
+            gi = gi2
+        if succ > 0:
+            return {'input': gi, 'output': go}
+
+
+def _sim(I, ops, sels):
+    """Local ARCLE model (Color / CopyI / CopyO / Paste / Flip / Rotate)."""
+    G = np.asarray(I, dtype=int).copy()
+    clip = None
+    changed = []
+    for op, sel in zip(ops, sels):
+        before = G.copy()
+        if isinstance(sel, dict):
+            cells = [tuple(c) for c in sel["cells"]]
+        else:
+            r, c, h, w = sel
+            cells = [(rr, cc) for rr in range(r, r + h + 1) for cc in range(c, c + w + 1)]
+        rs = [p[0] for p in cells]
+        cs = [p[1] for p in cells]
+        if 0 <= op <= 9:
+            for (r, c) in cells:
+                G[r, c] = op
+        elif op == 29:
+            clip = G[min(rs):max(rs) + 1, min(cs):max(cs) + 1].copy()
+        elif op == 28:
+            clip = np.asarray(I, dtype=int)[min(rs):max(rs) + 1, min(cs):max(cs) + 1].copy()
+        elif op == 30:
+            if clip is not None:
+                r0, c0 = min(rs), min(cs)
+                ch, cw = clip.shape
+                for i in range(ch):
+                    for j in range(cw):
+                        if clip[i, j] != 0 and r0 + i < G.shape[0] and c0 + j < G.shape[1]:
+                            G[r0 + i, c0 + j] = clip[i, j]
+        elif op in (24, 25, 26, 27):
+            r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
+            reg = G[r0:r1 + 1, c0:c1 + 1]
+            if op == 24:
+                reg2 = np.rot90(reg, 1)
+            elif op == 25:
+                reg2 = np.rot90(reg, 3)
+            elif op == 26:
+                reg2 = np.fliplr(reg)
+            else:
+                reg2 = np.flipud(reg)
+            if reg2.shape == reg.shape:
+                G[r0:r1 + 1, c0:c1 + 1] = reg2
+        changed.append(not np.array_equal(before, G))
+    return G, changed
+
+
+def _patch_color(I, O):
+    """The occluder colour: the solid rectangles that break the grid's mirrors."""
+    N, M = I.shape
+    cand = None
+    for i in range(N):
+        for j in range(M):
+            pairs = [(j, i)] if (j < N and i < M) else []
+            if 2 <= i <= N - 1 and 2 <= N + 1 - i <= N - 1:
+                pairs.append((N + 1 - i, j))
+            if 2 <= j <= M - 1 and 2 <= M + 1 - j <= M - 1:
+                pairs.append((i, M + 1 - j))
+            for (a, b) in pairs:
+                if I[i, j] != I[a, b]:
+                    s = {int(I[i, j]), int(I[a, b])}
+                    cand = s if cand is None else (cand & s)
+    if cand and len(cand) == 1:
+        return cand.pop()
+    extra = set(np.unique(I).tolist()) - set(np.unique(O).tolist())
+    if len(extra) == 1:
+        return extra.pop()
+    diff = I != O
+    if diff.any():
+        return int(Counter(I[diff].tolist()).most_common(1)[0][0])
+    return None
 
 
 def derive_operations(I, O):
-    """
-    Rule (measured from I alone):
-      The grid is a crop of a fully mirror-symmetric canvas: the symmetry group is
-      generated by  transpose (r,c)->(c,r),  row-mirror r -> (H+1)-r,  col-mirror
-      c -> (W+1)-c  (the +1 comes from the 2-cell crop of the doubled canvas).
-      One colour `patchcol` occludes rectangular patches.  For every symmetry orbit,
-      the non-patch cells all agree; each occluded cell is restored to that value.
-    Ops: one Color op per (occluding patch region, restored colour).
-    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    ho, wo = O.shape
-    ops, sels = [], []
+    N, M = I.shape
+    full = [0, 0, N - 1, M - 1]
+    if np.array_equal(I, O):
+        return [34], [full]
 
-    # --- build symmetry orbits in the uncropped (hi+2) x (wi+2) canvas -------
-    R, Cc = hi + 2, wi + 2
-    owner = -np.ones((hi, wi), dtype=int)
-    orbits = []
-    for r in range(hi):
-        for c in range(wi):
-            if owner[r, c] >= 0:
-                continue
-            s = {(r, c)}
-            stack = [(r, c)]
-            while stack:
-                a, b = stack.pop()
-                cands = [(R - 1 - a, b), (a, Cc - 1 - b)]
-                if R == Cc:
-                    cands.append((b, a))
-                for x, y in cands:
-                    if 0 <= x < R and 0 <= y < Cc and (x, y) not in s:
-                        s.add((x, y))
-                        stack.append((x, y))
-            cells = sorted((a, b) for (a, b) in s if a < hi and b < wi)
-            idx = len(orbits)
-            orbits.append(cells)
-            for a, b in cells:
-                owner[a, b] = idx
+    patchcol = _patch_color(I, O)
+    patches = [tuple(p) for p in np.argwhere(I == patchcol)]
 
-    # --- identify the occluding colour: the unique colour whose removal makes
-    #     every orbit single-valued and still fully determined -----------------
-    best_p, best_score = None, -1
-    for p in sorted(set(I.flatten().tolist())):
-        ok = True
-        changed = 0
-        for cells in orbits:
-            vals = set()
-            npatch = 0
-            for (a, b) in cells:
-                v = int(I[a, b])
-                if v == p:
-                    npatch += 1
-                else:
-                    vals.add(v)
-            if len(vals) > 1 or (len(vals) == 0 and npatch > 0):
-                ok = False
-                break
-            changed += npatch
-        if ok and changed > best_score:
-            best_p, best_score = p, changed
+    ops0, sels0 = [], []
+    if patchcol != 0 and patches:
+        # punch the occluding patches out: 0 means "unknown", and 0 is exactly
+        # what Paste lets through, so a reflection shows through only there
+        ops0.append(0)
+        sels0.append(sel_of(patches))
 
-    if best_p is None or best_score <= 0:
-        ops.append(34)
-        sels.append([0, 0, ho - 1, wo - 1])
-        return ops, sels
+    band_r = [2, 0, N - 3, M - 1]     # rows 2..N-1 : whole band, the up/down mirror
+    band_c = [0, 2, N - 1, M - 3]     # cols 2..M-1 : whole band, the left/right mirror
+    block = [2, 2, N - 3, M - 3]      # rows/cols 2.. : the anti-diagonal square
 
-    patchcol = best_p
+    # A pass = reflect one region of the grid, then lay the punched grid back on
+    # top of it. Every bbox below is exactly the rectangle being reflected.
+    PASSES = []
+    if N == M:
+        # reflection across the main diagonal = rot90 CCW then flip up/down
+        PASSES.append(("T1", [29, 24, 27, 30], [full, full, full, [0, 0, 0, 0]]))
+        PASSES.append(("T2", [29, 25, 26, 30], [full, full, full, [0, 0, 0, 0]]))
+        # reflection across the anti-diagonal of the rows/cols 2.. square
+        PASSES.append(("A1", [29, 24, 26, 30], [block, block, block, [2, 2, 0, 0]]))
+        PASSES.append(("A2", [29, 25, 27, 30], [block, block, block, [2, 2, 0, 0]]))
+    PASSES.append(("H", [29, 27, 30], [band_r, band_r, [2, 0, 0, 0]]))   # up/down
+    PASSES.append(("V", [29, 26, 30], [band_c, band_c, [0, 2, 0, 0]]))   # left/right
 
-    # --- restored value per occluded cell, measured from its orbit in I ------
-    target = {}
-    for cells in orbits:
-        vals = [int(I[a, b]) for (a, b) in cells if int(I[a, b]) != patchcol]
-        if not vals:
-            continue
-        v = vals[0]
-        for (a, b) in cells:
-            if int(I[a, b]) == patchcol:
-                target[(a, b)] = v
+    def clean(ops, sels):
+        """Reaches O, every op visibly acts, and no single op can be dropped."""
+        G, changed = _sim(I, ops, sels)
+        if not np.array_equal(G, O):
+            return False
+        for k, o in enumerate(ops):
+            if o not in (28, 29) and not changed[k]:
+                return False
+        for k in range(len(ops)):
+            G2, _ = _sim(I, ops[:k] + ops[k + 1:], sels[:k] + sels[k + 1:])
+            if G2.shape == O.shape and np.array_equal(G2, O):
+                return False
+        return True
 
-    # --- group the occlusion into connected patch regions -------------------
-    ispatch = (I == patchcol)
-    visited = np.zeros((hi, wi), dtype=bool)
-    regions = []
-    for r in range(hi):
-        for c in range(wi):
-            if not ispatch[r, c] or visited[r, c]:
-                continue
-            comp = []
-            q = deque([(r, c)])
-            visited[r, c] = True
-            while q:
-                a, b = q.popleft()
-                comp.append((a, b))
-                for x, y in ((a - 1, b), (a + 1, b), (a, b - 1), (a, b + 1)):
-                    if 0 <= x < hi and 0 <= y < wi and ispatch[x, y] and not visited[x, y]:
-                        visited[x, y] = True
-                        q.append((x, y))
-            regions.append(sorted(comp))
+    if N > 4 and M > 4:
+        for L in (1, 2, 3):
+            for seq in product(PASSES, repeat=L):
+                ops = list(ops0)
+                sels = list(sels0)
+                for _, pops, psels in seq:
+                    ops += pops
+                    sels += psels
+                if clean(ops, sels):
+                    ops.append(34)
+                    sels.append(full)
+                    return ops, sels
 
-    # --- one Color op per (region, restored colour); regions handled whole ---
-    for comp in regions:
-        bycol = {}
-        for cell in comp:
-            if cell in target:
-                bycol.setdefault(target[cell], []).append(cell)
-        for col in sorted(bycol):
-            cells = sorted(bycol[col])
-            ops.append(int(col))
-            sels.append(sel_of(cells))
-
+    # Fallback: keep whichever reflections still reveal something, close any
+    # hole that is left from its mirror value, then drop anything droppable.
+    ops, sels = list(ops0), list(sels0)
+    for _round in range(3):
+        for _, pops, psels in PASSES:
+            cand_ops, cand_sels = ops + pops, sels + psels
+            if not np.array_equal(_sim(I, cand_ops, cand_sels)[0], _sim(I, ops, sels)[0]):
+                ops, sels = cand_ops, cand_sels
+    G, _ = _sim(I, ops, sels)
+    rest = {}
+    for r in range(N):
+        for c in range(M):
+            if G[r, c] != O[r, c]:
+                rest.setdefault(int(O[r, c]), []).append((r, c))
+    for col, cells in sorted(rest.items()):
+        ops.append(col)
+        sels.append(sel_of(cells))
+    k = 0
+    while k < len(ops):
+        G2, _ = _sim(I, ops[:k] + ops[k + 1:], sels[:k] + sels[k + 1:])
+        if G2.shape == O.shape and np.array_equal(G2, O):
+            ops.pop(k)
+            sels.pop(k)
+            k = 0
+        else:
+            k += 1
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append(full)
     return ops, sels
 
 
@@ -279,7 +327,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

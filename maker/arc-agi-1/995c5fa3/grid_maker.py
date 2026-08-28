@@ -36,109 +36,123 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 
-# shape index -> (cell set inside the 4x4 block, output label colour)
-#   0: full block                      -> 2
-#   1: box outline                     -> 8
-#   2: full minus 2 left/right notches -> 3
-#   3: full minus bottom 2x2 notch     -> 4
-_FULL = {(r, c) for r in range(4) for c in range(4)}
-_SHAPES = [
-    set(_FULL),                                                   # o1
-    {(r, c) for (r, c) in _FULL if r in (0, 3) or c in (0, 3)},   # o2 (box)
-    _FULL - {(1, 0), (2, 0), (1, 3), (2, 3)},                     # o3
-    _FULL - {(2, 1), (2, 2), (3, 1), (3, 2)},                     # o4
-]
-_LABELS = [2, 8, 3, 4]
 
-# every variant contains all four shape types (and its first 4 entries do too,
-# so a max_w-driven truncation still teaches the full shape->colour mapping)
-VARIANTS = [
-    {"shapes": [0, 1, 2, 3]},
-    {"shapes": [3, 2, 1, 0]},
-    {"shapes": [1, 3, 0, 2, 1]},
-    {"shapes": [2, 0, 3, 1, 2, 0]},
-]
+# The four 4x4 stamps the generator uses, in the order (object, output colour)
+# o1 = solid square            -> 2   (a single colour)
+# o2 = box / hollow border     -> 8   (nothing special holds)
+# o3 = square minus side dents -> 3   (top-left cell differs from the one below)
+# o4 = square minus a 2x2 bite -> 4   (the only stamp that is NOT up-down symmetric)
+def _stamps():
+    o1 = [(r, c) for r in range(4) for c in range(4)]
+    o2 = [(r, c) for (r, c) in o1 if r in (0, 3) or c in (0, 3)]
+    o3 = [(r, c) for (r, c) in o1 if (r, c) not in {(1, 0), (2, 0), (1, 3), (2, 3)}]
+    o4 = [(r, c) for (r, c) in o1 if (r, c) not in {(2, 1), (2, 2), (3, 1), (3, 2)}]
+    return [(o1, 2), (o2, 8), (o3, 3), (o4, 4)]
 
 
 def sample_colors(num_examples=None) -> dict:
+    # Only the background is a fixed role: the rule reads SHAPE, not stamp colour,
+    # so per-block colours may stay random.  What must be planned is the set of
+    # stamp types, so every shape -> colour mapping the test can show is demoed.
     bgc = random.choice(range(10))
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
-    else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
+
+    order = [0, 1, 2, 3]
+    random.shuffle(order)
+    groups = [[] for _ in range(max(1, n_ex))]
+    for i, s in enumerate(order):
+        groups[i % len(groups)].append(s)
+
+    plan = []
+    for g in groups:
+        shapes = list(g)
+        random.shuffle(shapes)
+        plan.append({"shapes": shapes})
+    seen = plan[random.randrange(len(plan))]
+    plan.append({"shapes": list(seen["shapes"])})       # test reuses a demoed combo
     return {"bgc": bgc, "instance_plan": plan}
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, shapes=None) -> dict:
-    max_num = max(1, min((max_w + 1) // 5, max_h, 6))
-    if shapes is None:
-        n = random.randint(1, max_num)
-        shapes = [random.randrange(4) for _ in range(n)]
-    else:
-        shapes = list(shapes)[:max_num]
-    num = len(shapes)
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
 
-    h = 4
-    w = 5 * num - 1
-    remcols = [c for c in range(10) if c != bgc]
+    mpr = _stamps()
+    cols = [c for c in range(10) if c != bgc]
 
+    # input is 4 x (5*num - 1); output is num x num
+    num_ub = max(1, min(6, (max_w + 1) // 5, max_h, max_w))
+    num = unifint(diff_lb, diff_ub, (1, num_ub))
+
+    plan = [s for s in (shapes or []) if isinstance(s, int) and 0 <= s < 4]
+    if len(plan) > num:
+        num = min(len(plan), num_ub)
+    plan = plan[:num]
+    while len(plan) < num:
+        plan.append(random.randrange(4))
+    random.shuffle(plan)
+
+    h, w = 4, 5 * num - 1
     gi = [[bgc] * w for _ in range(h)]
-    for k, si in enumerate(shapes):
-        col = random.choice(remcols)
-        for (r, c) in _SHAPES[si]:
-            gi[r][c + 5 * k] = col
+    ccols = []
+    for k, s in enumerate(plan):
+        obj, outcol = mpr[s]
+        col = random.choice(cols)
+        for (r, c) in obj:
+            gi[r][5 * k + c] = col
+        ccols.append(outcol)
 
-    go = [[_LABELS[si]] * num for si in shapes]
-    return {
-        "input": tuple(tuple(row) for row in gi),
-        "output": tuple(tuple(row) for row in go),
-    }
+    go = [[c] * num for c in ccols]
+    return {"input": tuple(tuple(r) for r in gi),
+            "output": tuple(tuple(r) for r in go)}
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+    n = (wi + 1) // 5                      # number of 4x4 stamps, read from I's width
 
-    # blocks are 4x4 patches at column stride 5
-    num = (wi + 1) // 5
-
-    # classify each block patch straight out of I -> its label colour
+    # --- score every stamp, left to right, straight from the input -------------
     labels = []
-    for k in range(num):
-        P = I[0:4, 5 * k:5 * k + 4]
-        if len(set(P.flatten().tolist())) == 1:          # solid block
-            lab = 2
-        elif not np.array_equal(P, P[::-1, :]):          # not up/down symmetric
-            lab = 4
-        elif int(P[0, 0]) != int(P[1, 0]):               # top-left edge broken
-            lab = 3
-        else:                                            # hollow box
-            lab = 8
+    for k in range(n):
+        B = I[0:4, 5 * k:5 * k + 4]
+        if len(set(B.flatten().tolist())) == 1:
+            lab = 2                        # one colour -> solid square
+        elif not np.array_equal(B, np.flipud(B)):
+            lab = 4                        # not up-down symmetric -> bitten square
+        elif B[0, 0] != B[1, 0]:
+            lab = 3                        # dented sides
+        else:
+            lab = 8                        # box
         labels.append(lab)
 
     ops, sels = [], []
 
-    # canvas needs one row per block; grow it when there are more blocks than rows
-    if num > hi:
-        ops.append(33)
-        sels.append([0, 0, num - 1, wi - 1])
+    # 1. grow the canvas by n scratch rows under the strip of stamps.
+    #    selection is exactly this full rectangle (whole new canvas).
+    ops.append(33); sels.append([0, 0, hi + n - 1, wi - 1])
 
-    # each block becomes one solid row of its label colour
+    # 2. write each stamp's score into the scratch row, in stamp order.
     for k, lab in enumerate(labels):
-        ops.append(lab)
-        sels.append([k, 0, 0, num - 1])
+        ops.append(lab); sels.append([hi, k, 0, 0])     # exactly this one cell
 
-    # keep only the num x num answer block
-    ops.append(33)
-    sels.append([0, 0, num - 1, num - 1])
+    if n > 1:
+        # 3. the stamps run left-to-right but the answer stacks them top-to-bottom:
+        #    rotate the score run a quarter turn clockwise so it stands up.
+        #    selection is exactly the n x n scratch square (square -> rotate is exact).
+        ops.append(25); sels.append([hi, 0, n - 1, n - 1])
+        # scores now occupy column n-1 of that square, in the same order.
 
-    ops.append(34)
-    sels.append([0, 0, num - 1, num - 1])
+        # 4. each score fills a whole output row: repeat the score column across.
+        ops.append(29); sels.append([hi, n - 1, n - 1, 0])   # exactly that column
+        for c in range(n - 1):
+            ops.append(30); sels.append([hi, c, 0, 0])       # paste origin
+
+    # 5. keep only the answer square.
+    ops.append(33); sels.append([hi, 0, n - 1, n - 1])
+    ops.append(34); sels.append([0, 0, n - 1, n - 1])
     return ops, sels
 
 
@@ -182,7 +196,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

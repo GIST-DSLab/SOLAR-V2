@@ -38,26 +38,37 @@ import numpy as np
 from collections import Counter
 from maker.sel_helpers import sel_of
 
-# ---------------------------------------------------------------- #
-# Discrete structural variants: bar orientation + which side the
-# object sits on.  Base construction = vertical bar, object to the
-# RIGHT of it; the other three are reached by mirroring.
-# ---------------------------------------------------------------- #
+
+# ---------------------------------------------------------------- helpers ---
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        a, b = b, a
+    lo = int(a + diff_lb * (b - a))
+    hi = int(a + diff_ub * (b - a))
+    lo = min(max(a, lo), b)
+    hi = min(max(a, hi), b)
+    if hi < lo:
+        lo, hi = hi, lo
+    return random.randint(lo, hi)
+
+
+# The four structural variants: where the 2-bar lies, and which side of it the
+# object sits on (i.e. which way the object has to slide).
 VARIANTS = [
-    {"axis": "v", "side": "right"},   # identity
-    {"axis": "v", "side": "left"},    # vmirror
-    {"axis": "h", "side": "below"},   # dmirror
-    {"axis": "h", "side": "above"},   # dmirror then hmirror
+    {"orientation": "vertical",   "mirrored": False},   # bar |, object right of it
+    {"orientation": "vertical",   "mirrored": True},    # bar |, object left of it
+    {"orientation": "horizontal", "mirrored": False},   # bar -, object below it
+    {"orientation": "horizontal", "mirrored": True},    # bar -, object above it
 ]
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = [c for c in range(10) if c not in (2, 8)]
-    bgc = random.choice(cols)
-    # objc must be non-zero: ARCLE object-grab only picks up nonzero cells
-    objc = random.choice([c for c in cols if c != bgc and c != 0])
+    # objc must be non-zero: ARCLE object ops (Move) only grab non-zero cells.
+    objc = random.choice([c for c in range(1, 10) if c not in (2, 8)])
+    bgc = random.choice([c for c in range(10) if c not in (2, 8, objc)])
 
-    n_ex = num_examples if num_examples else 4
+    n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
         examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
@@ -68,119 +79,171 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "objc": objc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, axis=None, side=None) -> dict:
-    if axis is None or side is None:
-        v = random.choice(VARIANTS)
-        axis, side = v["axis"], v["side"]
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc,
+             orientation=None, mirrored=None) -> dict:
+    if orientation is None:
+        orientation = random.choice(["vertical", "horizontal"])
+    if mirrored is None:
+        mirrored = random.choice([True, False])
 
-    while True:
-        h = unifint(diff_lb, diff_ub, (4, max_h))
-        w = unifint(diff_lb, diff_ub, (6, max_w))
-        oh = unifint(diff_lb, diff_ub, (1, h))
-        ow = unifint(diff_lb, diff_ub, (1, (w - 1) // 2 - 1))
-        bb = asindices(canvas(-1, (oh, ow)))
-        sp = choice(totuple(bb))
-        obj = {sp}
-        bb = remove(sp, bb)
-        ncellsd = unifint(diff_lb, diff_ub, (0, (oh * ow) // 2))
-        ncells = choice((ncellsd, oh * ow - ncellsd))
-        ncells = min(max(0, ncells), oh * ow - 1)
-        for k in range(ncells):
-            obj.add(choice(totuple((bb - obj) & mapply(neighbors, obj))))
-        obj = normalize(obj)
-        oh, ow = shape(obj)
-        loci = randint(0, h - oh)
-        locj = unifint(diff_lb, diff_ub, (1, w - ow))
-        barlocji = unifint(diff_lb, diff_ub, (0, locj))
-        barlocj = locj - barlocji
-        barlocj = min(max(0, barlocj), locj - 1)
-        # the 8-frontier must actually fit on the canvas, else I == O
-        if barlocj + ow + 1 > w - 1:
-            continue
-        break
-
-    gi = canvas(bgc, (h, w))
-    gi = fill(gi, 2, connect((0, barlocj), (h - 1, barlocj)))
-    go = fill(gi, objc, shift(obj, (loci, barlocj + 1)))
-    go = fill(go, 8, connect((0, barlocj + ow + 1), (h - 1, barlocj + ow + 1)))
-    gi = fill(gi, objc, shift(obj, (loci, locj)))
-
-    if axis == "v":
-        if side == "left":
-            gi, go = vmirror(gi), vmirror(go)
+    max_h = min(int(max_h), 30)
+    max_w = min(int(max_w), 30)
+    if orientation == "horizontal" and (max_w < 4 or max_h < 6):
+        orientation = "vertical"
+    # base frame: bar is a vertical line, object to its right
+    if orientation == "vertical":
+        H, W = max_h, max_w
     else:
-        gi, go = dmirror(gi), dmirror(go)
-        if side == "above":
-            gi, go = hmirror(gi), hmirror(go)
+        H, W = max_w, max_h          # grid gets transposed at the end
 
-    return {'input': gi, 'output': go}
+    h = _unifint(diff_lb, diff_ub, (4, H))
+    w = _unifint(diff_lb, diff_ub, (6, W))
+
+    oh = _unifint(diff_lb, diff_ub, (1, h))
+    ow = _unifint(diff_lb, diff_ub, (1, max(1, (w - 1) // 2 - 1)))
+
+    # ---- grow a connected (8-neighbour) blob inside an oh x ow box ----
+    sp = (random.randrange(oh), random.randrange(ow))
+    obj = set()
+    cand = set()
+
+    def _add(cell):
+        obj.add(cell)
+        cand.discard(cell)
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                n = (cell[0] + dr, cell[1] + dc)
+                if 0 <= n[0] < oh and 0 <= n[1] < ow and n not in obj:
+                    cand.add(n)
+
+    _add(sp)
+    ncellsd = _unifint(diff_lb, diff_ub, (0, (oh * ow) // 2))
+    ncells = random.choice((ncellsd, oh * ow - ncellsd))
+    ncells = min(max(0, ncells), oh * ow - 1)
+    for _ in range(ncells):
+        if not cand:
+            break
+        _add(random.choice(sorted(cand)))
+
+    mi = min(r for r, _ in obj)
+    mj = min(c for _, c in obj)
+    obj = {(r - mi, c - mj) for r, c in obj}
+    oh = max(r for r, _ in obj) + 1
+    ow = max(c for _, c in obj) + 1
+
+    # ---- placement ----
+    loci = random.randint(0, h - oh)
+    locj = _unifint(diff_lb, diff_ub, (2, w - ow))          # >=2 -> object really slides
+    barlocji = _unifint(diff_lb, diff_ub, (0, locj))
+    ub = min(locj - 2, w - 2 - ow)                          # keeps the 8-line inside the grid
+    barlocj = min(max(0, locj - barlocji), ub)
+
+    gi = [[bgc] * w for _ in range(h)]
+    for r in range(h):
+        gi[r][barlocj] = 2
+    go = [row[:] for row in gi]
+    for (r, c) in obj:
+        go[loci + r][barlocj + 1 + c] = objc                # slid against the bar
+    for r in range(h):
+        go[r][barlocj + ow + 1] = 8                         # line beyond the far edge
+    for (r, c) in obj:
+        gi[loci + r][locj + c] = objc
+
+    gi = np.array(gi, dtype=int)
+    go = np.array(go, dtype=int)
+    if orientation == "horizontal":
+        gi, go = gi.T.copy(), go.T.copy()                   # dmirror
+        if mirrored:
+            gi, go = np.flipud(gi).copy(), np.flipud(go).copy()
+    else:
+        if mirrored:
+            gi, go = np.fliplr(gi).copy(), np.fliplr(go).copy()
+
+    return {"input": gi.tolist(), "output": go.tolist()}
+
+
+# ------------------------------------------------------------- derivation ---
+def _transpose_ops(h, w):
+    """Ops performing dmirror (transpose) of the whole h x w working grid.
+
+    transpose == flipud(rot90_CCW(grid)).  Every selection here is a FULL
+    rectangle (background included) on purpose - the reflection applies to the
+    whole canvas.
+    """
+    ops, sels = [], []
+    sq = max(h, w)
+    if h == w:
+        full = [0, 0, sq - 1, sq - 1]
+        ops.append(24); sels.append(full)                       # whole grid, CCW
+        ops.append(27); sels.append(full)                       # whole grid, up<->down
+    else:
+        ops.append(33); sels.append([0, 0, sq - 1, sq - 1])     # square the canvas
+        ops.append(24); sels.append([0, 0, sq - 1, sq - 1])     # CCW on the square
+        ops.append(27); sels.append([sq - w, 0, w - 1, h - 1])  # flip the content block
+        ops.append(33); sels.append([sq - w, 0, w - 1, h - 1])  # crop back to w x h
+    return ops, sels
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
     ops, sels = [], []
 
-    # background = the colour the generator paints the canvas with; it is a
-    # strict majority here (object width < half the grid).
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # The 2-line is the wall.  If it lies along a row, mirror the grid across its
+    # diagonal so the wall stands vertical (exactly the verifier's dmirror branch).
+    bar = np.argwhere(I == 2)
+    horizontal = len(set(int(r) for r, _ in bar)) == 1
 
-    twos = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == 2]
-    two_rows = set(r for r, c in twos)
-    two_cols = set(c for r, c in twos)
-    vertical_bar = (len(two_cols) == 1)
-
-    obj = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] not in (bgc, 2)]
-    r0 = min(r for r, c in obj); r1 = max(r for r, c in obj)
-    c0 = min(c for r, c in obj); c1 = max(c for r, c in obj)
-
-    if vertical_bar:
-        b = next(iter(two_cols))
-        ow = c1 - c0 + 1
-        if c0 > b:                      # object right of the bar -> slide left
-            steps = c0 - (b + 1)
-            move_op, dstep = 23, (0, -1)
-            line_idx = b + ow + 1
-        else:                           # object left of the bar -> slide right
-            steps = (b - 1) - c1
-            move_op, dstep = 22, (0, 1)
-            line_idx = b - ow - 1
-        line_cells = [(r, line_idx) for r in range(hi) if 0 <= line_idx < wi]
+    if horizontal:
+        t_ops, t_sels = _transpose_ops(hi, wi)
+        ops += t_ops; sels += t_sels
+        G = I.T.copy()
     else:
-        b = next(iter(two_rows))
-        oh = r1 - r0 + 1
-        if r0 > b:                      # object below the bar -> slide up
-            steps = r0 - (b + 1)
-            move_op, dstep = 20, (-1, 0)
-            line_idx = b + oh + 1
-        else:                           # object above the bar -> slide down
-            steps = (b - 1) - r1
-            move_op, dstep = 21, (1, 0)
-            line_idx = b - oh - 1
-        line_cells = [(line_idx, c) for c in range(wi) if 0 <= line_idx < hi]
+        G = I.copy()
 
-    # 1) slide the object until it touches the 2-line: one grab, then empties
+    h, w = G.shape
+    cnt = Counter(G.flatten().tolist())
+    bgc = cnt.most_common(1)[0][0]
+    objc = [c for c in cnt if c != bgc and c != 2][0]
+    bc = int(np.argwhere(G == 2)[0][1])
+
+    obj = [(int(r), int(c)) for r, c in np.argwhere(G == objc)]
+    cmin = min(c for _, c in obj)
+    cmax = max(c for _, c in obj)
+    ow = cmax - cmin + 1
+
+    if cmin > bc:                      # object right of the wall -> slide left
+        dc = (bc + 1) - cmin
+        line_col = bc + ow + 1
+    else:                              # object left of the wall -> slide right
+        dc = (bc - 1) - cmax
+        line_col = bc - ow - 1
+
+    # slide the object until it touches the wall: one grab, then empty selections
+    step = 1 if dc > 0 else -1
+    move_op = 22 if dc > 0 else 23
     cur = list(obj)
-    if steps > 0:
-        ops.append(move_op); sels.append(sel_of(cur))          # grab the object
-        cur = [(r + dstep[0], c + dstep[1]) for r, c in cur]
-        for _ in range(steps - 1):
-            ops.append(move_op); sels.append(sel_of([]))        # keep it grabbed
-            cur = [(r + dstep[0], c + dstep[1]) for r, c in cur]
+    for k in range(abs(dc)):
+        ops.append(move_op)
+        sels.append(sel_of(cur) if k == 0 else sel_of([]))
+        cur = [(r, c + step) for r, c in cur]
 
-        # 2) repair only the footprint the object no longer covers (ARCLE
-        #    zeroed the grabbed cells; the path it glided over is restored)
-        hole = sorted(set(obj) - set(cur))
-        if bgc != 0 and hole:
-            ops.append(int(bgc)); sels.append(sel_of(hole))
+    # only the footprint the object left behind needs repainting
+    hole = sorted(set(obj) - set(cur))
+    if bgc != 0 and hole:
+        ops.append(int(bgc)); sels.append(sel_of(hole))
 
-    # 3) draw the 8 frontier just beyond the object's far edge
-    if line_cells:
-        ops.append(8); sels.append(sel_of(line_cells))
+    # the 8-line: full line, one cell beyond the object's far edge
+    ops.append(8)
+    sels.append(sel_of([(r, line_col) for r in range(h)]))
 
-    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])   # full-grid rectangle
+    if horizontal:
+        t_ops, t_sels = _transpose_ops(h, w)     # mirror back across the diagonal
+        ops += t_ops; sels += t_sels
+
+    ho, wo = O.shape
+    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -224,7 +287,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

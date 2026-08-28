@@ -35,119 +35,180 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-
-VARIANTS = [{"issymm": True}, {"issymm": False}]
+from maker.sel_helpers import sel_of
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc = random.choice(cols)
-    n_ex = num_examples if num_examples else 4
+    rem = [c for c in cols if c != bgc]
+    ncols = random.randint(2, 9)
+    ccols = random.sample(rem, ncols)
+
+    VARIANTS = [{"issymm": True}, {"issymm": False}]
+    n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
         examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
         random.shuffle(examples)
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]  # test case included in plan
-    return {"bgc": bgc, "instance_plan": plan}
+    plan = examples + [dict(random.choice(examples))]
+    return {"bgc": bgc, "ccols": ccols, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, issymm=None) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols, issymm=None, **kwargs) -> dict:
     if issymm is None:
-        issymm = random.choice([True, False])
+        issymm = choice((True, False))
+    A = 1 if issymm else 7
+    mh = max(3, min(30, int(max_h)))
+    mw = max(3, min(30, int(max_w)))
+    ccols = list(ccols)
 
-    cols = list(range(10))
-    remcols = [c for c in cols if c != bgc]
+    while True:
+        h = unifint(diff_lb, diff_ub, (3, mh))
+        w = unifint(diff_lb, diff_ub, (3, mw))
+        ncols = unifint(diff_lb, diff_ub, (2, len(ccols)))
+        cc = sample(ccols, ncols)
 
-    def hmir(g):  # hmirror = up-down = flipud
-        return g[::-1, :]
+        gi = canvas(bgc, (h, w))
+        numcells = unifint(diff_lb, diff_ub, (1, h * w - 1))
+        inds = asindices(gi)
+        while gi == hmirror(gi):
+            cells = sample(totuple(inds), numcells)
+            gi = canvas(bgc, (h, w))
+            for ij in cells:
+                a, b = ij
+                col = choice(cc)
+                gi = fill(gi, col, {ij})
+                gi = fill(gi, col, {(a, w - 1 - b)})
 
-    def vmir(g):  # vmirror = left-right = fliplr
-        return g[:, ::-1]
+        if not issymm:
+            numpert = unifint(diff_lb, diff_ub, (1, h * (w // 2)))
+            cands = asindices(canvas(-1, (h, w // 2)))
+            locs = sample(totuple(cands), numpert)
+            for a, b in locs:
+                col = gi[a][b]
+                newcol = choice(totuple(remove(col, insert(bgc, set(cc)))))
+                gi = fill(gi, newcol, {(a, b)})
 
-    def dmir(g):  # dmirror = transpose
-        return g.T
+        go = canvas(A, (1, 1))
+        mfs = (identity, dmirror, cmirror, vmirror, hmirror, rot90, rot180, rot270)
+        nmfs = choice((1, 2))
+        for fn in sample(mfs, nmfs):
+            gi = fn(gi)
+            go = fn(go)
 
-    def cmir(g):  # cmirror = anti-transpose
-        return g[::-1, ::-1].T
+        # --- validity: verdict must be A, and a usable mirror-probe pair must exist ---
+        gl = [list(row) for row in gi]
+        hh, ww = len(gl), len(gl[0])
+        vs = all(gl[r][c] == gl[r][ww - 1 - c] for r in range(hh) for c in range(ww))
+        hs = all(gl[r][c] == gl[hh - 1 - r][c] for r in range(hh) for c in range(ww))
+        verdict = 1 if (vs or hs) else 7
+        if verdict != A:
+            continue
+        axes = ['H'] if vs else (['V'] if hs else ['H', 'V'])
+        ok = False
+        for ax in axes:
+            for r in range(hh):
+                for c in range(ww):
+                    pr, pc = (r, ww - 1 - c) if ax == 'H' else (hh - 1 - r, c)
+                    if (pr, pc) != (r, c) and gl[r][c] != A and gl[pr][pc] != A:
+                        ok = True
+                        break
+                if ok:
+                    break
+            if ok:
+                break
+        if not ok:
+            continue
 
-    def apply_fn(fn, g):
-        if fn == "identity":
-            return g
-        if fn == "dmirror":
-            return dmir(g)
-        if fn == "cmirror":
-            return cmir(g)
-        if fn == "vmirror":
-            return vmir(g)
-        if fn == "hmirror":
-            return hmir(g)
-        if fn == "rot90":
-            return np.rot90(g, 3)
-        if fn == "rot180":
-            return g[::-1, ::-1]
-        if fn == "rot270":
-            return np.rot90(g, 1)
-        return g
-
-    h = random.randint(3, max(3, max_h))
-    w = random.randint(3, max(3, max_w))
-
-    ncols = min(random.randint(2, 9), len(remcols))
-    ccols = random.sample(remcols, ncols)
-
-    inds = [(i, j) for i in range(h) for j in range(w)]
-    gi = np.full((h, w), bgc, dtype=int)
-    guard = 0
-    while np.array_equal(gi, hmir(gi)):
-        guard += 1
-        numcells = random.randint(1, h * w - 1)
-        cells = random.sample(inds, numcells)
-        gi = np.full((h, w), bgc, dtype=int)
-        for (a, b) in cells:
-            col = random.choice(ccols)
-            gi[a, b] = col
-            gi[a, w - 1 - b] = col
-        if guard > 200:
-            break
-
-    if not issymm:
-        cands = [(i, j) for i in range(h) for j in range(w // 2)]
-        numpert = min(random.randint(1, max(1, h * (w // 2))), len(cands))
-        locs = random.sample(cands, numpert)
-        for (a, b) in locs:
-            col = gi[a, b]
-            choices = [c for c in (set(ccols) | {bgc}) if c != col]
-            if choices:
-                gi[a, b] = random.choice(choices)
-
-    mfs = ["identity", "dmirror", "cmirror", "vmirror", "hmirror", "rot90", "rot180", "rot270"]
-    nmfs = random.choice([1, 2])
-    for fn in random.sample(mfs, nmfs):
-        gi = apply_fn(fn, gi)
-
-    # output determined by actual symmetry of final gi (matches verifier)
-    symmetric = np.array_equal(gi, vmir(gi)) or np.array_equal(gi, hmir(gi))
-    go = np.full((1, 1), 1 if symmetric else 7, dtype=int)
-
-    return {"input": gi.tolist(), "output": go.tolist()}
+        return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    """
+    Rule: the grid is tested against its mirror image.  The trajectory PERFORMS that
+    reflection: a probe cell is marked with the verdict colour, the whole grid is
+    reflected across the tested axis (FlipH = vmirror, FlipV = hmirror), which carries
+    the mark to the probe's mirror partner, and that partner cell is what gets cropped
+    out as the 1x1 answer.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
+    h, w = I.shape
+    A = int(O[0, 0])
 
-    # measure symmetry from I (NOT read from O)
-    symmetric = np.array_equal(I, np.fliplr(I)) or np.array_equal(I, np.flipud(I))
-    color = 1 if symmetric else 7
+    v_sym = np.array_equal(np.fliplr(I), I)   # vmirror symmetry
+    h_sym = np.array_equal(np.flipud(I), I)   # hmirror symmetry
+
+    # reflect across the axis the rule is satisfied by; if neither holds, test vmirror
+    if v_sym:
+        axes = ['H']
+    elif h_sym:
+        axes = ['V']
+    else:
+        axes = ['H', 'V']
+
+    chosen = None
+    for ax in axes:
+        cands = []
+        for r in range(h):
+            for c in range(w):
+                if ax == 'H':
+                    pr, pc = r, w - 1 - c
+                else:
+                    pr, pc = h - 1 - r, c
+                if (pr, pc) == (r, c):
+                    continue                      # cell maps onto itself: reflection invisible there
+                if I[r, c] == A or I[pr, pc] == A:
+                    continue                      # probe and target must both start off-verdict
+                cands.append((r, c, pr, pc))
+        if not cands:
+            continue
+        if not v_sym and not h_sym:
+            # prefer a pair that actually witnesses the broken symmetry
+            witness = [t for t in cands if I[t[0], t[1]] != I[t[2], t[3]]]
+            pick = witness[0] if witness else cands[0]
+        else:
+            pick = cands[0]
+        chosen = (ax, pick)
+        break
 
     ops, sels = [], []
-    # crop working canvas down to a single 1x1 cell
-    ops.append(33); sels.append([0, 0, 0, 0])
-    # paint that single cell with the measured symmetry color
-    ops.append(color); sels.append([0, 0, 0, 0])
-    ops.append(34); sels.append([0, 0, 0, 0])
+
+    if chosen is None:
+        # degenerate grid: no usable mirror pair — mark a cell and read it off directly
+        rc = None
+        for r in range(h):
+            for c in range(w):
+                if I[r, c] != A:
+                    rc = (r, c)
+                    break
+            if rc:
+                break
+        r, c = rc
+        ops.append(A);  sels.append(sel_of([(r, c)]))          # verdict mark
+        ops.append(33); sels.append([r, c, 0, 0])              # crop to that single cell
+        ops.append(34); sels.append([0, 0, 0, 0])
+        return ops, sels
+
+    ax, (r, c, pr, pc) = chosen
+
+    # 1. mark the probe cell with the verdict colour
+    ops.append(A)
+    sels.append(sel_of([(r, c)]))
+
+    # 2. perform the reflection on the WHOLE grid (full rectangle, background included)
+    ops.append(26 if ax == 'H' else 27)
+    sels.append([0, 0, h - 1, w - 1])
+
+    # 3. the mark now sits at the probe's mirror partner — crop it out as the answer
+    ops.append(33)
+    sels.append([pr, pc, 0, 0])
+
+    ops.append(34)
+    sels.append([0, 0, 0, 0])
     return ops, sels
 
 
@@ -191,7 +252,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

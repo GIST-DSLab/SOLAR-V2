@@ -33,34 +33,14 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-import numpy as np
-
-
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    lo = a + int((b - a) * diff_lb)
-    hi = a + int((b - a) * diff_ub)
-    lo = max(a, min(lo, b))
-    hi = max(a, min(hi, b))
-    if lo > hi:
-        lo, hi = hi, lo
-    return random.randint(lo, hi)
-
-
-def _dmirror(g):
-    return tuple(zip(*g))
-
-
-# discrete structural variant: which way the colour bands run
-# (transposed=True  -> horizontal bands, column-shaped output)
-# (transposed=False -> vertical bands,   row-shaped output)
-VARIANTS = [{"transposed": True}, {"transposed": False}]
-
-
 def sample_colors(num_examples=None) -> dict:
-    palette = list(range(10))
-    random.shuffle(palette)
+    import random
+    # The rule has two discrete structural cases (the generator's final coin-flip dmirror):
+    #   transposed=False -> stripes run down columns, answer is a 1 x n row
+    #   transposed=True  -> stripes run across rows,   answer is an n x 1 column
+    # Both must be shown in the examples, so the episode is learnable.
+    VARIANTS = [{"transposed": False}, {"transposed": True}]
+    palette = random.sample(range(10), 4)          # fixed stripe palette for the whole episode
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -68,42 +48,39 @@ def sample_colors(num_examples=None) -> dict:
         random.shuffle(examples)
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"palette": palette, "instance_plan": plan}
+    plan = examples + [dict(random.choice(examples))]   # test variant is one that was shown
+    return {"ccols": palette, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, palette, transposed=None) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, ccols=None, transposed=None, **kwargs) -> dict:
+    import random
+
+    def unifint(lb, ub):
+        if ub < lb:
+            ub = lb
+        return random.randint(lb + int((ub - lb) * diff_lb), lb + int((ub - lb) * diff_ub))
+
     if transposed is None:
-        transposed = random.choice([True, False])
+        transposed = random.choice((True, False))
+    if ccols is None:
+        ccols = random.sample(range(10), 4)
 
-    if transposed:
-        hmax, wmax = min(30, max_w), min(30, max_h)
-    else:
-        hmax, wmax = min(30, max_h), min(30, max_w)
-    hmax = max(4, hmax)
-    wmax = max(6, wmax)
+    # grid is built as h rows x w cols, and transposed at the end when transposed=True
+    rowcap = max_w if transposed else max_h
+    colcap = max_h if transposed else max_w
+    h = unifint(4, max(4, rowcap))
+    w = unifint(6, max(6, colcap))
+    numcolors = unifint(2, max(2, min(len(ccols), w // 3)))
+    cc = list(ccols)[:numcolors]
 
-    h = _unifint(diff_lb, diff_ub, (4, hmax))
-    w = _unifint(diff_lb, diff_ub, (6, wmax))
-    numcolors = _unifint(diff_lb, diff_ub, (2, w // 3))
+    rows = [[c] * h for c in cc for _ in range(3)]
+    while len(rows) < w:
+        idx = random.randint(0, len(rows) - 1)
+        rows = rows[:idx] + [list(rows[idx])] + rows[idx:]
+    gi = [[rows[j][i] for j in range(w)] for i in range(h)]   # dmirror -> vertical stripes
 
-    ccols = list(palette[:numcolors])
-    random.shuffle(ccols)
-    go = (tuple(ccols),)
-
-    gi = []
-    for c in ccols:
-        for _ in range(3):
-            gi.append(tuple([c] * h))
-    gi = tuple(gi)
-    while len(gi) < w:
-        idx = random.randint(0, len(gi) - 1)
-        gi = gi[:idx] + gi[idx:idx + 1] + gi[idx:]
-    gi = _dmirror(gi)                      # h x w, each column one colour band
-
-    ndisturbances = _unifint(diff_lb, diff_ub, (0, 3 * h * numcolors))
-    gi = [list(r) for r in gi]
-    for _k in range(ndisturbances):
+    ndisturbances = unifint(0, 3 * h * numcolors)
+    for _ in range(ndisturbances):
         options = []
         for a in range(h):
             for b in range(w - 3):
@@ -116,52 +93,67 @@ def generate(diff_lb, diff_ub, max_h, max_w, palette, transposed=None) -> dict:
             gi[a][b + 1] = c2
         else:
             gi[a][b + 2] = c1
-    gi = tuple(tuple(r) for r in gi)
 
+    go = [list(cc)]
     if transposed:
-        gi = _dmirror(gi)
-        go = _dmirror(go)
-
-    return {"input": [list(r) for r in gi], "output": [list(r) for r in go]}
+        gi = [list(r) for r in zip(*gi)]
+        go = [list(r) for r in zip(*go)]
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
+    import numpy as np
+    try:
+        from maker.sel_helpers import sel_of
+    except Exception:
+        def sel_of(cells):
+            return {"cells": [[int(r), int(c)] for r, c in cells]}
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
+
+    def dedupe(seq):
+        out = []
+        for v in seq:
+            if not out or out[-1] != int(v):
+                out.append(int(v))
+        return out
+
+    row0 = [int(v) for v in I[0].tolist()]
+    col0 = [int(v) for v in I[:, 0].tolist()]
+
+    # Column 0 is never disturbed by the generator, so a uniform first row means the
+    # stripes run ACROSS rows; then the stripe sequence is read down column 0 and the
+    # answer is a column (the verifier's dmirror branch). Otherwise stripes are vertical,
+    # the sequence is read along row 0, and the answer is a row.
+    horizontal = (len(set(row0)) == 1)
+    colors = dedupe(col0) if horizontal else dedupe(row0)
+    n = len(colors)
+
     ops, sels = [], []
 
-    # --- read the rule off I ---------------------------------------------
-    # The grid is a stack of solid colour bands with jagged borders.
-    # If row 0 is one flat colour the bands run horizontally (read column 0),
-    # otherwise they run vertically (read row 0).
-    row0 = I[0, :].tolist()
-    vertical_out = len(set(row0)) == 1
-    line = I[:, 0].tolist() if vertical_out else row0
+    # Shrink the canvas to a 1 x n strip at the top-left: one cell per stripe.
+    # Whole rectangle is intended -> bbox selection.
+    ops.append(33); sels.append([0, 0, 0, n - 1])
 
-    # band order = order of first appearance along that line (dedupe)
-    seq = []
-    for v in line:
-        if v not in seq:
-            seq.append(v)
-    k = len(seq)
+    # Write the stripe sequence into that strip, one stripe at a time, left to right.
+    cur = [(row0[j] if j < wi else 0) for j in range(n)]
+    for j in range(n):
+        if cur[j] != colors[j]:
+            ops.append(colors[j]); sels.append(sel_of([(0, j)]))
 
-    # --- stamp each band's colour at that band's rank position ------------
-    # band j (an object of I) contributes exactly one cell, at index j of the
-    # answer strip. Bands handled in their natural order along the line.
-    for j, col in enumerate(seq):
-        r, c = (j, 0) if vertical_out else (0, j)
-        if int(I[r, c]) != col:          # cell already holds this band's colour
-            ops.append(int(col))
-            sels.append([r, c, 0, 0])
+    if horizontal:
+        # The stripes ran across rows, so the finished strip must be mirrored across the
+        # main diagonal (dmirror) to lie along the other axis: rot90 CCW + flip up/down.
+        ops.append(33); sels.append([0, 0, n - 1, n - 1])   # pad canvas to n x n (rotate needs a square) - whole rect
+        ops.append(24); sels.append([0, 0, n - 1, n - 1])   # Rotate90 (CCW) on the whole square
+        ops.append(27); sels.append([0, 0, n - 1, n - 1])   # FlipV on the whole square -> together = diagonal mirror
+        ops.append(33); sels.append([0, 0, n - 1, 0])       # crop down to the n x 1 column
+        ops.append(34); sels.append([0, 0, n - 1, 0])
+    else:
+        ops.append(34); sels.append([0, 0, 0, n - 1])
 
-    # --- keep only the strip ---------------------------------------------
-    ops.append(33)
-    sels.append([0, 0, k - 1, 0] if vertical_out else [0, 0, 0, k - 1])
-
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -205,7 +197,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

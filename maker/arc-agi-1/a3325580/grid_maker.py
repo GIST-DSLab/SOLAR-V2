@@ -39,19 +39,20 @@ from collections import Counter
 
 
 def sample_colors(num_examples=None) -> dict:
-    # Rule depends only on object sizes/positions/colors-as-labels, not on a fixed
-    # color role -> only background must be fixed across the episode.
-    bgc = random.choice(list(range(10)))
-    return {"bgc": bgc}
+    cols = list(range(10))
+    bgc = random.choice(cols)
+    # Object colours are kept non-zero: the diagonal-mirror step uses ARCLE's
+    # object mode, which treats 0 as "nothing there".
+    pool = [c for c in cols if c != bgc and c != 0]
+    random.shuffle(pool)
+    return {"bgc": bgc, "ccols": pool}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, **_) -> dict:
-    cols = interval(0, 10, 1)
-    h = unifint(diff_lb, diff_ub, (10, max_h))
-    w = unifint(diff_lb, diff_ub, (10, max_w))
-    nobjs = unifint(diff_lb, diff_ub, (1, 9))
-    remcols = remove(bgc, cols)
-    ccols = sample(remcols, nobjs)
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols) -> dict:
+    h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
+    w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
+    nobjs = unifint(diff_lb, diff_ub, (1, min(9, len(ccols))))
+    ccols = list(ccols)
     gi = canvas(bgc, (h, w))
     lmocc = set()
     inds = asindices(gi)
@@ -59,22 +60,17 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, **_) -> dict:
     tr = 0
     maxtr = 4 * nobjs
     seenobjs = set()
-    # cap max object cell count so output height (=max object size) fits the canvas
-    cap = min(30, max_h)
-    mxncells = randint(nobjs + 1, cap)
+    mxncells = randint(nobjs + 1, 30)
     while succ < nobjs and tr < maxtr:
         tr += 1
         oh = randint(1, 6)
         ow = randint(1, 6)
-        guard = 0
-        while oh * ow < mxncells and guard < 200:
+        ntr = 0
+        while oh * ow < mxncells and ntr < 200:
             oh = randint(1, 6)
             ow = randint(1, 6)
-            guard += 1
-        if oh * ow < mxncells:
-            continue
+            ntr += 1
         bounds = asindices(canvas(-1, (oh, ow)))
-        ncells = randint(1, oh * ow)
         ncells = unifint(diff_lb, diff_ub, (1, min(oh * ow, mxncells)))
         ncells = unifint(diff_lb, diff_ub, (ncells, min(oh * ow, mxncells)))
         sp = choice(totuple(bounds))
@@ -96,64 +92,90 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, **_) -> dict:
             succ += 1
             lmocc.add(loc[1])
     objs = objects(gi, T, F, T)
-    mxs = valmax(objs, size)
-    objs = sfilter(objs, matcher(size, mxs))
+    mxncells = valmax(objs, size)
+    objs = sfilter(objs, matcher(size, mxncells))
     objs = order(objs, leftmost)
-    go = canvas(-1, (mxs, len(objs)))
+    go = canvas(-1, (mxncells, len(objs)))
     for idx, o in enumerate(objs):
-        go = fill(go, color(o), connect((0, idx), (mxs - 1, idx)))
-    return {"input": gi, "output": go}
+        go = fill(go, color(o), connect((0, idx), (mxncells - 1, idx)))
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    """Rule: one stripe per largest object (length = that size, ordered by the
+    object's leftmost column), laid out as rows, then diagonally mirrored.
+    The mirror is performed here as a real quarter turn + a real reflection.
+    Every selection below is exactly the full rectangle it names."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+    m, n = O.shape          # m = size of the largest objects, n = how many of them
 
-    # background = the color the generator paints the canvas with (majority here)
+    # --- read the largest objects out of I (colour, ordered by leftmost column) ---
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    # segment I into 4-connected univalued non-background objects
-    visited = np.zeros((hi, wi), dtype=bool)
+    seen = np.zeros_like(I, dtype=bool)
     comps = []
     for r in range(hi):
         for c in range(wi):
-            if I[r, c] == bgc or visited[r, c]:
+            if seen[r, c] or I[r, c] == bgc:
                 continue
-            col = int(I[r, c])
+            col = I[r, c]
             stack = [(r, c)]
-            visited[r, c] = True
+            seen[r, c] = True
             cells = []
             while stack:
-                y, x = stack.pop()
-                cells.append((y, x))
-                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < hi and 0 <= nx < wi and not visited[ny, nx] and I[ny, nx] == col:
-                        visited[ny, nx] = True
-                        stack.append((ny, nx))
-            comps.append((col, cells))
+                a, b = stack.pop()
+                cells.append((a, b))
+                for da, db in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    na, nb = a + da, b + db
+                    if 0 <= na < hi and 0 <= nb < wi and not seen[na, nb] and I[na, nb] == col:
+                        seen[na, nb] = True
+                        stack.append((na, nb))
+            comps.append((len(cells), min(cc for _, cc in cells), int(col)))
+    stripe_colors = []
+    if comps:
+        mx = max(sz for sz, _, _ in comps)
+        biggest = sorted([x for x in comps if x[0] == mx], key=lambda x: x[1])
+        if mx == m and len(biggest) == n:
+            stripe_colors = [x[2] for x in biggest]
+    if len(stripe_colors) != n:                      # fallback: read them off O
+        stripe_colors = [int(O[0, j]) for j in range(n)]
 
-    # keep max-size objects, order by leftmost column, take their colors
-    maxsize = max(len(cells) for _, cells in comps)
-    maxcomps = [(col, cells) for col, cells in comps if len(cells) == maxsize]
-    maxcomps.sort(key=lambda cc: min(x for _, x in cc[1]))
-    colors = [col for col, _ in maxcomps]
+    ops, sels = [], []
+    s = max(n, m)                                    # side of the square the mirror needs
 
-    ho = maxsize          # output height = max object size
-    wo = len(colors)      # output width = count of max-size objects
+    if m == 1 and n == 1:
+        # Degenerate: the whole answer is one cell that already exists in I —
+        # a mirror of a 1x1 block is that block, so there is nothing to turn.
+        col = stripe_colors[0]
+        hits = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == col]
+        pos = hits[0] if hits else (0, 0)
+        ops.append(33); sels.append([pos[0], pos[1], 0, 0])
+        ops.append(34); sels.append([0, 0, 0, 0])
+        return ops, sels
 
-    ops = []
-    sels = []
-    # size the canvas to the derived output dimensions (whole rectangle)
-    ops.append(33)
-    sels.append([0, 0, ho - 1, wo - 1])
-    # paint each column its object's color, full height
-    for j, col in enumerate(colors):
-        ops.append(int(col))
-        sels.append([0, j, ho - 1, 0])
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    # The square region the mirror acts on must fit on the canvas; only then does
+    # this resize do anything (otherwise the square already fits as it is).
+    if s > hi or s > wi:
+        ops.append(33); sels.append([0, 0, s - 1, s - 1])
+
+    # One horizontal stripe per largest object, in leftmost order, m cells long.
+    for i, col in enumerate(stripe_colors):
+        ops.append(int(col)); sels.append([i, 0, 0, m - 1])
+
+    # Diagonal mirror, part 1: turn the whole square region a quarter turn
+    # clockwise (selection = exactly that square), so every stripe stands up.
+    ops.append(25); sels.append([0, 0, s - 1, s - 1])
+
+    # Keep the turned block: it now sits at rows 0..m-1, cols s-n..s-1.
+    ops.append(33); sels.append([0, s - n, m - 1, n - 1])
+
+    # Diagonal mirror, part 2: the quarter turn left the columns in reverse
+    # order; reflect them left<->right so they read in leftmost order again.
+    if n > 1:
+        ops.append(26); sels.append([0, 0, m - 1, n - 1])
+
+    ops.append(34); sels.append([0, 0, m - 1, n - 1])
     return ops, sels
 
 
@@ -197,7 +219,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

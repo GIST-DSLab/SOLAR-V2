@@ -33,64 +33,63 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
 import numpy as np
 from collections import Counter
 from maker.sel_helpers import sel_of
 
+# The generator applies one of four whole-grid rotations at the end, which is the
+# only DISCRETE structural variant: it decides whether the master line runs
+# horizontally (identity / rot180) or vertically (rot90 / rot270), and on which
+# side of each partial line the visible stub sits.  The rule itself is
+# orientation-agnostic, but the trajectory is not: a vertical instance is solved
+# by first mirroring the grid along its diagonal (exactly the RE-ARC verifier's
+# `dmirror` branch), so both orientations must be covered by the examples.
+_ROTS = ["identity", "rot90", "rot180", "rot270"]
+_VERTICAL = ["rot90", "rot270"]
 
-# ---------------------------------------------------------------- 1. colors
+
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc = random.choice(cols)
     rem = [c for c in cols if c != bgc]
-    ass, bss = random.sample(rem, 2)
-
-    VARIANTS = [{"rot": 0}, {"rot": 1}, {"rot": 2}, {"rot": 3}]
+    ass, bss = random.sample(rem, 2)          # the master line's two colors
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
+
+    if n_ex >= len(_ROTS):
+        examples = [{"rot": r} for r in _ROTS]
+        examples += [{"rot": random.choice(_ROTS)} for _ in range(n_ex - len(_ROTS))]
+    elif n_ex >= 2:
+        # always show both orientations of the master line
+        examples = [{"rot": random.choice(_VERTICAL)},
+                    {"rot": random.choice(["identity", "rot180"])}]
+        examples += [{"rot": random.choice(_ROTS)} for _ in range(n_ex - 2)]
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "ass": ass, "bss": bss, "instance_plan": plan}
+        examples = [{"rot": random.choice(_ROTS)} for _ in range(n_ex)]
+    random.shuffle(examples)
+    test = dict(random.choice(examples))      # test variant was shown
+    return {"bgc": bgc, "ass": ass, "bss": bss, "instance_plan": examples + [test]}
 
 
-# ---------------------------------------------------------------- 2. generate
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, ass, bss, rot=None) -> dict:
     if rot is None:
-        rot = choice((0, 1, 2, 3))
-
-    # rot90/rot270 transpose the canvas -> keep both dims inside both limits
-    if rot in (1, 3):
-        hmax = min(max_h, max_w)
-        wmax = min(max_h, max_w)
-    else:
-        hmax = max_h
-        wmax = max_w
-
+        rot = random.choice(_ROTS)
+    swaps = rot in _VERTICAL                   # rot90/rot270 transpose the shape
+    hb = max(5, min(30, max_w if swaps else max_h))
+    wb = max(5, min(30, max_h if swaps else max_w))
+    h = unifint(diff_lb, diff_ub, (5, hb))
+    w = unifint(diff_lb, diff_ub, (5, wb))
     cols = interval(0, 10, 1)
-    h = unifint(diff_lb, diff_ub, (5, hmax))
-    w = unifint(diff_lb, diff_ub, (5, wmax))
     remcols = remove(bgc, cols)
-
     itv = interval(0, w, 1)
     na = randint(2, w - 2)
     alocs = sample(itv, na)
     blocs = difference(itv, alocs)
     if min(alocs) > min(blocs):
         alocs, blocs = blocs, alocs
-        a_col, b_col = bss, ass
-    else:
-        a_col, b_col = ass, bss
-
     llocs = randint(0, h - 1)
     gi = canvas(bgc, (h, w))
-    gi = fill(gi, a_col, {(llocs, j) for j in alocs})
-    gi = fill(gi, b_col, {(llocs, j) for j in blocs})
-
+    gi = fill(gi, ass, {(llocs, j) for j in alocs})
+    gi = fill(gi, bss, {(llocs, j) for j in blocs})
     numl = unifint(diff_lb, diff_ub, (1, max(1, (h - 1) // 2)))
     remlocs = remove(llocs, interval(0, h, 1))
     for k in range(numl):
@@ -99,79 +98,90 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, ass, bss, rot=None) -> dict:
         a, b = sample(remcols, 2)
         gi = fill(gi, a, {(lloc, j) for j in alocs})
         gi = fill(gi, b, {(lloc, j) for j in blocs})
-
     cutoff = min(blocs) + 1
     go = tuple(e for e in gi)
     gi = fill(gi, bgc, backdrop(frozenset({(0, cutoff), (h - 1, w - 1)})))
-    gi = fill(gi, a_col, {(llocs, j) for j in alocs})
-    gi = fill(gi, b_col, {(llocs, j) for j in blocs})
-
-    rotf = (identity, rot90, rot180, rot270)[rot]
-    gi = rotf(gi)
-    go = rotf(go)
-    return {'input': gi, 'output': go}
+    gi = fill(gi, ass, {(llocs, j) for j in alocs})
+    gi = fill(gi, bss, {(llocs, j) for j in blocs})
+    rotf = {"identity": identity, "rot90": rot90, "rot180": rot180, "rot270": rot270}[rot]
+    return {"input": rotf(gi), "output": rotf(go)}
 
 
-# ---------------------------------------------------------------- 3. ops
+def _diag_mirror(sq, ops, sels):
+    """Mirror the whole square canvas along its main diagonal.
+
+    transpose == rot90CCW(fliplr(.)); both ARCLE ops need a SQUARE selection.
+    Every selection here is a full rectangle of the canvas -- the region really
+    is the whole grid, background included -- so the bbox form is the honest one.
+    """
+    ops.append(26); sels.append([0, 0, sq - 1, sq - 1])   # FlipH  (left<->right)
+    ops.append(24); sels.append([0, 0, sq - 1, sq - 1])   # Rotate90 CCW -> diagonal mirror
+
+
 def derive_operations(I, O):
-    """
-    Rule (measured from I alone):
-      * exactly one FULL line (row, or column after a 90/270 rotation) contains no
-        background colour -> that is the KEY line.  It is bicoloured and partitions
-        the perpendicular index range into class A and class B.
-      * every other drawn line is TRUNCATED: only a contiguous stub survives, and that
-        stub straddles the class boundary, so it exposes one seed cell of class A and
-        one seed cell of class B.
-      * each truncated line is extended: its class-A seed colour fills every class-A
-        index, its class-B seed colour fills every class-B index.
-    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    # ---- orientation: measured from I (is the key line a row or a column?)
-    horiz = any(not (I[r] == bgc).any() for r in range(hi))
-    A = I if horiz else I.T
-    h, w = A.shape
-
-    def to_grid(r, j):
-        return (r, j) if horiz else (j, r)
-
-    # ---- key line + class partition, read from I's key stripe
-    key = next(r for r in range(h) if not (A[r] == bgc).any())
-    kr = A[key]
-    cA = int(kr[0])
-    classA = [j for j in range(w) if int(kr[j]) == cA]
-    classB = [j for j in range(w) if int(kr[j]) != cA]
-
+    ho, wo = O.shape
     ops, sels = [], []
 
-    # ---- extend each truncated line, one line (object) at a time, top to bottom
-    for r in range(h):
-        if r == key:
+    # Every cell that changes was canvas background in I, so the changed cells
+    # name the background color directly.
+    ch = np.argwhere(I != O)
+    bgc = Counter(int(I[r, c]) for r, c in ch).most_common(1)[0][0]
+
+    # The master line is the one full line of the grid that holds no background.
+    # If it runs vertically, mirror the canvas along its diagonal so that every
+    # line becomes a row; mirror back at the end.
+    horizontal = any(not (I[r] == bgc).any() for r in range(hi))
+    sq = max(hi, wi)
+    if horizontal:
+        G = I.copy()
+    else:
+        if hi != wi:
+            # the mirror needs a square canvas to turn on
+            ops.append(33); sels.append([0, 0, sq - 1, sq - 1])
+        _diag_mirror(sq, ops, sels)
+        G = I.T.copy()                      # canvas is now the diagonal mirror
+    H, W = G.shape
+
+    p = [r for r in range(H) if not (G[r] == bgc).any()][0]
+    K = [int(v) for v in G[p]]
+    classes = {}
+    for j, c in enumerate(K):
+        classes.setdefault(c, []).append(j)
+
+    for q in range(H):
+        if q == p:
             continue
-        stub = [j for j in range(w) if int(A[r, j]) != bgc]
+        stub = [j for j in range(W) if int(G[q, j]) != bgc]
         if not stub:
             continue
-        stub_set = set(stub)
-        aj = [j for j in stub if int(kr[j]) == cA]
-        bj = [j for j in stub if int(kr[j]) != cA]
-        if not aj or not bj:
-            continue
-        seed_a = int(A[r, aj[0]])          # colour this line assigns to class A
-        seed_b = int(A[r, bj[0]])          # colour this line assigns to class B
-
-        for cls, col in ((classA, seed_a), (classB, seed_b)):
-            # skip stub cells: they already hold exactly this colour
-            cells = [to_grid(r, j) for j in cls if j not in stub_set]
+        # the stub says which color this line uses for each class of the master
+        order, mapping = [], {}
+        for j in stub:
+            kc = K[j]
+            if kc not in mapping:
+                order.append(kc)
+                mapping[kc] = int(G[q, j])
+        # continue each class of the master line across this whole line
+        for kc in order:
+            tgt = mapping[kc]
+            cells = [(q, j) for j in classes[kc] if int(G[q, j]) != tgt]
             if not cells:
                 continue
-            ops.append(col)
+            ops.append(tgt)
             sels.append(sel_of(cells))
+            for (r, c) in cells:
+                G[r, c] = tgt
+
+    if not horizontal:
+        _diag_mirror(sq, ops, sels)         # mirror back (canvas is still square)
+        if hi != wi:
+            ops.append(33); sels.append([0, 0, ho - 1, wo - 1])   # shrink canvas back
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -215,7 +225,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

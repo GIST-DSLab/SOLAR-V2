@@ -37,201 +37,160 @@ import random
 import numpy as np
 from maker.sel_helpers import sel_of
 
-
-# ---------------------------------------------------------------- helpers ---
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    lo = a + int((b - a) * diff_lb)
-    hi = a + int((b - a) * diff_ub)
-    if hi < lo:
-        hi = lo
-    return random.randint(lo, hi)
+ORIENTS = ["identity", "rot90", "rot180", "rot270"]
 
 
-def _hperiod(cells):
-    """smallest T>0 with: cell at (i,j) implies same color at (i,j-T)  (DSL hperiod)."""
-    if not cells:
-        return 1
-    ws = max(j for _, j in cells) + 1
-    for T in range(1, ws):
-        ok = True
-        for (i, j), c in cells.items():
-            if j - T >= 0 and cells.get((i, j - T)) != c:
-                ok = False
-                break
-        if ok:
-            return T
-    return ws
-
-
-# structural variant = which of the 4 rotations the whole scene is presented in
-ROTS = [0, 1, 2, 3]          # np.rot90 k (CCW) applied to the canonical scene
-
-
-# ----------------------------------------------------------- sample_colors ---
 def sample_colors(num_examples=None) -> dict:
-    bgc = random.choice(range(10))
+    cols = list(range(10))
+    bgc = random.choice(cols)
+    rem = [c for c in cols if c != bgc]
+    numc = random.randint(1, 9)
+    ccols = random.sample(rem, numc)
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(ROTS):
-        ex = [{"rot": r} for r in ROTS]
-        ex += [{"rot": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
+    if n_ex >= len(ORIENTS):
+        ex = [o for o in ORIENTS] + [random.choice(ORIENTS) for _ in range(n_ex - len(ORIENTS))]
         random.shuffle(ex)
     else:
-        ex = [{"rot": r} for r in random.sample(ROTS, n_ex)]
-    plan = ex + [dict(random.choice(ex))]
-    return {"bgc": bgc, "instance_plan": plan}
+        ex = random.sample(ORIENTS, n_ex)
+    plan = [{"orient": o} for o in ex]
+    plan.append({"orient": random.choice(ex)})
+    return {"bgc": bgc, "ccols": list(ccols), "instance_plan": plan}
 
 
-# ----------------------------------------------------------------- generate ---
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, rot=None) -> dict:
-    if rot is None:
-        rot = random.choice(ROTS)
-
-    # canonical scene dims; a 90/270 rotation swaps them
-    if rot in (1, 3):
-        hlim, wlim = max_w, max_h
-    else:
-        hlim, wlim = max_h, max_w
-
-    h = _unifint(diff_lb, diff_ub, (3, max(3, hlim)))
-    w = _unifint(diff_lb, diff_ub, (10, max(10, wlim)))
-    p = _unifint(diff_lb, diff_ub, (2, max(2, (w - 1) // 3)))
-
-    pool = [c for c in range(10) if c != bgc]
-    numc = _unifint(diff_lb, diff_ub, (1, 9))
-    ccols = random.sample(pool, numc)
-
-    # base unit: p columns, each grown upward from the bottom row
-    obj = {}
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols, orient=None) -> dict:
+    if orient is None:
+        orient = random.choice(ORIENTS)
+    hlo = min(3, max_h)
+    wlo = min(10, max_w)
+    h = unifint(diff_lb, diff_ub, (hlo, max_h))
+    w = unifint(diff_lb, diff_ub, (wlo, max_w))
+    pmax = max(2, (w - 1) // 3)
+    p = unifint(diff_lb, diff_ub, (2, pmax))
+    ccols = list(ccols)
+    obj = set()
     for j in range(p):
-        numcells = _unifint(diff_lb, diff_ub, (1, max(1, h - 1)))
+        numcells = unifint(diff_lb, diff_ub, (1, max(1, h - 1)))
         for ii in range(h - 1, h - numcells - 1, -1):
-            obj[(ii, j)] = random.choice(ccols)
-
-    # doubled unit (period p), then shifted left a bit (clipped at the edge)
-    full = dict(obj)
-    for (i, j), c in obj.items():
-        full[(i, j + p)] = c
+            loc = (ii, j)
+            col = random.choice(ccols)
+            obj.add((col, loc))
+    gi = canvas(bgc, (h, w))
+    obj = frozenset(obj)
+    minobj = obj | shift(obj, (0, p))
     addonw = random.randint(0, p)
+    addon = sfilter(obj, lambda cij: cij[1][1] < addonw)
+    fullobj = minobj | addon
     leftshift = random.randint(0, addonw)
-
-    P = np.full((h, w), bgc, dtype=int)
-    for (i, j), c in full.items():
-        jj = j - leftshift
-        if 0 <= jj < w:
-            P[i, jj] = c
-
-    cells = {(i, j): int(P[i, j]) for i in range(h) for j in range(w) if P[i, j] != bgc}
-    minc = min(j for _, j in cells)
-    norm = {(i, j - minc): c for (i, j), c in cells.items()}
-    T = _hperiod(norm)
-
-    # output: the T-wide unit strip tiled rightward across the canvas
-    G = P.copy()
-    for j in range(minc, w):
-        G[:, j] = P[:, minc + (j - minc) % T]
-
-    gi = np.rot90(P, rot)
-    go = np.rot90(G, rot)
-    return {
-        "input": tuple(tuple(int(v) for v in row) for row in gi),
-        "output": tuple(tuple(int(v) for v in row) for row in go),
-    }
+    fullobj = shift(fullobj, (0, -leftshift))
+    gi = paint(gi, fullobj)
+    go = tuple(e for e in gi)
+    for j in range(w // (2 * p) + 2):
+        go = paint(go, shift(fullobj, (0, j * 2 * p)))
+    fn = {"identity": identity, "rot90": rot90, "rot180": rot180, "rot270": rot270}[orient]
+    gi = fn(gi)
+    go = fn(go)
+    return {'input': gi, 'output': go}
 
 
-# --------------------------------------------------------- derive_operations ---
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    H, W = I.shape
+    h, w = I.shape
     ops, sels = [], []
+    full = [0, 0, h - 1, w - 1]          # bbox == exactly the whole canvas
 
-    # 1) find the canonical orientation the same way the rule defines it:
-    #    the rotation whose FIRST ROW and LAST COLUMN are uniform background
-    #    (object anchored bottom-left, repetition running rightward).
-    k_sel = 0
-    for k in range(4):
-        Ck = np.rot90(I, k)
-        if len(set(Ck[0].tolist())) == 1 and len(set(Ck[:, -1].tolist())) == 1:
-            k_sel = k
+    # --- identify the repeat axis, whether the pattern grows towards the
+    #     negative side (then a reflection brings it into "grow forward" form),
+    #     and the period of the strip ---
+    found = None
+    for axis, fl in (("h", False), ("v", False), ("h", True), ("v", True)):
+        if fl:
+            G = np.fliplr(I) if axis == "h" else np.flipud(I)
+        else:
+            G = I
+        ext = w if axis == "h" else h
+        for P in range(1, ext):
+            if axis == "h":
+                pred = np.tile(G[:, :P], (1, ext // P + 1))[:, :w]
+            else:
+                pred = np.tile(G[:P, :], (ext // P + 1, 1))[:h, :]
+            back = pred
+            if fl:
+                back = np.fliplr(pred) if axis == "h" else np.flipud(pred)
+            if np.array_equal(back, O):
+                found = (axis, fl, P)
+                break
+        if found:
             break
-    C = np.rot90(I, k_sel)
-    hc, wc = C.shape
-    bg = int(C[0, 0])
 
-    # canonical (i,j) -> original (r,c)
-    def m(i, j):
-        if k_sel == 0:
-            return (i, j)
-        if k_sel == 1:
-            return (j, W - 1 - i)
-        if k_sel == 2:
-            return (H - 1 - i, W - 1 - j)
-        return (H - 1 - j, i)
-
-    # rectangle in canonical coords -> [r, c, h-1, w-1] in original coords
-    # (these bboxes ARE full rectangles: whole bands of the grid, background included)
-    def rect(i0, i1, j0, j1):
-        pts = [m(i0, j0), m(i0, j1), m(i1, j0), m(i1, j1)]
-        rs = [r for r, _ in pts]
-        cs = [c for _, c in pts]
-        return [min(rs), min(cs), max(rs) - min(rs), max(cs) - min(cs)]
-
-    cells = {(i, j): int(C[i, j]) for i in range(hc) for j in range(wc) if C[i, j] != bg}
-    if not cells:
+    if found is None:
+        diff = [(r, c) for r in range(h) for c in range(w) if I[r, c] != O[r, c]]
+        for col in sorted({int(O[r, c]) for r, c in diff}):
+            cells = [(r, c) for r, c in diff if int(O[r, c]) == col]
+            ops.append(col)
+            sels.append(sel_of(cells))
         ops.append(34)
-        sels.append([0, 0, H - 1, W - 1])
+        sels.append(full)
         return ops, sels
 
-    # 2) measure the repetition unit from the INPUT object itself
-    minc = min(j for _, j in cells)
-    norm = {(i, j - minc): c for (i, j), c in cells.items()}
-    T = _hperiod(norm)
+    axis, fl, P = found
+    W = I.copy()
+    flip_op = 26 if axis == "h" else 27
 
-    # 3) tile that unit strip across the rest of the canvas
-    blocks = []                                   # (dest_j0, q, needs_change)
-    j = minc + T
-    while j < wc:
-        q = min(T, wc - j)
-        need = not np.array_equal(C[:, j:j + q], C[:, minc:minc + q])
-        blocks.append((j, q, need))
-        j += T
+    # reflect the whole canvas so the strip sits at the leading edge
+    if fl:
+        ops.append(flip_op)
+        sels.append(full)                # whole canvas reflected, background included
+        W = np.fliplr(W) if axis == "h" else np.flipud(W)
 
-    full_needed = [b for b in blocks if b[1] == T and b[2]]
-    if full_needed:
-        ops.append(28)                            # CopyI: the whole unit strip
-        sels.append(rect(0, hc - 1, minc, minc + T - 1))
-        for (dj, q, need) in blocks:
-            if q == T and need:
-                r = rect(0, hc - 1, dj, dj + q - 1)
-                ops.append(30)                    # Paste at the block's origin
-                sels.append([r[0], r[1], 0, 0])
+    ext = w if axis == "h" else h
+    tile = (W[:, :P] if axis == "h" else W[:P, :]).copy()
 
-    # trailing partial block: copy only the leading part of the unit strip
-    tail = [b for b in blocks if b[1] < T and b[2]]
-    for (dj, q, _need) in tail:
-        ops.append(28)
-        sels.append(rect(0, hc - 1, minc, minc + q - 1))
-        r = rect(0, hc - 1, dj, dj + q - 1)
+    copied = False
+    for origin in range(P, ext, P):
+        q = min(P, ext - origin)
+        sub = tile[:, :q] if axis == "h" else tile[:q, :]
+        newW = W.copy()
+        reg = newW[:, origin:origin + q] if axis == "h" else newW[origin:origin + q, :]
+        m = sub != 0
+        reg[m] = sub[m]
+        if np.array_equal(newW, W):
+            continue                      # this repeat is already present: nothing to do
+        if not copied:
+            ops.append(29 if fl else 28)
+            sels.append([0, 0, h - 1, P - 1] if axis == "h" else [0, 0, P - 1, w - 1])
+            copied = True
         ops.append(30)
-        sels.append([r[0], r[1], 0, 0])
+        sels.append([0, origin, 0, 0] if axis == "h" else [origin, 0, 0, 0])
+        W = newW
 
-    # 4) Paste is transparent for colour 0, so any cell of the unit that is 0
-    #    must be painted explicitly wherever it still holds something else.
-    zero_cells = []
-    for jj in range(minc + T, wc):
-        src = minc + (jj - minc) % T
-        for i in range(hc):
-            if int(C[i, src]) == 0 and int(C[i, jj]) != 0:
-                zero_cells.append(m(i, jj))
-    if zero_cells:
+    # the strip's colour-0 cells are transparent to Paste: draw them explicitly
+    zcells = []
+    for origin in range(P, ext, P):
+        q = min(P, ext - origin)
+        if axis == "h":
+            for r in range(h):
+                for c in range(q):
+                    if tile[r, c] == 0 and W[r, origin + c] != 0:
+                        zcells.append((r, origin + c))
+        else:
+            for r in range(q):
+                for c in range(w):
+                    if tile[r, c] == 0 and W[origin + r, c] != 0:
+                        zcells.append((origin + r, c))
+    if zcells:
         ops.append(0)
-        sels.append(sel_of(sorted(set(zero_cells))))
+        sels.append(sel_of(zcells))
+        for r, c in zcells:
+            W[r, c] = 0
+
+    # reflect back into the original orientation
+    if fl:
+        ops.append(flip_op)
+        sels.append(full)
 
     ops.append(34)
-    sels.append([0, 0, H - 1, W - 1])
+    sels.append(full)
     return ops, sels
 
 
@@ -275,7 +234,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

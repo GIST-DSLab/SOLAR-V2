@@ -35,26 +35,31 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from maker.sel_helpers import sel_of
 
-VARIANTS = [{"transposed": False}, {"transposed": True}]
+# ---------------------------------------------------------------------------
+# Task 746b3537
+#
+# Rule (from the verifier):
+#   The grid is a stack of solid colour BANDS, thickened by duplicated
+#   rows/columns.  The answer is the strip of band colours with consecutive
+#   duplicates removed.
+#     * first row is a single colour  -> the bands are stacked VERTICALLY;
+#       the verifier dmirrors the grid, collapses left-to-right, dmirrors back.
+#       (ARCLE: Rotate90 turns the horizontal bands into vertical ones, the
+#        duplicate columns are slid away with MoveL, Rotate270 puts the strip
+#        back upright.)
+#     * otherwise                     -> identity branch: the bands already run
+#       left-to-right, so the duplicates are slid away directly.
+#   Two structural variants (mirrored / not) => instance_plan.
+# ---------------------------------------------------------------------------
 
-
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    lb = a + int((b - a) * diff_lb)
-    ub = a + int((b - a) * diff_ub)
-    lb = max(a, min(lb, b))
-    ub = max(lb, min(ub, b))
-    return random.randint(lb, ub)
+VARIANTS = [{"mirrored": False}, {"mirrored": True}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    # stripe colours: rule is colour-independent, but 0 is reserved (ARCLE treats 0 as
-    # "nothing" for Move/Crop), so stripes never use it.
-    palette = list(range(1, 10))
+    # No background exists in this task and the rule is purely structural
+    # (collapse a constant strip + dedupe), so no colour role has to be fixed.
+    # The one thing that MUST be covered is the orientation branch.
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -63,46 +68,49 @@ def sample_colors(num_examples=None) -> dict:
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
-    return {"palette": palette, "instance_plan": plan}
+    return {"instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, palette=None, transposed=None) -> dict:
-    if palette is None:
-        palette = list(range(1, 10))
-    if transposed is None:
-        transposed = random.choice([True, False])
+def generate(diff_lb, diff_ub, max_h, max_w, mirrored=None, instance_plan=None) -> dict:
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        lo = int(a + (b - a) * lb)
+        hi = int(a + (b - a) * ub + 0.999999)
+        lo = max(a, min(b, lo))
+        hi = max(a, min(b, hi))
+        if hi < lo:
+            lo, hi = hi, lo
+        return random.randint(lo, hi)
 
-    # limA = axis carrying the stripe sequence, limB = axis the stripes are extruded along
-    if transposed:
-        limA, limB = max_w, max_h
-    else:
-        limA, limB = max_h, max_w
+    if mirrored is None:
+        mirrored = random.choice([True, False])
 
-    h = _unifint(diff_lb, diff_ub, (2, max(2, min(15, limA - 1))))
-    w = _unifint(diff_lb, diff_ub, (1, max(1, limB)))
+    # strip length = number of bands + inserted duplicates, strip thickness = w
+    len_lim = max(3, min(30, max_w if mirrored else max_h))
+    thick_lim = max(1, min(30, max_h if mirrored else max_w))
+
+    h = unifint(diff_lb, diff_ub, (2, max(2, min(15, len_lim - 1))))
+    w = unifint(diff_lb, diff_ub, (1, thick_lim))
 
     cols = []
     lastc = -1
     for _ in range(h):
-        c = random.choice([x for x in palette if x != lastc])
+        c = random.choice([x for x in range(10) if x != lastc])
         cols.append(c)
         lastc = c
 
-    go = tuple((c,) for c in cols)
-    gi = tuple(tuple([c] * w) for c in cols)
+    go = [[c] for c in cols]
+    gi = [[c] * w for c in cols]
 
-    maxins = limA - h
-    if maxins >= 1:
-        numinserts = _unifint(diff_lb, diff_ub, (1, maxins))
-        for _ in range(numinserts):
-            loc = random.randint(0, len(gi) - 1)
-            gi = gi[:loc + 1] + gi[loc:]
+    ni_ub = max(1, min(30 - h, len_lim - h))
+    numinserts = unifint(diff_lb, diff_ub, (1, ni_ub))
+    for _ in range(numinserts):
+        loc = random.randint(0, len(gi) - 1)
+        gi = gi[:loc + 1] + [list(gi[loc])] + gi[loc + 1:]
 
-    if transposed:
-        gi = tuple(zip(*gi))
-        go = tuple(zip(*go))
-        gi = tuple(tuple(int(v) for v in row) for row in gi)
-        go = tuple(tuple(int(v) for v in row) for row in go)
+    if mirrored:                       # dmirror == transpose
+        gi = [list(r) for r in zip(*gi)]
+        go = [list(r) for r in zip(*go)]
 
     return {"input": gi, "output": go}
 
@@ -111,74 +119,70 @@ def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-
+    ho, wo = O.shape
     ops, sels = [], []
 
-    # --- measure the rule from I ---------------------------------------------
-    # Stripes run along whole rows (first row uniform) or whole columns.
-    row_mode = len(set(I[0].tolist())) == 1
-    seq = [int(v) for v in (I[:, 0] if row_mode else I[0, :])]
+    # --- which branch does the rule take? (verifier: size(dedupe(first(I))) == 1)
+    mirror_branch = len(set(int(v) for v in I[0].tolist())) == 1
 
-    runs = []  # [colour, length] of consecutive identical stripes
-    for v in seq:
-        if runs and runs[-1][0] == v:
-            runs[-1][1] += 1
-        else:
-            runs.append([v, 1])
-    n = len(runs)
+    # the strip of band colours, in reading order along the band axis
+    if mirror_branch:                       # bands are horizontal -> read a column
+        seq = [int(I[r][0]) for r in range(hi)]
+    else:                                   # bands are vertical  -> read a row
+        seq = [int(v) for v in I[0].tolist()]
+    n = len(seq)
 
-    # --- optional 0-stripe protection (Move/Crop ignore 0 cells) -------------
-    present = set(int(v) for v in np.unique(I))
-    zero_fix_cells = None
-    if 0 in present:
-        spare = next((c for c in range(1, 10) if c not in present), None)
-        if spare is not None:
-            zcells = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == 0]
-            ops.append(spare)
-            sels.append(sel_of(zcells))
-            zero_fix_cells = [(i, 0) if row_mode else (0, i)
-                              for i, (v, _l) in enumerate(runs) if v == 0]
+    # the answer strip: consecutive duplicates removed
+    target = [seq[0]]
+    for v in seq[1:]:
+        if v != target[-1]:
+            target.append(v)
+    nb = len(target)
 
-    # --- collapse each duplicated stripe run by sliding the rest of the grid --
-    # every selection below is exactly the full rectangle of live content that
-    # must slide, background included -> bbox form is the intended cell set.
-    clen = hi if row_mode else wi          # live extent along the stripe axis
-    cur = 0                                # row/col where the current run now sits
-    for (v, L) in runs:
-        excess = L - 1
-        if excess > 0:
-            s = cur + L                    # start of the block below this run
-            for _ in range(excess):
-                if s > clen - 1:
-                    break
-                if row_mode:
-                    ops.append(20)                       # MoveU
-                    sels.append([s, 0, clen - 1 - s, wi - 1])
-                else:
-                    ops.append(23)                       # MoveL
-                    sels.append([0, s, hi - 1, clen - 1 - s])
-                s -= 1
-                clen -= 1
-            if s > clen - 1:               # trailing run: its copies are just dropped
-                clen = cur + 1
-        cur += 1
+    # --- plan the duplicate removals -------------------------------------
+    # Band position i is fixed by sliding everything from i onwards one step
+    # toward the front, as often as position i still repeats position i-1.
+    # Duplicates lying beyond position nb-1 are never touched: the final
+    # crop drops them, so removing them would be an invisible action.
+    cur = list(seq)
+    edge = n - 1                 # right-most cell that still holds band content
+    dels = []                    # (index to collapse, content edge at that time)
+    for i in range(1, nb):
+        while cur[i] == cur[i - 1]:
+            dels.append((i, edge))
+            cur = cur[:i] + cur[i + 1:] + [0]
+            edge -= 1
 
-    # --- keep one cell per distinct stripe ------------------------------------
-    if row_mode:
-        ops.append(33)
-        sels.append([0, 0, n - 1, 0])
-        final = [0, 0, n - 1, 0]
+    if mirror_branch:
+        # ---- dmirror branch --------------------------------------------
+        if dels:
+            sq = max(hi, wi)
+            if hi != wi:
+                # square canvas so the rotation's position maths is exact
+                ops.append(33); sels.append([0, 0, sq - 1, sq - 1])
+            # Rotate90 (CCW): the horizontal bands become vertical bands,
+            # in the same order.  This IS the rule's dmirror.
+            # (full-rectangle selection: the whole canvas, background included)
+            ops.append(24); sels.append([0, 0, sq - 1, sq - 1])
+            r0 = sq - wi                      # rows the strip occupies now
+            for (i, e) in dels:
+                # slide the remaining bands one column left over the duplicate.
+                # full-rectangle selection: the entire tail block, including
+                # its 0-coloured bands, is what moves.
+                ops.append(23); sels.append([r0, i, wi - 1, e - i])
+            # Rotate270 (CW): put the collapsed strip back upright.
+            ops.append(25); sels.append([0, 0, sq - 1, sq - 1])
+        # keep the one column that carries the nb band colours
+        ops.append(33); sels.append([0, 0, nb - 1, 0])
     else:
-        ops.append(33)
-        sels.append([0, 0, 0, n - 1])
-        final = [0, 0, 0, n - 1]
+        # ---- identity branch: bands already run left to right -----------
+        for (i, e) in dels:
+            # full-rectangle selection: whole tail block (all rows), 0s included
+            ops.append(23); sels.append([0, i, hi - 1, e - i])
+        # keep the one row that carries the nb band colours
+        ops.append(33); sels.append([0, 0, 0, nb - 1])
 
-    if zero_fix_cells:
-        ops.append(0)
-        sels.append(sel_of(zero_fix_cells))
-
-    ops.append(34)
-    sels.append(final)
+    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -222,7 +226,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

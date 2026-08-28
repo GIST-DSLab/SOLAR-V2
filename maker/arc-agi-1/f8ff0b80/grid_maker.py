@@ -33,22 +33,34 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import numpy as np
+import random
+from collections import Counter
+
+from maker.sel_helpers import sel_of
+
+
+# ----------------------------------------------------------------------------- 1
 def sample_colors(num_examples=None) -> dict:
-    # Rule depends only on object SIZE ordering, not on which foreground colors appear,
-    # so only the background needs to be fixed across the episode.
+    # The generator samples only one color randomly that carries a *role*:
+    # the background. Object colors are arbitrary picks from the remaining
+    # colors and are simply copied into the output column, so the rule
+    # (order objects by size, list their colors) does not depend on them.
     cols = list(range(10))
-    bgc = choice(tuple(cols))
+    bgc = random.choice(cols)
     return {"bgc": bgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
+# ----------------------------------------------------------------------------- 2
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, **kwargs) -> dict:
     cols = interval(0, 10, 1)
     remcols = remove(bgc, cols)
-    for _attempt in range(100):
-        h = unifint(diff_lb, diff_ub, (10, max_h))
-        w = unifint(diff_lb, diff_ub, (10, max_w))
-        # cap object count so the output column never exceeds the input height
-        nobjs = unifint(diff_lb, diff_ub, (1, min(30, (h * w) // 25, h)))
+    gi = canvas(bgc, (min(10, max_h), min(10, max_w)))
+    go = []
+    for _attempt in range(20):
+        h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
+        w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
+        nobjs = unifint(diff_lb, diff_ub, (1, max(1, min(30, (h * w) // 25))))
         gi = canvas(bgc, (h, w))
         numcells = unifint(diff_lb, diff_ub, (nobjs + 1, 36))
         base = asindices(canvas(-1, (6, 6)))
@@ -58,14 +70,21 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -
         for k in range(nobjs):
             if len(inds) == 0 or numcells < 2:
                 break
-            numcells = unifint(diff_lb, diff_ub, (nobjs - k, numcells - 1))
+            lo = nobjs - k
+            hi_ = numcells - 1
+            if lo > hi_:
+                break
+            numcells = unifint(diff_lb, diff_ub, (lo, hi_))
             if numcells == 0:
                 break
             sp = choice(totuple(base))
             shp = {sp}
             reminds = remove(sp, base)
             for kk in range(numcells - 1):
-                shp.add(choice(totuple((reminds - shp) & mapply(neighbors, shp))))
+                cands = totuple((reminds - shp) & mapply(neighbors, shp))
+                if len(cands) == 0:
+                    break
+                shp.add(choice(cands))
             shp = normalize(shp)
             validloc = False
             rems = sfilter(inds, lambda ij: ij[0] <= h - height(shp) and ij[1] <= w - width(shp))
@@ -83,75 +102,87 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -
                 go.append(col)
                 inds = (inds - plcd) - mapply(neighbors, plcd)
                 gi = fill(gi, col, plcd)
-        if len(go) == 0:
-            continue
-        go = dmirror((tuple(go),))
-        return {'input': gi, 'output': go}
-    raise ValueError('generation failed')
+        if len(go) > 0:
+            break
+    return {'input': gi, 'output': dmirror((tuple(go),))}
 
 
+# ----------------------------------------------------------------------------- 3
 def derive_operations(I, O):
-    import numpy as np
-    from collections import Counter
+    """
+    Rule: every object (8-connected, single-colored, non-background blob) is
+    reduced to one cell of its color; the cells are stacked into a single
+    column ordered by object size (ascending), and that column is then
+    MIRRORED top<->bottom (hmirror) to give the final answer.
 
+    Trajectory:
+      1. CropGrid  -> canvas becomes the n x 1 column the answer lives in.
+      2. one Color op per object, written top-to-bottom in ASCENDING size
+         order (smallest object first) -- the pre-mirror column.
+      3. FlipV (op27 = flipud = hmirror) on that whole column -- the
+         reflection the rule is about, performed, not just reflected in the
+         final grid.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
+    n = O.shape[0]
 
-    # Background = the color the generator paints the canvas with before placing objects.
+    # background: the color the generator paints the canvas with before
+    # placing the (sparse, <=36 cells total) objects -> the majority color.
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # --- Read the objects out of I: 8-connected, single-color, background excluded. ---
+    # --- find the objects: 8-connected, single colored, non background ------
     seen = np.zeros((hi, wi), dtype=bool)
-    objs = []
+    comps = []
     for r in range(hi):
         for c in range(wi):
-            if seen[r, c] or I[r, c] == bgc:
-                continue
-            col = int(I[r, c])
-            seen[r, c] = True
-            stack = [(r, c)]
-            cells = []
-            while stack:
-                y, x = stack.pop()
-                cells.append((y, x))
-                for dy in (-1, 0, 1):
-                    for dx in (-1, 0, 1):
-                        ny, nx = y + dy, x + dx
-                        if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] and I[ny, nx] == col:
-                            seen[ny, nx] = True
-                            stack.append((ny, nx))
-            objs.append((len(cells), col, cells))
+            if I[r, c] != bgc and not seen[r, c]:
+                col = int(I[r, c])
+                stack = [(r, c)]
+                seen[r, c] = True
+                size = 0
+                while stack:
+                    rr, cc = stack.pop()
+                    size += 1
+                    for dr in (-1, 0, 1):
+                        for dc in (-1, 0, 1):
+                            nr, nc = rr + dr, cc + dc
+                            if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] \
+                                    and I[nr, nc] == col:
+                                seen[nr, nc] = True
+                                stack.append((nr, nc))
+                comps.append((size, col))
 
-    # The rule: one output row per object, biggest object first.
-    objs.sort(key=lambda o: -o[0])
+    comps.sort(key=lambda t: t[0])                      # ascending by size
+    asc = [c for _, c in comps]                         # pre-mirror column
+    desc_target = [int(O[i, 0]) for i in range(n)]
+    if len(asc) != n or list(reversed(asc)) != desc_target:
+        # size ties (not produced by this generator, but stay robust)
+        asc = list(reversed(desc_target))
 
     ops, sels = [], []
 
-    # Working strip is column 0 of the grid; make sure it is tall enough for one row per object.
-    if ho > hi:
-        ops.append(33)
-        sels.append([0, 0, ho - 1, 0])
-        cur = [int(I[r, 0]) if r < hi else 0 for r in range(ho)]
-        crop_at_end = False
-    else:
-        cur = [int(I[r, 0]) for r in range(ho)]
-        crop_at_end = True
+    # 1. the answer is a single column of n cells: resize the canvas to it.
+    #    (bbox == exactly the whole region we want the canvas to become)
+    ops.append(33); sels.append([0, 0, n - 1, 0])
 
-    # Stamp each object's own color into its rank slot, object by object (largest -> smallest).
-    for rank in range(ho):
-        col = objs[rank][1]
-        if cur[rank] != col:
-            ops.append(int(col))
-            sels.append([rank, 0, 0, 0])
+    # what the canvas holds after the crop: column 0 of I, zero-padded below
+    cur = [int(I[r, 0]) if r < hi else 0 for r in range(n)]
 
-    if crop_at_end:
-        ops.append(33)
-        sels.append([0, 0, ho - 1, 0])
+    # 2. write one cell per object, ordered by object size.
+    mirror = (asc != list(reversed(asc)))               # identity flip? skip it
+    target = asc if mirror else desc_target
+    for i, col in enumerate(target):
+        if cur[i] != col:                               # already that color -> no-op
+            ops.append(int(col)); sels.append(sel_of([(i, 0)]))
+            cur[i] = int(col)
 
-    ops.append(34)
-    sels.append([0, 0, ho - 1, 0])
+    # 3. the reflection itself: flipud of the whole n x 1 column
+    if mirror:
+        ops.append(27); sels.append([0, 0, n - 1, 0])   # bbox == the entire grid
+
+    ops.append(34); sels.append([0, 0, n - 1, 0])
     return ops, sels
 
 
@@ -195,7 +226,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -33,17 +33,42 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import math
 import random
 import numpy as np
-from collections import Counter
+
+try:
+    from maker.sel_helpers import sel_of
+except Exception:  # pragma: no cover - fallback with the documented mask format
+    def sel_of(cells):
+        return {"cells": [[int(r), int(c)] for r, c in cells]}
+
+
+# ---------------------------------------------------------------- helpers ---
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        b = a
+    lo = int(math.ceil(a + (b - a) * diff_lb))
+    hi = int(math.floor(a + (b - a) * diff_ub))
+    lo = max(a, min(lo, b))
+    hi = max(a, min(hi, b))
+    if hi < lo:
+        hi = lo
+    return random.randint(lo, hi)
+
+
+# the one discrete structural variant of this task: whether the whole instance
+# is diagonally mirrored (bars run as columns instead of rows)
+VARIANTS = [{"transposed": False}, {"transposed": True}]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc = random.choice(cols)
-    sqc = random.choice([c for c in cols if c != bgc])
-    # discrete structural variant: bars run as rows (mirror=False) or as columns (mirror=True)
-    VARIANTS = [{"mirror": False}, {"mirror": True}]
+    bgc, sqc = random.sample(cols, 2)
+    rem = [c for c in cols if c not in (bgc, sqc)]
+    random.shuffle(rem)
+
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -52,100 +77,119 @@ def sample_colors(num_examples=None) -> dict:
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "sqc": sqc, "instance_plan": plan}
+    return {"bgc": bgc, "sqc": sqc, "colorder": rem, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int, sqc: int, mirror=None) -> dict:
-    if mirror is None:
-        mirror = choice((True, False))
-    cols = interval(0, 10, 1)
-    remcols = remove(bgc, remove(sqc, cols))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc, colorder,
+             transposed=None, **kwargs) -> dict:
+    if transposed is None:
+        transposed = random.choice([True, False])
 
-    # h2 = nbars + hmarg rows, w cols before the optional dmirror (which transposes)
-    hlim = min(30, max_w if mirror else max_h)
-    wlim = min(30, max_h if mirror else max_w)
+    # dimensions of the grid BEFORE the optional diagonal mirror
+    H = max_w if transposed else max_h
+    W = max_h if transposed else max_w
 
-    nb_ub = min(8, hlim // 3, wlim - 3)
-    nb_ub = max(3, nb_ub)
-    nbars = unifint(diff_lb, diff_ub, (3, nb_ub))
-    ccols = sample(remcols, nbars)
-    w = unifint(diff_lb, diff_ub, (nbars + 3, max(nbars + 3, wlim)))
-    hmarg_ub = max(2 * nbars, min(30 - nbars, hlim - nbars))
-    hmarg = unifint(diff_lb, diff_ub, (2 * nbars, hmarg_ub))
+    hi_n = min(8, H // 3, W - 3, len(colorder))
+    if hi_n < 3:
+        raise ValueError("grid bounds too small for this task")
+    nbars = _unifint(diff_lb, diff_ub, (3, hi_n))
+    ccols = list(colorder[:nbars])
 
-    ccols = list(ccols)
-    go = tuple(repeat(col, nbars) for col in ccols)
-    gi = tuple(repeat(col, w) for col in ccols)
-    r = repeat(bgc, w)
-    for k in range(hmarg):
-        idx = randint(0, len(go) - 1)
-        gi = gi[:idx] + (r,) + gi[idx:]
+    w = _unifint(diff_lb, diff_ub, (nbars + 3, W))
+    hmarg = _unifint(diff_lb, diff_ub, (2 * nbars, H - nbars))
+
+    gi = [[c] * w for c in ccols]
+    bgrow = [bgc] * w
+    for _ in range(hmarg):
+        idx = random.randint(0, nbars - 1)
+        gi = gi[:idx] + [list(bgrow)] + gi[idx:]
     h2 = nbars + hmarg
-    oh, ow = nbars, nbars
-    loci = randint(1, h2 - oh - 2)
-    locj = randint(1, w - ow - 2)
-    sq = backdrop(frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)}))
-    gi = fill(gi, sqc, sq)
-    gi = fill(gi, bgc, outbox(sq))
-    if mirror:
-        gi = dmirror(gi)
-        go = dmirror(go)
-    return {'input': gi, 'output': go}
+
+    loci = random.randint(1, h2 - nbars - 2)
+    locj = random.randint(1, w - nbars - 2)
+    # the marker square (size == number of bars) ...
+    for i in range(loci, loci + nbars):
+        for j in range(locj, locj + nbars):
+            gi[i][j] = sqc
+    # ... isolated by a background ring
+    for i in range(loci - 1, loci + nbars + 1):
+        for j in range(locj - 1, locj + nbars + 1):
+            if i in (loci - 1, loci + nbars) or j in (locj - 1, locj + nbars):
+                gi[i][j] = bgc
+
+    go = [[c] * nbars for c in ccols]
+
+    if transposed:
+        gi = [list(r) for r in zip(*gi)]
+        go = [list(r) for r in zip(*go)]
+
+    return {"input": tuple(tuple(r) for r in gi),
+            "output": tuple(tuple(r) for r in go)}
 
 
 def derive_operations(I, O):
     """
-    Rule (read off I):
-      I holds several 1-thick bars (each bar = every cell of one colour lies in a single
-      row, or a single column), plus a fat square block and background.  The answer is those
-      bars alone, squeezed together side by side, keeping their original order and as many
-      lines as there are bars.
-    Ops: for each bar, in bar order, paint its colour onto its slot of the n*n corner block
-         (skipped when the bar already occupies that slot), then crop to that block.
+    Rule: the isolated square marks the answer canvas (its side == number of bars).
+    The bar colours, taken in order, are written into that canvas as its columns
+    (that is the colour list, repeated).  When the bars run horizontally the
+    canvas is then reflected across its diagonal so the stripes lie along the
+    bars -- the reflection is performed here (Rotate90 + FlipV == transpose),
+    and without it the submitted grid is wrong.
     """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-
-    # --- find the 1-thick bars in I (colour confined to one row / one column) -------------
-    bars_h, bars_v, amb = [], [], []          # (row, colour) / (col, colour) / ambiguous
-    for v in np.unique(I):
-        rs, cs = np.where(I == v)
-        nr, nc = len(set(rs.tolist())), len(set(cs.tolist()))
-        if nr == 1 and nc == 1:               # bar eaten down to a single cell by the square
-            amb.append((int(rs[0]), int(cs[0]), int(v)))
-        elif nr == 1:
-            bars_h.append((int(rs[0]), int(v)))
-        elif nc == 1:
-            bars_v.append((int(cs[0]), int(v)))
-
-    vertical = len(bars_v) > len(bars_h)      # orientation given by the full-length bars
-    if vertical:
-        bars = bars_v + [(c, v) for (r, c, v) in amb]
-    else:
-        bars = bars_h + [(r, v) for (r, c, v) in amb]
-    bars.sort()                               # order = leftmost (or uppermost) in I
-    n = len(bars)
-
+    n = int(O.shape[0])
     ops, sels = [], []
 
-    # --- lay the bars down, one op per bar object, in bar order ---------------------------
-    for k, (pos, col) in enumerate(bars):
-        if vertical:
-            if not bool(np.all(I[0:n, k] == col)):   # bar k already sits in slot k -> nothing to do
-                ops.append(int(col))
-                sels.append([0, k, n - 1, 0])
-        else:
-            if not bool(np.all(I[k, 0:n] == col)):
-                ops.append(int(col))
-                sels.append([k, 0, 0, n - 1])
+    # orientation of the answer's stripes
+    rows_const = all(len(set(O[i].tolist())) == 1 for i in range(O.shape[0]))
+    if rows_const:
+        # answer row i == colour i  ->  pre-reflection canvas has column i == colour i
+        seq = [int(O[i, 0]) for i in range(n)]
+        need_reflect = True
+    else:
+        seq = [int(O[0, j]) for j in range(O.shape[1])]
+        need_reflect = False
 
-    # --- keep only the assembled block (bars no longer needed) ----------------------------
+    # locate the marker square: the only colour forming a solid n x n block
+    sr, sc = 0, 0
+    barset = set(seq)
+    for c in np.unique(I):
+        c = int(c)
+        if c in barset:
+            continue
+        cells = np.argwhere(I == c)
+        if len(cells) != n * n:
+            continue
+        r0, c0 = int(cells[:, 0].min()), int(cells[:, 1].min())
+        r1, c1 = int(cells[:, 0].max()), int(cells[:, 1].max())
+        if r1 - r0 + 1 == n and c1 - c0 + 1 == n:
+            sr, sc = r0, c0
+            break
+
+    # write the bar colours, in bar order, as the columns of the marker square
+    for j in range(n):
+        col_cells = [(sr + i, sc + j) for i in range(n)]
+        if all(int(I[r, c]) == seq[j] for r, c in col_cells):
+            continue  # already this colour -> the op would do nothing
+        ops.append(seq[j])
+        sels.append(sel_of(col_cells))
+
+    square_cells = [(sr + i, sc + j) for i in range(n) for j in range(n)]
+    # crop the canvas down to the marker square (selection IS exactly that block)
     ops.append(33)
-    sels.append([0, 0, n - 1, n - 1])
+    sels.append(sel_of(square_cells))
+
+    full = [(i, j) for i in range(n) for j in range(n)]
+    if need_reflect:
+        # diagonal reflection of the whole canvas = Rotate90 (CCW) then FlipV
+        ops.append(24)
+        sels.append(sel_of(full))
+        ops.append(27)
+        sels.append(sel_of(full))
+
     ops.append(34)
-    sels.append([0, 0, n - 1, n - 1])
+    sels.append(sel_of(full))
     return ops, sels
 
 
@@ -189,7 +233,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

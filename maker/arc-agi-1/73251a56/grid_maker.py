@@ -33,35 +33,52 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import numpy as np
+import random
+
+VARIANTS = [{"axis": "main"}, {"axis": "anti"}]
+
+
 def sample_colors(num_examples=None) -> dict:
-    # noisec = color of the rectangular noise blobs that must be erased/restored.
-    # rot     = which diagonal the grid is symmetric about (episode-level, so the
-    #           symmetry axis is identical in examples and test -> learnable).
+    """Episode-level color roles + the mirror-axis plan (discrete structural variant)."""
     cols = list(range(10))
     noisec = random.choice(cols)
-    rotname = random.choice(["identity", "rot90", "rot180", "rot270"])
-    return {"noisec": noisec, "rotname": rotname}
+    pool = [c for c in cols if c != noisec]
+    random.shuffle(pool)
+
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(examples)
+    else:
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
+    return {"noisec": noisec, "ccols_pool": pool, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             noisec: int = None, rotname: str = None) -> dict:
-    cols = interval(0, 10, 1)
+def generate(diff_lb, diff_ub, max_h, max_w, noisec=None, ccols_pool=None, axis=None) -> dict:
+    import random as _r
+    cols = list(range(10))
     if noisec is None:
-        noisec = choice(cols)
-    if rotname is None:
-        rotname = choice(("identity", "rot90", "rot180", "rot270"))
-    rotf = {"identity": identity, "rot90": rot90,
-            "rot180": rot180, "rot270": rot270}[rotname]
+        noisec = _r.choice(cols)
+    if ccols_pool is None:
+        ccols_pool = [c for c in cols if c != noisec]
+        _r.shuffle(ccols_pool)
+    if axis is None:
+        axis = _r.choice(["main", "anti"])
 
-    dhi = min(30, max_h, max_w)
-    dlo = min(10, dhi)
+    dub = min(30, int(max_h), int(max_w))
+    dlb = min(10, dub)
 
     while True:
-        d = unifint(diff_lb, diff_ub, (dlo, dhi))
+        d = unifint(diff_lb, diff_ub, (dlb, dub))
         h, w = d, d
         nsl = unifint(diff_lb, diff_ub, (2, max(2, min(9, h // 2))))
-        slopes = [0] + sorted(sample(interval(1, h - 1, 1), nsl - 1))
-        ccols = sample(cols, nsl)
+        nsl = max(2, min(nsl, len(ccols_pool), h - 1))
+        slopes = [0] + sorted(_r.sample(list(range(1, h - 1)), nsl - 1))
+        ccols = list(ccols_pool[:nsl])
+
         gi = canvas(-1, (h, w))
         inds = asindices(gi)
         for col, hdelt in zip(ccols, slopes):
@@ -73,8 +90,10 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
         obj = asobject(gi)
         obj = sfilter(obj, lambda cij: cij[1][1] >= cij[1][0])
         gi = paint(gi, dmirror(obj))
+
         cf1 = lambda g: ccols[-2] in palette(toobject(ln, g))
         cf2 = lambda g: len((ofcolor(g, noisec) & frozenset({ij[::-1] for ij in ofcolor(g, noisec)})) - ln) == 0
+
         ndist = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 15)))
         tr = 0
         succ = 0
@@ -82,10 +101,10 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
         go = tuple(e for e in gi)
         while tr < maxtr and succ < ndist:
             tr += 1
-            oh = randint(1, 5)
-            ow = randint(1, 5)
-            loci = randint(1, h - oh - 1)
-            locj = randint(1, w - ow - 1)
+            oh = _r.randint(1, max(1, min(5, h - 2)))
+            ow = _r.randint(1, max(1, min(5, w - 2)))
+            loci = _r.randint(1, h - oh - 1)
+            locj = _r.randint(1, w - ow - 1)
             bd = backdrop(frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)}))
             gi2 = fill(gi, noisec, bd)
             if cf1(gi2) and cf2(gi2):
@@ -94,37 +113,164 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
         if gi != go:
             break
 
+    if axis == "main":
+        rotf = _r.choice((identity, rot180))
+    else:
+        rotf = _r.choice((rot90, rot270))
     gi = rotf(gi)
     go = rotf(go)
     return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    # I is a diagonally symmetric striped grid with rectangular noise blobs stamped on it.
-    # O restores every noisy cell to its mirror partner's color across the symmetry axis.
-    # Restoration is done color-by-color: one Color op per restored color, its mask being
-    # exactly the noise cells that must become that color.
+    """
+    Rule: the grid is symmetric about one of its diagonals, except for blobs of a single
+    'noise' colour.  Route:
+      1) actually PERFORM the reflection on the whole grid
+         (transpose = Rotate90(CCW) + FlipV ; anti-transpose = Rotate270(CW) + FlipV).
+         This carries every clean half onto the half the noise covered.
+      2) the reflection drags the noise onto the mirror side, so repaint those mirrored
+         cells back to the values the input still shows there (one op per region/colour).
+      3) restore the symmetry axis itself where noise sat on it (it is one uniform colour,
+         the colour of its clean corner).
+    """
     import numpy as np
-    from maker.sel_helpers import sel_of
+    try:
+        from maker.sel_helpers import sel_of
+    except Exception:
+        def sel_of(cells):
+            return {"cells": [[int(r), int(c)] for r, c in cells]}
 
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    ho, wo = O.shape
-
+    n, m = I.shape
     ops, sels = [], []
+    full = [0, 0, n - 1, m - 1]          # bbox == exactly the whole grid (background included)
 
-    targets = {}
-    for r in range(ho):
-        for c in range(wo):
-            if I[r, c] != O[r, c]:
-                targets.setdefault(int(O[r, c]), []).append((r, c))
+    def anti(a):
+        return a[::-1, ::-1].T
 
-    for col in sorted(targets, key=lambda k: min(targets[k])):
-        ops.append(col)
-        sels.append(sel_of(targets[col]))
+    # ---- which diagonal is the mirror axis (measured, not assumed) ----
+    axis = None
+    if n == m:
+        cands = []
+        if np.array_equal(O, O.T):
+            cands.append('main')
+        if np.array_equal(O, anti(O)):
+            cands.append('anti')
+        if not cands:
+            cands = ['main', 'anti']
+        if len(cands) > 1:
+            bad_main = sum(1 for i in range(n) if I[i, i] != I[0, 0])
+            bad_anti = sum(1 for i in range(n) if I[i, n - 1 - i] != I[0, n - 1])
+            axis = 'main' if bad_main <= bad_anti else 'anti'
+        else:
+            axis = cands[0]
 
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    cur = I.copy()
+
+    if axis is not None:
+        if axis == 'main':
+            mir = lambda p: (p[1], p[0])
+            mirror_arr = lambda a: a.T.copy()
+            rot_op = 24                                  # Rotate90 (CCW) then FlipV -> transpose
+            axis_cells = [(i, i) for i in range(n)]
+            corner = int(I[0, 0])
+        else:
+            mir = lambda p: (n - 1 - p[1], n - 1 - p[0])
+            mirror_arr = lambda a: anti(a).copy()
+            rot_op = 25                                  # Rotate270 (CW) then FlipV -> anti-transpose
+            axis_cells = [(i, n - 1 - i) for i in range(n)]
+            corner = int(I[0, n - 1])
+
+        # ---- noise colour: the colour the input carries where input and output disagree ----
+        cnt = {}
+        for r in range(n):
+            for c in range(m):
+                if I[r, c] != O[r, c]:
+                    v = int(I[r, c])
+                    cnt[v] = cnt.get(v, 0) + 1
+        noisec = max(cnt, key=lambda k: cnt[k]) if cnt else None
+
+        FIX = set()
+        if noisec is not None:
+            for r in range(n):
+                for c in range(m):
+                    p = (r, c)
+                    q = mir(p)
+                    if p == q:
+                        continue
+                    if I[r, c] == noisec and I[q] != noisec:
+                        FIX.add(p)
+
+        # ---- 1) the reflection itself ----
+        if FIX:
+            ops.append(rot_op); sels.append(full)
+            ops.append(27);     sels.append(full)
+            cur = mirror_arr(cur)
+
+            # ---- 2) repaint the half the reflection carried noise onto ----
+            REP = sorted({mir(p) for p in FIX})
+            repset = set(REP)
+            seen = set()
+            comps = []
+            for p in REP:
+                if p in seen:
+                    continue
+                stack = [p]; seen.add(p); comp = []
+                while stack:
+                    q = stack.pop(); comp.append(q)
+                    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        t = (q[0] + dr, q[1] + dc)
+                        if t in repset and t not in seen:
+                            seen.add(t); stack.append(t)
+                comps.append(sorted(comp))
+            comps.sort(key=lambda cp: (min(x for x, _ in cp), min(y for _, y in cp)))
+
+            planned = []
+            for comp in comps:
+                bycol = {}
+                for p in comp:
+                    v = int(I[p])
+                    if int(cur[p]) != v:
+                        bycol.setdefault(v, []).append(p)
+                for v in sorted(bycol):
+                    planned.append((v, bycol[v]))
+
+            if len(planned) > 40:                      # keep the trajectory tractable
+                bycol = {}
+                for p in REP:
+                    v = int(I[p])
+                    if int(cur[p]) != v:
+                        bycol.setdefault(v, []).append(p)
+                planned = [(v, bycol[v]) for v in sorted(bycol)]
+
+            for v, cells in planned:
+                if not cells:
+                    continue
+                ops.append(int(v)); sels.append(sel_of(cells))
+                for p in cells:
+                    cur[p] = v
+
+        # ---- 3) the axis line is one uniform colour; restore where noise covered it ----
+        axfix = [p for p in axis_cells if int(cur[p]) != corner]
+        if axfix:
+            ops.append(int(corner)); sels.append(sel_of(axfix))
+            for p in axfix:
+                cur[p] = corner
+
+    # ---- safety net (should be empty) ----
+    rem = {}
+    for r in range(n):
+        for c in range(m):
+            if int(cur[r, c]) != int(O[r, c]):
+                rem.setdefault(int(O[r, c]), []).append((r, c))
+    for v in sorted(rem):
+        ops.append(int(v)); sels.append(sel_of(rem[v]))
+        for p in rem[v]:
+            cur[p] = v
+
+    ops.append(34); sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
     return ops, sels
 
 
@@ -168,7 +314,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

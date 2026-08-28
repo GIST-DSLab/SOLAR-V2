@@ -35,13 +35,26 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
+from maker.sel_helpers import sel_of
 
+
+# ---------------------------------------------------------------- helpers ----
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        a, b = b, a
+    return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
+
+
+# the only discrete structural variant: the whole picture is transposed or not
 VARIANTS = [{"mirrored": False}, {"mirrored": True}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    # dot color is the rule-carrying role -> fix it for the whole episode
-    dotc = random.choice(range(10))
+    # dotc is the one color role the rule depends on (the marks that grow into
+    # frontiers).  Bar colors are pure decoration and stay free, as in the
+    # original generator.
+    dotc = random.choice(list(range(10)))
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -53,92 +66,132 @@ def sample_colors(num_examples=None) -> dict:
     return {"dotc": dotc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, dotc, mirrored=None) -> dict:
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             dotc: int, mirrored=None) -> dict:
     if mirrored is None:
-        mirrored = choice((True, False))
-    cols = interval(0, 10, 1)
-    # build in bar-rows orientation; dmirror at the end swaps h/w
-    hb, wb = (max_w, max_h) if mirrored else (max_h, max_w)
-    nbarsd = unifint(diff_lb, diff_ub, (1, 4))
-    nbars = choice((nbarsd, 11 - nbarsd))
+        mirrored = random.choice([True, False])
+
+    # limits expressed in the CANONICAL frame (bars are horizontal there);
+    # if the instance is mirrored the final grid is the transpose, so swap.
+    lim_h = max_w if mirrored else max_h
+    lim_w = max_h if mirrored else max_w
+
+    cols = list(range(10))
+    nbarsd = _unifint(diff_lb, diff_ub, (1, 4))
+    nbars = random.choice((nbarsd, 11 - nbarsd))
     nbars = max(3, nbars)
-    nbars = max(3, min(nbars, hb // 2))
-    lo = 2 * nbars
-    h = unifint(diff_lb, diff_ub, (lo, max(lo, hb)))
-    w = unifint(diff_lb, diff_ub, (3, max(3, wb)))
+    nbars = max(3, min(nbars, max(3, lim_h // 2)))
+
+    h = _unifint(diff_lb, diff_ub, (2 * nbars, max(2 * nbars, lim_h)))
+    w = _unifint(diff_lb, diff_ub, (3, max(3, lim_w)))
+
     barsizes = [2] * nbars
     while sum(barsizes) < h:
-        j = randint(0, nbars - 1)
-        barsizes[j] += 1
-    gi = tuple()
-    go = tuple()
-    locs = interval(0, w, 1)
-    remcols = remove(dotc, cols)
+        barsizes[random.randint(0, nbars - 1)] += 1
+
+    remcols = [c for c in cols if c != dotc]
     lastcol = -1
-    nloclbs = [choice((0, 1)) for k in range(len(barsizes))]
+    nloclbs = [random.choice((0, 1)) for _ in range(nbars)]
     if sum(nloclbs) < 2:
-        loc1, loc2 = sample(interval(0, len(nloclbs), 1), 2)
-        nloclbs[loc1] = 1
-        nloclbs[loc2] = 1
+        i1, i2 = random.sample(range(nbars), 2)
+        nloclbs[i1] = 1
+        nloclbs[i2] = 1
+
+    gi, go = [], []
     for bs, nloclb in zip(barsizes, nloclbs):
-        col = choice(remove(lastcol, remcols))
-        gim = canvas(col, (bs, w))
-        gom = canvas(col, (bs, w))
-        nl = unifint(diff_lb, diff_ub, (nloclb, max(nloclb, w // 2)))
-        chlocs = sample(locs, nl)
-        for jj in chlocs:
-            idx = (randint(0, bs - 1), jj)
-            gim = fill(gim, dotc, {idx})
-            gom = fill(gom, dotc, vfrontier(idx))
+        col = random.choice([c for c in remcols if c != lastcol])
+        gim = [[col] * w for _ in range(bs)]
+        gom = [[col] * w for _ in range(bs)]
+        nl = _unifint(diff_lb, diff_ub, (nloclb, max(nloclb, w // 2)))
+        for jj in random.sample(range(w), nl):
+            rr = random.randint(0, bs - 1)
+            gim[rr][jj] = dotc
+            for r2 in range(bs):          # vfrontier inside the bar
+                gom[r2][jj] = dotc
         lastcol = col
-        gi = gi + gim
-        go = go + gom
+        gi += gim
+        go += gom
+
     if mirrored:
-        gi = dmirror(gi)
-        go = dmirror(go)
-    return {'input': gi, 'output': go}
+        gi = [list(r) for r in zip(*gi)]
+        go = [list(r) for r in zip(*go)]
+
+    return {"input": [list(r) for r in gi], "output": [list(r) for r in go]}
 
 
+# ---------------------------------------------------------- derivation -------
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
+    H, W = I.shape
     ho, wo = O.shape
-
     ops, sels = [], []
 
-    changed = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != O[r, c]]
-    if not changed:
-        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
-        return ops, sels
-    dotc = int(O[changed[0][0], changed[0][1]])
+    # --- orientation ---------------------------------------------------------
+    # In the canonical picture every row lies inside ONE bar, so a row holds at
+    # most {bar colour, dot colour} = 2 colours.  If some row shows 3+ colours
+    # the picture is the transposed one: the bars run vertically.
+    mirrored = any(len(set(I[r].tolist())) >= 3 for r in range(H))
 
-    # bars run across rows iff every row holds at most 2 distinct colors
-    horizontal = all(len(set(I[r].tolist())) < 3 for r in range(hi))
-    A = I if horizontal else I.T
-    n, m = A.shape
+    def emit_transpose(h, w):
+        """Perform the reflection across the main diagonal on the whole grid:
+        rot90 CCW followed by an up/down flip IS the transpose.  Rotation needs
+        a square canvas, so widen to sq x sq first and cut back after."""
+        s = max(h, w)
+        if h != w:
+            # full-rectangle selections: whole canvas, background included
+            ops.append(33); sels.append([0, 0, s - 1, s - 1])   # square canvas
+        ops.append(24); sels.append([0, 0, s - 1, s - 1])       # rotate CCW
+        ops.append(27); sels.append([0, 0, s - 1, s - 1])       # flip up/down
+        if h != w:
+            ops.append(33); sels.append([0, 0, w - 1, h - 1])   # back to w x h
 
-    # bar color of each line (the single non-dot color on it)
-    base = []
-    for i in range(n):
-        vals = [v for v in set(A[i].tolist()) if v != dotc]
-        base.append(vals[0] if vals else dotc)
+    if mirrored:
+        emit_transpose(H, W)
+        C = I.T.copy()          # working grid now literally equals C
+    else:
+        C = I.copy()
+    ch, cw = C.shape
 
-    i = 0
-    while i < n:
-        j = i
-        while j + 1 < n and base[j + 1] == base[i]:
-            j += 1
-        # one bar spans lines i..j; each dot in it grows to fill the bar
-        for b in range(m):
-            if any(A[k, b] == dotc for k in range(i, j + 1)):
-                # bbox == exactly the intended cells (a full 1-wide strip of the bar)
-                if horizontal:
-                    sels.append([i, b, j - i, 0])
-                else:
-                    sels.append([b, i, 0, j - i])
-                ops.append(dotc)
-        i = j + 1
+    # --- which colour are the marks? ----------------------------------------
+    # The dot colour is the colour whose removal leaves every row single
+    # coloured (every row is one bar colour plus scattered dots).
+    cands = []
+    for c in sorted(set(C.flatten().tolist())):
+        if all(len(set(C[r].tolist()) - {c}) == 1 for r in range(ch)):
+            cands.append(c)
+    if cands:
+        dotc = min(cands, key=lambda c: int((C == c).sum()))
+    else:
+        vals, cnts = np.unique(C, return_counts=True)
+        dotc = int(vals[int(np.argmin(cnts))])
+
+    # --- the bars ------------------------------------------------------------
+    rowcol = []
+    for r in range(ch):
+        rest = set(C[r].tolist()) - {dotc}
+        rowcol.append(rest.pop() if rest else dotc)
+    bars, start = [], 0
+    for r in range(1, ch + 1):
+        if r == ch or rowcol[r] != rowcol[r - 1]:
+            bars.append((start, r - 1))
+            start = r
+
+    # --- grow each mark into the vertical frontier of its own bar ------------
+    for (r0, r1) in bars:                       # bar by bar, top to bottom
+        for c in range(cw):                     # mark by mark, left to right
+            if not any(C[r, c] == dotc for r in range(r0, r1 + 1)):
+                continue
+            line = [(r, c) for r in range(r0, r1 + 1)]
+            if all(C[r, c] == dotc for r, c in line):
+                continue                        # already the whole frontier
+            ops.append(int(dotc)); sels.append(sel_of(line))
+            for r, cc in line:
+                C[r, cc] = dotc
+
+    # --- put the picture back the way it was ---------------------------------
+    if mirrored:
+        emit_transpose(ch, cw)
 
     ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
@@ -184,7 +237,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

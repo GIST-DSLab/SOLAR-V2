@@ -37,144 +37,148 @@ import random
 import numpy as np
 from maker.sel_helpers import sel_of
 
-ROTS = ["identity", "rot90", "rot180", "rot270"]
+# The generator applies one of four whole-grid rotations to every instance, so the
+# header strip can sit on any of the four edges.  That is a discrete structural
+# variant -> plan it per instance so the episode is learnable.
+VARIANTS = [{"rot": 0}, {"rot": 1}, {"rot": 2}, {"rot": 3}]
 
 
-# ----------------------------------------------------------------------------
-# 1. episode-level colors + structural plan (which of the 4 rotations)
-# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(1, 10))
+    cols = list(range(1, 10))                      # generator uses colors 1..9
     bgc = random.choice(cols)
     linc = random.choice([c for c in cols if c != bgc])
-
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(ROTS):
-        examples = [{"rot": r} for r in ROTS]
-        examples += [{"rot": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
         random.shuffle(examples)
     else:
-        examples = [{"rot": r} for r in random.sample(ROTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]   # test rotation was shown
+    # ccols are pure "read the header" colors -> the rule is color-agnostic there,
+    # so they stay per-instance random (only bgc / line color are fixed roles).
     return {"bgc": bgc, "linc": linc, "instance_plan": plan}
 
 
-# ----------------------------------------------------------------------------
-# 2. generator
-# ----------------------------------------------------------------------------
-def _unifint(diff_lb, diff_ub, bounds):
-    try:
-        return unifint(diff_lb, diff_ub, bounds)  # noqa: F821
-    except NameError:
-        a, b = bounds
-        return random.randint(a, b)
-
-
-def _apply_rot(g, rot):
-    a = np.array(g, dtype=int)
-    k = {"identity": 0, "rot90": 3, "rot180": 2, "rot270": 1}[rot]
-    return np.rot90(a, k).tolist()
-
-
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, rot=None) -> dict:
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        if b < a:
+            b = a
+        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
+
     if rot is None:
-        rot = random.choice(ROTS)
-
-    # canonical grid is (h+2, w); rot90/rot270 transpose it
-    if rot in ("identity", "rot180"):
-        h_cap, w_cap = max_h - 2, max_w
+        rot = random.choice([0, 1, 2, 3])
+    # canonical grid is (h+2, w); rot 1/3 transposes the dims
+    if rot in (0, 2):
+        hmax, wmax = min(28, max_h - 2), min(8, max_w)
     else:
-        h_cap, w_cap = max_w - 2, max_h
-    h_cap = max(1, min(28, h_cap))
-    w_cap = max(2, min(8, w_cap))
+        hmax, wmax = min(28, max_w - 2), min(8, max_h)
+    hmax, wmax = max(1, hmax), max(2, wmax)
+    h = unifint(diff_lb, diff_ub, (1, hmax))
+    w = unifint(diff_lb, diff_ub, (2, wmax))
 
-    h = _unifint(diff_lb, diff_ub, (1, h_cap))
-    w = _unifint(diff_lb, diff_ub, (2, w_cap))
-
-    remcols = [c for c in range(1, 10) if c != bgc]
-    ccols = random.sample(remcols, w)
-
+    ccols = random.sample([c for c in range(1, 10) if c != bgc], w)
     gi = [list(ccols), [linc] * w] + [[bgc] * w for _ in range(h)]
-    go = [row[:] for row in gi]
-    for k in range(h):
-        go[2 + k] = [ccols[k % w]] * w
-
-    return {"input": _apply_rot(gi, rot), "output": _apply_rot(go, rot)}
-
-
-# ----------------------------------------------------------------------------
-# 3. derive_operations
-# ----------------------------------------------------------------------------
-def _detect_structure(I):
-    """Locate, purely from I: the uniform separator line, the multi-color strip
-    just outside it, and the ordered background lines running away from the line."""
-    H, W = I.shape
-    cands = []
-    if H >= 3:
-        cands.append(("row", 0, 1, list(range(2, H))))
-        cands.append(("row", H - 1, H - 2, list(range(H - 3, -1, -1))))
-    if W >= 3:
-        cands.append(("col", 0, 1, list(range(2, W))))
-        cands.append(("col", W - 1, W - 2, list(range(W - 3, -1, -1))))
-
-    for kind, si, li, bgidx in cands:
-        get = (lambda k: I[k, :].tolist()) if kind == "row" else (lambda k: I[:, k].tolist())
-        line = get(li)
-        strip = get(si)
-        if len(set(line)) != 1:            # separator must be one solid color
-            continue
-        if len(set(strip)) < 2:            # color strip holds >= 2 distinct colors
-            continue
-        bgvals = set()
-        ok = True
-        for k in bgidx:
-            v = set(get(k))
-            if len(v) != 1:
-                ok = False
-                break
-            bgvals |= v
-        if not ok or len(bgvals) != 1:
-            continue
-        if bgvals.pop() == line[0]:
-            continue
-        return kind, si, li, bgidx, strip
-    return None
+    go = [list(ccols), [linc] * w] + [[ccols[i % w]] * w for i in range(h)]
+    gi = np.rot90(np.array(gi, dtype=int), rot).tolist()
+    go = np.rot90(np.array(go, dtype=int), rot).tolist()
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
+    """
+    Rule: the header strip of w colors is reflected across the diagonal (a 90 deg turn
+    of the strip), each color then spreads across its whole stripe line, and the
+    resulting w x w block repeats away from the header line until the grid is full.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     H, W = I.shape
-    ho, wo = O.shape
+
+    def canon_ok(G):
+        Hc, Wc = G.shape
+        if Hc < 3 or Wc < 2 or Wc > 8:
+            return False
+        if len(set(G[0].tolist())) < 2:        # header strip: distinct colors
+            return False
+        if len(set(G[1].tolist())) != 1:       # separator line: uniform
+            return False
+        rest = set(G[2:].flatten().tolist())   # plain background field
+        if len(rest) != 1:
+            return False
+        return rest.pop() != int(G[1][0])
+
+    # find which whole-grid rotation was applied (header strip on top -> canonical)
+    k, Gc, fb, fb_G = None, None, None, None
+    for kk in range(4):
+        G = np.rot90(I, -kk)
+        if not canon_ok(G):
+            continue
+        if fb is None:
+            fb, fb_G = kk, G
+        Hc, Wc = G.shape
+        Gp = G.copy()
+        for r in range(2, Hc):
+            Gp[r, :] = G[0, (r - 2) % Wc]
+        if np.array_equal(np.rot90(Gp, kk), O):
+            k, Gc = kk, G
+            break
+    if k is None:
+        k, Gc = fb, fb_G
+
+    Hc, Wc = Gc.shape
+    w, h = Wc, Hc - 2
+    ccols = Gc[0].tolist()
+
+    def M(r, c):                    # canonical -> actual grid coordinates (a rotation)
+        if k == 0:
+            return (r, c)
+        if k == 1:
+            return (Wc - 1 - c, r)
+        if k == 2:
+            return (Hc - 1 - r, Wc - 1 - c)
+        return (c, Hc - 1 - r)
+
+    def origin_of(cells):
+        return (min(p[0] for p in cells), min(p[1] for p in cells))
+
     ops, sels = [], []
+    s = min(w, h)                   # size of the square the reflection can use
+    next_row = 2
 
-    det = _detect_structure(I)
-    if det is not None:
-        kind, si, li, bgidx, strip = det
+    if s >= 2:
+        # copy the header strip (as much of it as there is room for)
+        src = [M(0, i) for i in range(s)]
+        ops.append(28); sels.append(sel_of(src))
+        # lay it down on the far edge of the square block that starts the stripes
+        dst = [M(s + 1, i) for i in range(s)]
+        ops.append(30); sels.append(sel_of([origin_of(dst)]))
+        # THE REFLECTION: turn the strip a quarter turn so it runs across the stripes
+        block = [M(r, c) for r in range(2, s + 2) for c in range(s)]
+        ops.append(25); sels.append(sel_of(block))
+        # spread each color along its own stripe line (its seed cell is already right)
+        for r in range(2, s + 2):
+            ops.append(int(ccols[(r - 2) % w]))
+            sels.append(sel_of([M(r, c) for c in range(1, w)]))
+        next_row = s + 2
 
-        # propagation direction v points from the line into the background;
-        # the strip is read along u = v rotated 90 CCW  (canonical: v=down, u=right)
-        if kind == "row":
-            v = (1, 0) if si == 0 else (-1, 0)
-        else:
-            v = (0, 1) if si == 0 else (0, -1)
-        u = (-v[1], v[0])                       # CCW rotation of v
-        reverse = (u == (0, -1)) or (u == (-1, 0))
-        ccols = strip[::-1] if reverse else list(strip)
-        period = len(ccols)
+    # repeat the finished w x w block onward while whole copies still fit
+    if s == w and h // w >= 2:
+        tile = [M(r, c) for r in range(2, w + 2) for c in range(w)]
+        ops.append(29); sels.append(sel_of(tile))
+        for t in range(1, h // w):
+            dcells = [M(r, c) for r in range(2 + t * w, 2 + (t + 1) * w) for c in range(w)]
+            ops.append(30); sels.append(sel_of([origin_of(dcells)]))
+        next_row = 2 + (h // w) * w
 
-        # stamp one stripe per background line, walking outward from the line
-        for k, idx in enumerate(bgidx):
-            color = int(ccols[k % period])
-            if kind == "row":
-                cells = [(idx, c) for c in range(W)]
-            else:
-                cells = [(r, idx) for r in range(H)]
-            ops.append(color)
-            sels.append(sel_of(cells))
+    # the trailing partial block: continue the cycle one stripe line at a time
+    for r in range(next_row, Hc):
+        ops.append(int(ccols[(r - 2) % w]))
+        sels.append(sel_of([M(r, c) for c in range(w)]))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, H - 1, W - 1])   # whole grid: an exact full rectangle
     return ops, sels
 
 
@@ -218,7 +222,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

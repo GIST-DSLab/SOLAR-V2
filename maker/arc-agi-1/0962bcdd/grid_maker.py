@@ -36,118 +36,145 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter
+
 from maker.sel_helpers import sel_of
 
 
 def sample_colors(num_examples=None) -> dict:
-    # Rule depends only on plus presence/pattern; per-plus colors are read
-    # dynamically in derive_operations. Only bgc must be fixed per episode.
+    # generator samples: bgc, and a palette ccols (numc colors) used for the plus shapes
     cols = [c for c in range(10) if c not in (3, 4)]
     bgc = random.choice(cols)
-    return {"bgc": bgc}
+    remcols = [c for c in cols if c != bgc]
+    numc = random.randint(2, 7)
+    ccols = random.sample(remcols, numc)
+    return {"bgc": bgc, "ccols": ccols}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, **color_kwargs) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, ccols=None) -> dict:
     def unifint(lb, ub, bounds):
         a, b = bounds
-        return int(min(b, max(a, round(a + (b - a) * random.uniform(lb, ub)))))
+        lo = int(a + (b - a) * lb)
+        hi = int(a + (b - a) * ub)
+        lo = max(a, min(lo, b))
+        hi = max(a, min(hi, b))
+        if lo > hi:
+            lo, hi = hi, lo
+        return random.randint(lo, hi)
 
     cols = [c for c in range(10) if c not in (3, 4)]
-    hub = max(10, min(30, max_h))
-    wub = max(10, min(30, max_w))
-    h = unifint(diff_lb, diff_ub, (10, hub))
-    w = unifint(diff_lb, diff_ub, (10, wub))
+    if bgc is None:
+        bgc = random.choice(cols)
+    if ccols is None:
+        remcols = [c for c in cols if c != bgc]
+        ccols = random.sample(remcols, random.randint(2, 7))
+    ccols = list(ccols)
 
-    remcols = [c for c in cols if c != bgc]
-    numc = unifint(diff_lb, diff_ub, (2, 7))
-    numc = min(numc, len(remcols))
-    ccols = random.sample(remcols, max(2, numc))
+    hub = max(10, min(30, int(max_h)))
+    wub = max(10, min(30, int(max_w)))
+    hlb = min(10, hub)
+    wlb = min(10, wub)
 
-    gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * w for _ in range(h)]
+    while True:
+        h = unifint(diff_lb, diff_ub, (hlb, hub))
+        w = unifint(diff_lb, diff_ub, (wlb, wub))
 
-    num = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 25)))
-    oh, ow = 5, 5
+        gi = [[bgc for _ in range(w)] for _ in range(h)]
+        go = [[bgc for _ in range(w)] for _ in range(h)]
 
-    indss = set((i, j) for i in range(h) for j in range(w))
-    subs = [(i, j) for (i, j) in indss if i < h - oh and j < w - ow]
+        num = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 25)))
+        indss = set((i, j) for i in range(h) for j in range(w))
+        subs = [(i, j) for i in range(h) for j in range(w) if i < h - 5 and j < w - 5]
 
-    maxtrials = 4 * num
-    tr = 0
-    succ = 0
-    while succ < num and tr <= maxtrials:
-        if not indss:
-            break
-        if not subs:
+        maxtrials = 4 * num
+        tr = 0
+        succ = 0
+        while succ < num and tr <= maxtrials:
+            if len(indss) == 0 or len(subs) == 0:
+                break
+            loci, locj = random.choice(subs)
+            bd = set(
+                (loci + di, locj + dj) for di in range(5) for dj in range(5)
+            )
+            if bd.issubset(indss):
+                ca, cb = random.sample(ccols, 2)
+                cp = (loci + 2, locj + 2)
+                # diagonals of the 5x5 block
+                lins12 = set()
+                for k in range(5):
+                    lins12.add((loci + k, locj + k))
+                    lins12.add((loci + 4 - k, locj + k))
+                # cross (mid row + mid col) of the 5x5 block
+                lins34 = set()
+                for k in range(5):
+                    lins34.add((loci + 2, locj + k))
+                    lins34.add((loci + k, locj + 2))
+                for (r, c) in lins34:
+                    go[r][c] = cb
+                for (r, c) in lins12:
+                    go[r][c] = ca
+                gi[cp[0]][cp[1]] = ca
+                for (dr, dc) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    gi[cp[0] + dr][cp[1] + dc] = cb
+                succ += 1
+                indss = indss - bd
             tr += 1
-            continue
-        loci, locj = random.choice(subs)
-        bd = set((loci + di, locj + dj) for di in range(5) for dj in range(5))
-        if bd.issubset(indss):
-            ca, cb = random.sample(ccols, 2)  # ca=center(least), cb=arms(most)
-            ci, cj = loci + 2, locj + 2
-            # input plus: center ca, 4 orthogonal neighbors cb
-            gi[ci][cj] = ca
-            for (di, dj) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                gi[ci + di][cj + dj] = cb
-            # output stamp: cross (cb) then X-diagonals (ca) on top
-            for j in range(locj, locj + 5):
-                go[loci + 2][j] = cb
-            for i in range(loci, loci + 5):
-                go[i][locj + 2] = cb
-            for k in range(5):
-                go[loci + k][locj + k] = ca
-                go[loci + k][locj + 4 - k] = ca
-            succ += 1
-            indss -= bd
-        tr += 1
 
-    return {"input": np.array(gi, dtype=int), "output": np.array(go, dtype=int)}
+        if succ >= 1:
+            break
+
+    return {
+        "input": tuple(tuple(row) for row in gi),
+        "output": tuple(tuple(row) for row in go),
+    }
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    ho, wo = O.shape
+    h, w = I.shape
 
+    # background: the canvas colour the generator paints before placing plus shapes
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # detect plus centers: cell whose 4 orthogonal neighbors are all one
-    # non-bg color cb (equal), and center is a different non-bg color ca.
-    centers = []
-    for r in range(1, hi - 1):
-        for c in range(1, wi - 1):
-            v = int(I[r, c])
-            if v == bgc:
+    # locate every plus: a centre cell (colour ca) whose 4 orthogonal neighbours share
+    # one other non-background colour cb
+    plusses = []
+    for r in range(2, h - 2):
+        for c in range(2, w - 2):
+            ca = int(I[r, c])
+            if ca == bgc:
                 continue
-            up = int(I[r - 1, c]); dn = int(I[r + 1, c])
-            lf = int(I[r, c - 1]); rt = int(I[r, c + 1])
-            if up == dn == lf == rt and up != bgc and up != v:
-                centers.append((r, c, v, up))  # ca=v, cb=up
+            arms = {int(I[r - 1, c]), int(I[r + 1, c]), int(I[r, c - 1]), int(I[r, c + 1])}
+            if len(arms) == 1:
+                cb = arms.pop()
+                if cb != bgc and cb != ca:
+                    plusses.append((r, c, ca, cb))
 
     ops, sels = [], []
 
-    def inb(r, c):
-        return 0 <= r < hi and 0 <= c < wi
+    for (r, c, ca, cb) in plusses:
+        # 1. extend the plus's four arms outward by one cell -> full 5-long cross in cb
+        tips = [(r - 2, c), (r + 2, c), (r, c - 2), (r, c + 2)]
+        ops.append(cb)
+        sels.append(sel_of(tips))
 
-    for (r, c, ca, cb) in centers:
-        # cross tips (extend + arms to radius 2) -> cb  (all bg in I now)
-        cross_new = [(r - 2, c), (r + 2, c), (r, c - 2), (r, c + 2)]
-        cross_new = [(rr, cc) for (rr, cc) in cross_new if inb(rr, cc)]
-        if cross_new:
-            ops.append(int(cb)); sels.append(sel_of(cross_new))
-        # X diagonals (inner + outer corners) -> ca (all bg in I now)
-        diag_new = [
-            (r - 1, c - 1), (r - 1, c + 1), (r + 1, c - 1), (r + 1, c + 1),
-            (r - 2, c - 2), (r - 2, c + 2), (r + 2, c - 2), (r + 2, c + 2),
-        ]
-        diag_new = [(rr, cc) for (rr, cc) in diag_new if inb(rr, cc)]
-        if diag_new:
-            ops.append(int(ca)); sels.append(sel_of(diag_new))
+        # 2. draw the main diagonal of the 5x5 block in ca (the centre is already ca)
+        main_diag = [(r - 2, c - 2), (r - 1, c - 1), (r + 1, c + 1), (r + 2, c + 2)]
+        ops.append(ca)
+        sels.append(sel_of(main_diag))
+
+        # 3. mirror the whole 5x5 block left<->right: the diagonal becomes the
+        #    anti-diagonal (the cross is symmetric, so it is unchanged).
+        #    Selection is exactly the full 5x5 rectangle, background included.
+        ops.append(26)
+        sels.append([r - 2, c - 2, 4, 4])
+
+        # 4. the mirror moved the diagonal away; draw it again so both arms of the X exist
+        ops.append(ca)
+        sels.append(sel_of(main_diag))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
     return ops, sels
 
 
@@ -191,7 +218,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -35,15 +35,36 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from collections import Counter, deque
+from collections import Counter
+
 from maker.sel_helpers import sel_of
 
-VARIANTS = [{"orient": "v"}, {"orient": "h"}]
+
+# ----------------------------------------------------------------------------
+# The four structural cases this task can produce:
+#   the shape is mirror-symmetric about ONE axis, and the occluding rectangle
+#   always sits strictly on ONE side of that axis.
+#     identity -> vertical axis, occluder on the right
+#     vmirror  -> vertical axis, occluder on the left
+#     dmirror  -> horizontal axis, occluder on the bottom
+#     cmirror  -> horizontal axis, occluder on the top
+# ----------------------------------------------------------------------------
+VARIANTS = [
+    {"tf": "identity"},
+    {"tf": "vmirror"},
+    {"tf": "dmirror"},
+    {"tf": "cmirror"},
+]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc, objc, occcol = random.sample(cols, 3)
+    # object colour must be non-zero: the reflection is carried out with
+    # CopyI/Paste, and 0 is "nothing" to the clipboard.
+    objc = random.choice([c for c in cols if c != 0])
+    bgc = random.choice([c for c in cols if c != objc])
+    occcol = random.choice([c for c in cols if c not in (objc, bgc)])
+
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -55,234 +76,223 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "objc": objc, "occcol": occcol, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, occcol, orient=None) -> dict:
-    if orient is None:
-        orient = random.choice(("v", "h"))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, occcol, tf=None, **kwargs) -> dict:
+    if tf is None:
+        tf = choice(("identity", "vmirror", "dmirror", "cmirror"))
+    tfmap = {
+        "identity": identity, "dmirror": dmirror, "cmirror": cmirror,
+        "vmirror": vmirror, "hmirror": hmirror,
+        "rot90": rot90, "rot180": rot180, "rot270": rot270,
+    }
+    fn = tfmap[tf]
+    swaps = tf in ("dmirror", "cmirror", "rot90", "rot270")
 
-    def unifint(lb, ub, bounds):
-        a, b = bounds
-        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
+    hcap = max(10, min(30, max_w if swaps else max_h))
+    wcap = max(10, min(30, max_h if swaps else max_w))
 
-    def hw(s):
-        rs = [i for i, _ in s]
-        cs = [j for _, j in s]
-        return max(rs) - min(rs) + 1, max(cs) - min(cs) + 1
-
-    def nbrs(s):
-        out = set()
-        for (i, j) in s:
-            for di in (-1, 0, 1):
-                for dj in (-1, 0, 1):
-                    if di or dj:
-                        out.add((i + di, j + dj))
-        return out
-
-    cap = min(max_h, max_w)                      # transposing mirrors may swap h and w
-    h = unifint(diff_lb, diff_ub, (10, max(10, cap)))
-    w = unifint(diff_lb, diff_ub, (10, max(10, cap)))
+    h = unifint(diff_lb, diff_ub, (10, hcap))
+    w = unifint(diff_lb, diff_ub, (10, wcap))
     oh = unifint(diff_lb, diff_ub, (4, h - 2))
     ow = unifint(diff_lb, diff_ub, (4, (w - 2) // 2))
     nc = unifint(diff_lb, diff_ub, (min(oh, ow), (oh * ow) // 3 * 2))
 
     shp = {(0, 0)}
-    bounds = {(i, j) for i in range(oh) for j in range(ow)}
-    for _ in range(nc):
-        cand = sorted((bounds - shp) & nbrs(shp))
-        if not cand:
+    bounds = asindices(canvas(-1, (oh, ow)))
+    for j in range(nc):
+        ij = choice(totuple((bounds - shp) & mapply(neighbors, shp)))
+        shp.add(ij)
+    while height(shp) < 3 or width(shp) < 3:
+        ij = choice(totuple((bounds - shp) & mapply(neighbors, shp)))
+        shp.add(ij)
+
+    vmshp = vmirror(shp)
+    if choice((True, False)):
+        vmshp = sfilter(vmshp, lambda ij: ij[1] != width(shp) - 1)
+    shp = normalize(combine(shp, shift(vmshp, (0, -width(vmshp)))))
+    oh, ow = shape(shp)
+
+    loci = randint(1, h - oh - 1)
+    locj = randint(1, w - ow - 1)
+    shp = shift(shp, (loci, locj))
+
+    c = canvas(bgc, (h, w))
+    go = fill(c, objc, shp)
+
+    bx = None
+    for _attempt in range(64):
+        boxh = unifint(diff_lb, diff_ub, (2, oh - 1))
+        boxw = unifint(diff_lb, diff_ub, (2, ow // 2))
+        ulci = randint(loci - 1, loci + oh - boxh + 1)
+        ulcj = randint(locj + ow // 2 + 1, locj + ow - boxw + 1)
+        cand = backdrop(frozenset({(ulci, ulcj), (ulci + boxh - 1, ulcj + boxw - 1)}))
+        bx = cand
+        if len(cand & shp) > 0:      # the occluder must actually hide part of the shape
             break
-        shp.add(random.choice(cand))
-    while hw(shp)[0] < 3 or hw(shp)[1] < 3:
-        cand = sorted((bounds - shp) & nbrs(shp))
-        if not cand:
-            break
-        shp.add(random.choice(cand))
 
-    cjs = [j for _, j in shp]
-    cmin, cmax = min(cjs), max(cjs)
-    wshp = cmax - cmin + 1
-    vmshp = {(i, cmin + cmax - j) for i, j in shp}
-    if random.choice((True, False)):
-        vmshp = {(i, j) for (i, j) in vmshp if j != wshp - 1}
-    wvm = hw(vmshp)[1]
-    comb = shp | {(i, j - wvm) for i, j in vmshp}
-    rmn = min(i for i, _ in comb)
-    cmn = min(j for _, j in comb)
-    shp = {(i - rmn, j - cmn) for i, j in comb}
-    oh, ow = hw(shp)
+    gi = fill(go, occcol, bx)
 
-    loci = random.randint(1, h - oh - 1)
-    locj = random.randint(1, w - ow - 1)
-    shp = {(i + loci, j + locj) for i, j in shp}
-
-    go = [[bgc] * w for _ in range(h)]
-    for (i, j) in shp:
-        go[i][j] = objc
-
-    boxh = unifint(diff_lb, diff_ub, (2, oh - 1))
-    boxw = unifint(diff_lb, diff_ub, (2, ow // 2))
-    ulci = random.randint(loci - 1, loci + oh - boxh + 1)
-    ulcj = random.randint(locj + ow // 2 + 1, locj + ow - boxw + 1)
-    gi = [row[:] for row in go]
-    for i in range(ulci, ulci + boxh):
-        for j in range(ulcj, ulcj + boxw):
-            gi[i][j] = occcol
-
-    def xf(g, name):
-        if name == "identity":
-            return [row[:] for row in g]
-        if name == "vmirror":
-            return [row[::-1] for row in g]
-        if name == "hmirror":
-            return [row[:] for row in g[::-1]]
-        if name == "rot180":
-            return [row[::-1] for row in g[::-1]]
-        if name == "dmirror":
-            return [list(r) for r in zip(*g)]
-        if name == "cmirror":
-            return [list(r) for r in zip(*[row[::-1] for row in g[::-1]])]
-        if name == "rot90":
-            return [list(r) for r in zip(*g[::-1])]
-        if name == "rot270":
-            return [list(r) for r in zip(*g)][::-1]
-        return g
-
-    keep = ["identity", "vmirror", "hmirror", "rot180"]      # keeps the mirror axis vertical
-    swap = ["dmirror", "cmirror", "rot90", "rot270"]         # turns the mirror axis horizontal
-    if orient == "v":
-        fns = random.sample(keep, random.choice((1, 2)))
-    else:
-        fns = [random.choice(swap)]
-        if random.choice((True, False)):
-            fns.append(random.choice(keep))
-    for fn in fns:
-        gi = xf(gi, fn)
-        go = xf(go, fn)
-
-    return {"input": [[int(v) for v in row] for row in gi],
-            "output": [[int(v) for v in row] for row in go]}
+    gi = fn(gi)
+    go = fn(go)
+    return {"input": gi, "output": go}
 
 
+# ----------------------------------------------------------------------------
 def derive_operations(I, O):
-    """A solid rectangle of one colour covers part of a mirror-symmetric figure.
-    Wipe the rectangle away and redraw the piece of the figure it was hiding,
-    found by reflecting the still-visible part onto itself."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
+    hi, wi = I.shape
+
+    def cells_of(sel):
+        if isinstance(sel, dict):
+            return [(int(r), int(c)) for r, c in sel.get("cells", [])]
+        r, c, dh, dw = sel
+        return [(rr, cc) for rr in range(r, r + dh + 1) for cc in range(c, c + dw + 1)]
+
+    def sim(ops, sels):
+        g = I.copy()
+        clip = None
+        states = []
+        for op, sel in zip(ops, sels):
+            if op == 34:
+                states.append(g.copy())
+                continue
+            if op < 10:
+                for (r, c) in cells_of(sel):
+                    if 0 <= r < hi and 0 <= c < wi:
+                        g[r, c] = op
+            elif op == 28:
+                r, c, dh, dw = sel
+                clip = I[r:r + dh + 1, c:c + dw + 1].copy()
+            elif op == 30:
+                r, c = sel[0], sel[1]
+                if clip is not None:
+                    ch, cw = clip.shape
+                    for i in range(ch):
+                        for j in range(cw):
+                            if clip[i, j] != 0 and 0 <= r + i < hi and 0 <= c + j < wi:
+                                g[r + i, c + j] = clip[i, j]
+            elif op in (26, 27):
+                r, c, dh, dw = sel
+                hh, ww = dh + 1, dw + 1
+                region = g[r:r + hh, c:c + ww].copy()
+                obj = np.where(region != 0, region, 0)
+                g[r:r + hh, c:c + ww] = np.where(region != 0, 0, region)
+                f = np.fliplr(obj) if op == 26 else np.flipud(obj)
+                tgt = g[r:r + hh, c:c + ww]
+                g[r:r + hh, c:c + ww] = np.where(f != 0, f, tgt)
+            states.append(g.copy())
+        return g, states
+
+    # --- colours -------------------------------------------------------------
+    ring = I[0, :].tolist() + I[-1, :].tolist() + I[:, 0].tolist() + I[:, -1].tolist()
+    bgc = Counter(ring).most_common(1)[0][0]
+    ocols = [int(c) for c in np.unique(O).tolist() if c != bgc]
+    objc = ocols[0] if ocols else int(bgc)
+    icols = [int(c) for c in np.unique(I).tolist() if c != bgc and c != objc]
+    occc = icols[0] if icols else None
+
     ops, sels = [], []
 
-    # background = the colour the canvas was painted with; it rings the whole grid
-    border = ([int(I[0, j]) for j in range(w)] + [int(I[h - 1, j]) for j in range(w)] +
-              [int(I[i, 0]) for i in range(1, h - 1)] + [int(I[i, w - 1]) for i in range(1, h - 1)])
-    bgc = Counter(border).most_common(1)[0][0]
-    others = sorted(set(int(v) for v in I.flatten().tolist()) - {bgc})
-    bg_arr = (I == bgc)
+    # --- 1. remove the occluding rectangle ----------------------------------
+    cur = I.copy()
+    if occc is not None:
+        occ_cells = [(int(r), int(c)) for r, c in np.argwhere(I == occc)]
+        if occ_cells:
+            ops.append(int(bgc))
+            sels.append(sel_of(occ_cells))
+            cur[I == occc] = bgc
 
-    def cells_of(col):
-        rs, cs = np.nonzero(I == col)
-        return set(zip(rs.tolist(), cs.tolist()))
-
-    def is_rect(cells):
-        rs = [r for r, _ in cells]
-        cs = [c for _, c in cells]
-        return len(cells) == (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1)
-
-    # The occluder is the colour whose cells fill a solid rectangle; the remaining
-    # non-background colour is the figure. (Both colours qualify only when the figure
-    # itself happens to be a solid block — an ambiguity the task's own reference
-    # implementation resolves arbitrarily, so O settles it below.)
-    best = None
-    for occ in others:
-        rest = [c for c in others if c != occ]
-        if len(rest) != 1:
-            continue
-        obj = rest[0]
-        box = cells_of(occ)
-        objcells = cells_of(obj)
-        if not box or not objcells or not is_rect(box):
-            continue
-        obj_arr = (I == obj)
-
-        rr = np.array([r for r, _ in sorted(objcells)])
-        cc = np.array([c for _, c in sorted(objcells)])
-        rmin, rmax, cmin, cmax = rr.min(), rr.max(), cc.min(), cc.max()
-        mirrors = [(rr, cmin + cmax - cc),          # reflected left<->right
-                   (rmin + rmax - rr, cc)]          # reflected up<->down
-
-        union = objcells | box
-        ur = [r for r, _ in union]
-        uc = [c for _, c in union]
-        lim = max((max(ur) - min(ur) + 1) // 2 + 1, (max(uc) - min(uc) + 1) // 2 + 1)
-
-        # Slide each reflection over the figure: it may never land on background,
-        # and the right placement is the one covering the most of the visible figure.
-        cands = []
-        for (mr, mc) in mirrors:
-            for di in range(-lim, lim + 1):
-                for dj in range(-lim, lim + 1):
-                    ar, ac = mr + di, mc + dj
-                    inside = (ar >= 0) & (ar < h) & (ac >= 0) & (ac < w)
-                    ir, ic = ar[inside], ac[inside]
-                    if bg_arr[ir, ic].any():
-                        continue
-                    cands.append((int(obj_arr[ir, ic].sum()),
-                                  set(zip(ir.tolist(), ic.tolist()))))
-        if not cands:
-            continue
-        cands.sort(key=lambda t: -t[0])
-        for score, sh in cands:
-            paint = sh & box            # outside the rectangle the reflection is already drawn
-            G = I.copy()
-            for (r, c) in box:
-                G[r, c] = bgc
-            for (r, c) in paint:
-                G[r, c] = obj
-            agrees = bool(np.array_equal(G, O))
-            cand = (agrees, score, obj, box, paint)
-            if best is None or (cand[0], cand[1]) > (best[0], best[1]):
-                best = cand
-            if agrees:                  # best overlap wins; O only settles exact ties
-                break
-        if best is not None and best[0]:
-            break
-
-    if best is None:
+    diff = [(int(r), int(c)) for r, c in np.argwhere(cur != O)]
+    if not diff:
         ops.append(34)
-        sels.append([0, 0, h - 1, w - 1])
+        sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
         return ops, sels
 
-    _, _, obj, box, paint = best
+    # --- 2. reflect the intact half onto the damaged half -------------------
+    mask = (O == objc)
+    rr, cc = np.where(mask)
+    r0, r1, c0, c1 = int(rr.min()), int(rr.max()), int(cc.min()), int(cc.max())
+    sub = mask[r0:r1 + 1, c0:c1 + 1]
+    Hh, Ww = r1 - r0 + 1, c1 - c0 + 1
 
-    # 1) wipe the occluding rectangle back to background
-    ops.append(int(bgc))
-    sels.append(sel_of(sorted(box)))
+    plans = []
+    if Ww >= 2 and np.array_equal(sub, sub[:, ::-1]):
+        m = Ww // 2
+        left = (c0, c0 + m - 1)
+        right = (c1 - m + 1, c1)
+        dc = set(c for _, c in diff)
+        if all(left[0] <= c <= left[1] for c in dc):
+            plans.append(("V", (r0, left[0]), (r0, right[0]), Hh, m))
+        elif all(right[0] <= c <= right[1] for c in dc):
+            plans.append(("V", (r0, right[0]), (r0, left[0]), Hh, m))
+    if Hh >= 2 and np.array_equal(sub, sub[::-1, :]):
+        m = Hh // 2
+        top = (r0, r0 + m - 1)
+        bot = (r1 - m + 1, r1)
+        dr = set(r for r, _ in diff)
+        if all(top[0] <= r <= top[1] for r in dr):
+            plans.append(("H", (top[0], c0), (bot[0], c0), m, Ww))
+        elif all(bot[0] <= r <= bot[1] for r in dr):
+            plans.append(("H", (bot[0], c0), (top[0], c0), m, Ww))
 
-    # 2) redraw the hidden part of the figure, one connected patch at a time
-    todo = set(paint)
-    comps = []
-    while todo:
-        seed = min(todo)
-        todo.discard(seed)
-        comp = [seed]
-        q = deque([seed])
-        while q:
-            r, c = q.popleft()
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    n = (r + dr, c + dc)
-                    if n in todo:
-                        todo.discard(n)
-                        comp.append(n)
-                        q.append(n)
-        comps.append(sorted(comp))
-    comps.sort(key=lambda cp: cp[0])
-    for comp in comps:
-        ops.append(int(obj))
-        sels.append(sel_of(comp))
+    def build(plan):
+        axis, (dr0, dc0), (sr0, sc0), rh, rw = plan
+        o2, s2 = list(ops), list(sels)
+        # lay a clean bgc base over the damaged half (only cells that still hold
+        # something else) so the in-place flip has nothing pre-existing to catch
+        clear = [(r, c) for r in range(dr0, dr0 + rh) for c in range(dc0, dc0 + rw)
+                 if cur[r, c] != bgc]
+        if clear:
+            o2.append(int(bgc))
+            s2.append(sel_of(clear))
+        # CopyI / Paste / Flip selections are FULL RECTANGLES (background included
+        # on purpose): a half of the shape's bounding box is exactly a rectangle.
+        o2.append(28)
+        s2.append([sr0, sc0, rh - 1, rw - 1])          # grab the intact half from the input
+        o2.append(30)
+        s2.append([dr0, dc0, 0, 0])                    # drop it onto the damaged half
+        o2.append(26 if axis == "V" else 27)           # and mirror it in place
+        s2.append([dr0, dc0, rh - 1, rw - 1])
+        return o2, s2
 
-    ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
-    return ops, sels
+    chosen = None
+    for plan in plans:
+        o2, s2 = build(plan)
+        g, _ = sim(o2, s2)
+        if np.array_equal(g, O):
+            chosen = (o2, s2)
+            break
+
+    if chosen is None:
+        # fallback: no reflection matched — paint what the rule leaves to paint
+        o2, s2 = list(ops), list(sels)
+        need = {}
+        for (r, c) in diff:
+            need.setdefault(int(O[r, c]), []).append((r, c))
+        for col, cl in need.items():
+            o2.append(int(col))
+            s2.append(sel_of(cl))
+        chosen = (o2, s2)
+
+    o2, s2 = chosen
+
+    # --- prune ops that leave the grid untouched (CopyI works on the clipboard)
+    g = I.copy()
+    keep_ops, keep_sels = [], []
+    prev = I.copy()
+    for idx in range(len(o2)):
+        gg, _ = sim(o2[:idx + 1], s2[:idx + 1])
+        if o2[idx] == 28 or not np.array_equal(gg, prev):
+            keep_ops.append(o2[idx])
+            keep_sels.append(s2[idx])
+        prev = gg
+    gfin, _ = sim(keep_ops, keep_sels)
+    if np.array_equal(gfin, O):
+        o2, s2 = keep_ops, keep_sels
+
+    o2.append(34)
+    s2.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
+    return o2, s2
 
 
 # ── GridMaker ─────────────────────────────────────────────────────────────────

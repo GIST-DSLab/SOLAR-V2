@@ -33,111 +33,228 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
 import numpy as np
-from random import randint, choice, sample
-from maker.sel_helpers import sel_of
+
+# the 8 orientations of a square box, and the ARCLE ops that produce each one
+_TF = [
+    lambda a: np.array(a),          # identity
+    lambda a: np.fliplr(a),         # vmirror
+    lambda a: np.flipud(a),         # hmirror
+    lambda a: np.rot90(a, 2),       # rot180
+    lambda a: np.rot90(a, 1),       # rot90 CCW
+    lambda a: np.rot90(a, 3),       # rot90 CW
+    lambda a: np.array(a).T,        # dmirror  (transpose)     = flipud(rot90CCW)
+    lambda a: np.rot90(a, 2).T,     # cmirror  (anti-transpose)= flipud(rot90CW)
+]
+_TOPS = [[], [26], [27], [26, 27], [24], [25], [24, 27], [25, 27]]
+
+
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        a, b = b, a
+    lo = int(a + (b - a) * diff_lb)
+    hi = int(a + (b - a) * diff_ub)
+    lo = max(a, min(lo, b))
+    hi = max(lo, min(hi, b))
+    return random.randint(lo, hi)
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc, noisec, sqc = sample(cols, 3)
+    bgc = random.choice(cols)
+    # box colour and pattern colour stay non-zero so Copy/Paste can carry the box
+    sqc = random.choice([c for c in cols if c != bgc and c != 0])
+    noisec = random.choice([c for c in cols if c not in (bgc, sqc, 0)])
     return {"bgc": bgc, "noisec": noisec, "sqc": sqc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int, noisec: int, sqc: int) -> dict:
-    # output is trim(gi), so raw canvas must be 2 larger than the allowed dims
-    hub = max(12, min(32, max_h + 2))
-    wub = max(12, min(32, max_w + 2))
-    h = unifint(diff_lb, diff_ub, (12, hub))
-    w = unifint(diff_lb, diff_ub, (12, wub))
-    oh = unifint(diff_lb, diff_ub, (3, min(7, h // 3)))
-    ow = unifint(diff_lb, diff_ub, (3, min(7, w // 3)))
-    tmpg = canvas(sqc, (oh, ow))
-    inbounds = backdrop(inbox(asindices(tmpg)))
-    obj = {choice(totuple(inbounds))}
-    while shape(obj) != (oh - 2, ow - 2):
-        obj.add(choice(totuple(inbounds - obj)))
-    pat = fill(tmpg, noisec, obj)
-    targ = asobject(fill(canvas(bgc, (oh, ow)), noisec, obj))
-    sour = asobject(pat)
-    gi = canvas(bgc, (h, w))
-    loci = randint(1, h - oh - 1)
-    locj = randint(1, w - ow - 1)
-    plcddd = shift(sour, (loci, locj))
-    gi = paint(gi, plcddd)
-    inds = ofcolor(gi, bgc) & shift(asindices(canvas(-1, (h - 2, w - 2))), (1, 1))
-    inds = inds - (toindices(plcddd) | mapply(dneighbors, toindices(plcddd)))
-    namt = unifint(diff_lb, diff_ub, (1, max(1, len(inds) // 4)))
-    noise = sample(totuple(inds), namt)
-    gi = fill(gi, noisec, noise)
-    targs = []
-    sours = []
-    for fn1 in (identity, dmirror, cmirror, hmirror, vmirror):
-        for fn2 in (identity, dmirror, cmirror, hmirror, vmirror):
-            targs.append(normalize(fn1(fn2(targ))))
-            sours.append(normalize(fn1(fn2(sour))))
-    noccs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // ((oh * ow * 4)))))
-    succ = 0
-    tr = 0
-    maxtr = 5 * noccs
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, sqc) -> dict:
+    hub = min(32, max_h + 2)          # grids are trimmed by 1 on every side
+    hlb = min(12, hub)
+    wub = min(32, max_w + 2)
+    wlb = min(12, wub)
+    h = _unifint(diff_lb, diff_ub, (hlb, hub))
+    w = _unifint(diff_lb, diff_ub, (wlb, wub))
+    odub = max(4, min(7, h // 3, w // 3))
+    od = _unifint(diff_lb, diff_ub, (4, odub))     # square box -> every orientation is square
+    if h < od + 3 or w < od + 3:
+        raise ValueError("grid too small for the box")
+
+    interior = [(r, c) for r in range(1, od - 1) for c in range(1, od - 1)]
+    obj = {random.choice(interior)}
+    while True:
+        rs = [p[0] for p in obj]
+        cs = [p[1] for p in obj]
+        if max(rs) - min(rs) == od - 3 and max(cs) - min(cs) == od - 3:
+            break
+        obj.add(random.choice([p for p in interior if p not in obj]))
+
+    pat = np.full((od, od), sqc, dtype=int)        # source: box colour + pattern
+    targ = np.full((od, od), bgc, dtype=int)       # target: background + pattern
+    for (r, c) in obj:
+        pat[r, c] = noisec
+        targ[r, c] = noisec
+
+    gi = np.full((h, w), bgc, dtype=int)
+    loci = random.randint(1, h - od - 1)
+    locj = random.randint(1, w - od - 1)
+    gi[loci:loci + od, locj:locj + od] = pat
+
+    blocked = set()
+    for r in range(loci, loci + od):
+        for c in range(locj, locj + od):
+            blocked.add((r, c))
+            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                blocked.add((r + dr, c + dc))
+    inds = set()
+    for r in range(1, h - 1):
+        for c in range(1, w - 1):
+            if gi[r, c] == bgc and (r, c) not in blocked:
+                inds.add((r, c))
+    if len(inds) < 4 * od * od:
+        raise ValueError("not enough free space")
+
+    namt = _unifint(diff_lb, diff_ub, (1, max(1, len(inds) // 4)))
+    for (r, c) in random.sample(sorted(inds), min(namt, len(inds))):
+        gi[r, c] = noisec
+
+    targs = [_TF[k](targ) for k in range(8)]
+    sours = [_TF[k](pat) for k in range(8)]
+
+    noccs = _unifint(diff_lb, diff_ub, (1, max(1, (h * w) // (od * od * 4))))
+    succ, tr, maxtr = 0, 0, 5 * noccs
     while succ < noccs and tr < maxtr:
         tr += 1
-        t = choice(targs)
-        hh, ww = shape(t)
-        cands = sfilter(inds, lambda ij: 1 <= ij[0] <= h - hh - 1 and 1 <= ij[1] <= w - ww - 1)
-        if len(cands) == 0:
-            continue
-        loc = choice(totuple(cands))
-        tp = shift(t, loc)
-        tpi = toindices(tp)
-        if tpi.issubset(inds):
+        k = random.randrange(8)
+        cands = [ij for ij in sorted(inds)
+                 if 1 <= ij[0] <= h - od - 1 and 1 <= ij[1] <= w - od - 1]
+        if not cands:
+            break
+        r0, c0 = random.choice(cands)
+        fp = {(r0 + i, c0 + j) for i in range(od) for j in range(od)}
+        if fp <= inds:
             succ += 1
-            inds = inds - tpi
-            gi = paint(gi, tp)
-    go = replace(gi, sqc, bgc)
-    go = paint(go, plcddd)
-    res = set()
-    for t, s in zip(targs, sours):
-        res |= mapply(lbind(shift, s), occurrences(go, t))
-    go = paint(go, res)
-    gi = trim(gi)
-    go = trim(go)
-    return {'input': gi, 'output': go}
+            inds -= fp
+            gi[r0:r0 + od, c0:c0 + od] = targs[k]
+
+    # every place (any orientation) where the bare pattern sits on clean background
+    occ = {}
+    for k in range(8):
+        t = targs[k]
+        for r in range(h - od + 1):
+            for c in range(w - od + 1):
+                if (r, c) in occ:
+                    continue
+                if np.array_equal(gi[r:r + od, c:c + od], t):
+                    occ[(r, c)] = k
+    if not occ:
+        raise ValueError("no occurrence of the pattern")
+
+    used = set()
+    for (r, c), k in sorted(occ.items()):
+        # keep every drawn box whole and unambiguous after the trim
+        if not (1 <= r and 1 <= c and r + od <= h - 1 and c + od <= w - 1):
+            raise ValueError("occurrence would be clipped by the trim")
+        fp = {(r + i, c + j) for i in range(od) for j in range(od)}
+        if fp & used:
+            raise ValueError("overlapping occurrences")
+        used |= fp
+
+    go = gi.copy()
+    for (r, c), k in sorted(occ.items()):
+        go[r:r + od, c:c + od] = sours[k]
+
+    return {"input": gi[1:-1, 1:-1].tolist(), "output": go[1:-1, 1:-1].tolist()}
 
 
 def derive_operations(I, O):
-    """Every noise blob matching the template's interior gets the template's
-    frame drawn around it: background cells inside those windows turn sqc.
-    One Color<sqc> op per revealed frame region."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
+    ho, wo = O.shape
     ops, sels = [], []
 
-    changed = [(r, c) for r in range(h) for c in range(w) if I[r, c] != O[r, c]]
-    if changed:
-        sqc = int(O[changed[0][0], changed[0][1]])
-        chset = set(changed)
-        seen = set()
-        for cell in changed:
-            if cell in seen:
-                continue
-            comp = []
-            stack = [cell]
-            seen.add(cell)
-            while stack:
-                r, c = stack.pop()
-                comp.append((r, c))
-                for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-                    if nb in chset and nb not in seen:
-                        seen.add(nb)
-                        stack.append(nb)
-            ops.append(sqc)
-            sels.append(sel_of(comp))
+    # box colour = the colour with the most compact bounding box (bgc and the
+    # pattern colour are both scattered over the whole grid)
+    sqc, best = None, None
+    for col in sorted(set(I.flatten().tolist())):
+        rs, cs = np.where(I == col)
+        ext = max(rs.max() - rs.min() + 1, cs.max() - cs.min() + 1)
+        if best is None or ext < best:
+            best, sqc = ext, col
+    rs, cs = np.where(I == sqc)
+    br, bc = int(rs.min()), int(cs.min())
+    od = int(max(rs.max() - br + 1, cs.max() - bc + 1))
+    od = min(od, ho - br, wo - bc)
+    P = I[br:br + od, bc:bc + od]            # the box, as it stands in the input
+
+    # each copy of the box in O, together with the orientation it is shown in
+    boxes = []
+    for r in range(ho - od + 1):
+        for c in range(wo - od + 1):
+            win = O[r:r + od, c:c + od]
+            if np.array_equal(win, I[r:r + od, c:c + od]):
+                continue                      # nothing new here (e.g. the original box)
+            for k in range(8):
+                if np.array_equal(win, _TF[k](P)):
+                    boxes.append((r, c, k))
+                    break
+
+    G = I.copy()
+    copied = False
+    for (r, c, k) in boxes:
+        want = _TF[k](P)
+        if np.array_equal(G[r:r + od, c:c + od], want):
+            continue
+        if not copied:
+            # CopyI the original box; selection is exactly its full od x od rectangle
+            ops.append(28)
+            sels.append([br, bc, od - 1, od - 1])
+            copied = True
+        if (P == 0).any():
+            # Paste cannot carry 0s: lay a base of the box colour over the whole
+            # destination rectangle first, then draw the pattern on top of it
+            base = np.full((od, od), sqc, dtype=int)
+            if not np.array_equal(G[r:r + od, c:c + od], base):
+                ops.append(int(sqc))
+                sels.append([r, c, od - 1, od - 1])   # exactly the destination rectangle
+                G[r:r + od, c:c + od] = base
+        # stamp the box over the pattern that matched here
+        reg = G[r:r + od, c:c + od].copy()
+        m = P != 0
+        reg[m] = P[m]
+        if not np.array_equal(reg, G[r:r + od, c:c + od]):
+            ops.append(30)
+            sels.append([r, c, 0, 0])
+            G[r:r + od, c:c + od] = reg
+        # mirror / rotate the stamped box into the orientation this copy appears in
+        for op in _TOPS[k]:
+            reg = G[r:r + od, c:c + od]
+            if op == 26:
+                nreg = np.fliplr(reg)
+            elif op == 27:
+                nreg = np.flipud(reg)
+            elif op == 24:
+                nreg = np.rot90(reg, 1)
+            else:
+                nreg = np.rot90(reg, 3)
+            if np.array_equal(nreg, reg):
+                continue                       # this orientation is already reached
+            ops.append(op)
+            sels.append([r, c, od - 1, od - 1])  # exactly the destination rectangle (square)
+            G[r:r + od, c:c + od] = nreg
+
+    if not np.array_equal(G, O):               # safety net; never used on valid instances
+        for rr in range(ho):
+            for cc in range(wo):
+                if G[rr, cc] != O[rr, cc]:
+                    ops.append(int(O[rr, cc]))
+                    sels.append([rr, cc, 0, 0])
+                    G[rr, cc] = O[rr, cc]
 
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -181,7 +298,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

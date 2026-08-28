@@ -36,134 +36,202 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter
+from maker.sel_helpers import sel_of
 
-VARIANTS = [
-    {"mf_name": "identity"},
-    {"mf_name": "rot90"},
-    {"mf_name": "rot180"},
-    {"mf_name": "rot270"},
-]
+# ----------------------------------------------------------------------------
+# Task 3ac3eb23
+#
+# Input : a canvas of bgc with a few single marker cells sitting on ONE edge
+#         line of the grid (top row / bottom row / left col / right col — the
+#         generator draws them on the top row and then rotates the whole grid).
+# Output: from every marker a "diamond chain" grows away from that edge:
+#         at even distance d from the edge the marker colour sits on the
+#         marker's own line, at odd distance it sits on the two lines beside it.
+#
+# The verifier normalises the grid with a reflection (dmirror / cmirror /
+# hmirror) so the markers lie on the near edge, draws, and reflects back.
+# The trajectory does exactly that: FlipV (op27) when the markers are on the
+# bottom row, FlipH (op26) when they are on the right column, then one Color op
+# per marker painting its whole chain, then the same flip back (only when that
+# flip still changes the grid — for an odd extent the drawn grid is already
+# symmetric and a second flip would be an invisible no-op).
+# ----------------------------------------------------------------------------
+
+MF_VARIANTS = ["identity", "rot90", "rot180", "rot270"]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc = random.choice(cols)
-    # foreground colors kept non-zero: 0 is "transparent" to ARCLE Copy/Paste,
-    # and the fan is duplicated with CopyO/Paste.
-    fgcols = [c for c in range(1, 10) if c != bgc]
+    # keep colour 0 out of the foreground when the background is non-zero, so a
+    # whole-grid Flip never has to carry a "0 is real content" cell.
+    if bgc == 0:
+        pool = [c for c in cols if c != 0]
+    else:
+        pool = [c for c in cols if c != bgc and c != 0]
+    k = random.randint(2, min(5, len(pool)))
+    fgcols = random.sample(pool, k)
+
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+    if n_ex >= len(MF_VARIANTS):
+        examples = [{"mf_name": v} for v in MF_VARIANTS]
+        examples += [{"mf_name": random.choice(MF_VARIANTS)}
+                     for _ in range(n_ex - len(MF_VARIANTS))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
+        examples = [{"mf_name": v} for v in random.sample(MF_VARIANTS, n_ex)]
+    plan = [dict(e) for e in examples]
+    plan.append(dict(random.choice(examples)))  # test orientation was shown
     return {"bgc": bgc, "fgcols": fgcols, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, fgcols=None, mf_name=None) -> dict:
-    if mf_name is None:
-        mf_name = choice(("identity", "rot90", "rot180", "rot270"))
-    mf = {"identity": identity, "rot90": rot90, "rot180": rot180, "rot270": rot270}[mf_name]
-    # rot90/rot270 transpose the canvas -> sample within the swapped bounds
-    if mf_name in ("rot90", "rot270"):
-        hub, wub = max_w, max_h
-    else:
-        hub, wub = max_h, max_w
-    h = unifint(diff_lb, diff_ub, (3, max(3, hub)))
-    w = unifint(diff_lb, diff_ub, (3, max(3, wub)))
-    if bgc is None:
-        bgc = choice(interval(0, 10, 1))
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        a, b = b, a
+    ba = max(a, int(round(a + (b - a) * diff_lb)))
+    bb = min(b, int(round(a + (b - a) * diff_ub)))
+    if bb < ba:
+        ba, bb = bb, ba
+    ba = max(a, min(b, ba))
+    bb = max(a, min(b, bb))
+    return random.randint(ba, bb)
+
+
+def _rot90cw(g):
+    return [list(r) for r in zip(*g[::-1])]
+
+
+def _rot180(g):
+    return [list(r)[::-1] for r in g[::-1]]
+
+
+def _rot270ccw(g):
+    return [list(r) for r in zip(*g)][::-1]
+
+
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgcols=None, mf_name=None) -> dict:
+    cols = list(range(10))
     if fgcols is None:
-        fgcols = [c for c in range(1, 10) if c != bgc]
-    nlocs = unifint(diff_lb, diff_ub, (1, max(1, (w - 2) // 3)))
-    locopts = interval(1, w - 1, 1)
-    gi = canvas(bgc, (h, w))
-    go = canvas(bgc, (h, w))
-    for k in range(nlocs):
-        if len(locopts) == 0:
+        if bgc == 0:
+            pool = [c for c in cols if c != 0]
+        else:
+            pool = [c for c in cols if c != bgc and c != 0]
+        fgcols = random.sample(pool, min(3, len(pool)))
+    if mf_name is None:
+        mf_name = random.choice(MF_VARIANTS)
+
+    # a rot90/rot270 swaps the two dimensions, so keep both inside both caps
+    if mf_name in ("rot90", "rot270"):
+        hb = wb = max(3, min(max_h, max_w))
+    else:
+        hb, wb = max(3, max_h), max(3, max_w)
+
+    h = _unifint(diff_lb, diff_ub, (3, hb))
+    w = _unifint(diff_lb, diff_ub, (3, wb))
+
+    nlocs = _unifint(diff_lb, diff_ub, (1, max(1, (w - 2) // 3)))
+    locopts = list(range(1, w - 1))
+
+    gi = [[bgc for _ in range(w)] for _ in range(h)]
+    go = [[bgc for _ in range(w)] for _ in range(h)]
+
+    for _ in range(nlocs):
+        if not locopts:
             break
-        locj = choice(locopts)
-        locopts = difference(locopts, interval(locj - 2, locj + 3, 1))
-        col = choice(tuple(fgcols))
-        gi = fill(gi, col, {(0, locj)})
-        go = fill(go, col, {(p, locj) for p in interval(0, h, 2)})
-        go = fill(go, col, {(p, locj - 1) for p in interval(1, h, 2)})
-        go = fill(go, col, {(p, locj + 1) for p in interval(1, h, 2)})
-    gi = mf(gi)
-    go = mf(go)
-    return {'input': gi, 'output': go}
+        locj = random.choice(locopts)
+        locopts = [x for x in locopts if not (locj - 2 <= x <= locj + 2)]
+        col = random.choice(fgcols)
+        gi[0][locj] = col
+        for p in range(0, h, 2):
+            go[p][locj] = col
+        for p in range(1, h, 2):
+            go[p][locj - 1] = col
+            go[p][locj + 1] = col
+
+    if mf_name == "rot90":
+        gi, go = _rot90cw(gi), _rot90cw(go)
+    elif mf_name == "rot180":
+        gi, go = _rot180(gi), _rot180(go)
+    elif mf_name == "rot270":
+        gi, go = _rot270ccw(gi), _rot270ccw(go)
+
+    return {"input": [list(r) for r in gi], "output": [list(r) for r in go]}
 
 
 def derive_operations(I, O):
-    """
-    Rule (read off I): every non-bg cell of I is a seed sitting on ONE border of the
-    grid. Each seed grows a fan straight into the grid: at even depth d the seed's own
-    lane is coloured, at odd depth the two neighbouring lanes are coloured. So the fan
-    is the seed's colour repeated with PERIOD 2 in depth. Per seed we therefore
-    (1) paint the depth-1 wings, giving one 2-deep unit, and (2) copy that unit and
-    stamp it down the strip. O is never consulted.
-    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-    seeds = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != bgc]
-
-    # which border carries the seeds -> u = inward direction, v = along-border direction
-    if all(r == 0 for r, _ in seeds):
-        u, v, D = (1, 0), (0, 1), hi
-    elif all(r == hi - 1 for r, _ in seeds):
-        u, v, D = (-1, 0), (0, 1), hi
-    elif all(c == 0 for _, c in seeds):
-        u, v, D = (0, 1), (1, 0), wi
-    else:
-        u, v, D = (0, -1), (1, 0), wi
-
-    def cell(s, d, t):
-        return (s[0] + u[0] * d + v[0] * t, s[1] + u[1] * d + v[1] * t)
-
+    h, w = I.shape
     ops, sels = [], []
-    for s in seeds:
-        col = int(I[s[0], s[1]])
 
-        # step 1: grow one step out of the seed -> the two wings at depth 1
-        for t in (-1, 1):
-            r, c = cell(s, 1, t)
-            ops.append(col)
-            sels.append([r, c, 0, 0])
+    # background: the canvas colour the generator paints before placing markers
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    marks = [(r, c, int(I[r, c]))
+             for r in range(h) for c in range(w) if int(I[r, c]) != bgc]
 
-        P = D // 2                       # number of complete 2-deep units in the strip
-        if col != 0 and P > 1:
-            # step 2: the depth 0..1 unit is now complete -> repeat it down the strip
-            unit = [cell(s, 0, 0), cell(s, 1, -1), cell(s, 1, 1)]
-            r0 = min(p[0] for p in unit)
-            c0 = min(p[1] for p in unit)
-            r1 = max(p[0] for p in unit)
-            c1 = max(p[1] for p in unit)
-            ops.append(29)
-            sels.append([r0, c0, r1 - r0, c1 - c0])
-            for k in range(1, P):
-                ops.append(30)
-                sels.append([r0 + u[0] * 2 * k, c0 + u[1] * 2 * k, 0, 0])
-            if D % 2 == 1:               # one lone even depth left at the far border
-                r, c = cell(s, D - 1, 0)
-                ops.append(col)
-                sels.append([r, c, 0, 0])
+    full = [0, 0, h - 1, w - 1]   # bbox == the ENTIRE grid (a true full rectangle)
+    cur = I.copy()
+
+    mrows = {r for r, _, _ in marks}
+    mcols = {c for _, c, _ in marks}
+
+    # which edge do the markers sit on?  (markers are never on a corner, so this
+    # is unambiguous).  Reflect the grid so they end up on the top row / left col.
+    if mrows == {0}:
+        axis, flip_op = "row", None
+    elif mrows == {h - 1}:
+        axis, flip_op = "row", 27          # FlipV: bottom row -> top row
+    elif mcols == {0}:
+        axis, flip_op = "col", None
+    else:
+        axis, flip_op = "col", 26          # FlipH: right col -> left col
+
+    if flip_op == 27:
+        ops.append(27); sels.append(full)
+        cur = np.flipud(cur)
+        marks = [(h - 1 - r, c, col) for r, c, col in marks]
+    elif flip_op == 26:
+        ops.append(26); sels.append(full)
+        cur = np.fliplr(cur)
+        marks = [(r, w - 1 - c, col) for r, c, col in marks]
+
+    # grow one diamond chain per marker, away from the edge it sits on
+    marks.sort(key=(lambda t: t[1]) if axis == "row" else (lambda t: t[0]))
+    for r0, c0, col in marks:
+        cells = []
+        if axis == "row":
+            for r in range(0, h, 2):                 # spine, on the marker's column
+                cells.append((r, c0))
+            for r in range(1, h, 2):                 # the two arms
+                for cc in (c0 - 1, c0 + 1):
+                    if 0 <= cc < w:
+                        cells.append((r, cc))
         else:
-            # colour 0 is invisible to Copy/Paste (and tiny strips need no unit):
-            # grow the fan outward depth by depth instead
-            for d in range(2, D):
-                for t in ((0,) if d % 2 == 0 else (-1, 1)):
-                    r, c = cell(s, d, t)
-                    ops.append(col)
-                    sels.append([r, c, 0, 0])
+            for c in range(0, w, 2):                 # spine, on the marker's row
+                cells.append((r0, c))
+            for c in range(1, w, 2):                 # the two arms
+                for rr in (r0 - 1, r0 + 1):
+                    if 0 <= rr < h:
+                        cells.append((rr, c))
+        cells = sorted(set(cells))
+        cells = [p for p in cells if int(cur[p[0], p[1]]) != col]  # marker itself already holds col
+        if not cells:
+            continue
+        ops.append(int(col)); sels.append(sel_of(cells))
+        for rr, cc in cells:
+            cur[rr, cc] = col
 
-    ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    # reflect back — unless the drawn grid is already symmetric under that flip,
+    # in which case the op would change nothing at all.
+    if flip_op == 27 and not np.array_equal(cur, np.flipud(cur)):
+        ops.append(27); sels.append(full)
+        cur = np.flipud(cur)
+    elif flip_op == 26 and not np.array_equal(cur, np.fliplr(cur)):
+        ops.append(26); sels.append(full)
+        cur = np.fliplr(cur)
+
+    ops.append(34); sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
     return ops, sels
 
 
@@ -207,7 +275,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

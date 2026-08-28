@@ -34,7 +34,6 @@ CODE_MEANING = {
     "OBJECT_SCATTER":            "edits to a single object were split across non-adjacent stretches of the trajectory",
     "REDUNDANT_CYCLE":           "a sub-sequence returned the grid to a state it had already reached",
     "BOOKKEEPING_OP":            "an op was emitted only to help the Python side compute something",
-    "OVERPAINT_WIDER_THAN_DIFF": "cells that already held their target value were painted again",
     "INPLACE_OP_SWEEP":          "an in-place Flip/Rotate caught pre-existing content it should not have transformed",
     "WRONG_CLIPBOARD_SOURCE":    "CopyO was used where CopyI was correct, or vice versa",
     "HARDCODED_CONSTANT":        "a value true of only some instances was hardcoded instead of measured from I/O",
@@ -48,6 +47,8 @@ CODE_MEANING = {
     # emitted by probe_originals.py, not by the LLM critic
     "FAILS_ORIGINAL_PAIR":       "the trajectory does not reproduce the task's own original ARC pairs, though the vendored verifier does — so the rule it implements holds on the instances generate() samples but not on the task as written",
     "UPSTREAM_PAIR_UNVERIFIED":  "the trajectory does not reproduce some original ARC pairs, and neither does the vendored RE-ARC verifier — the generator models the task differently there, and it is the reference, so nothing needs fixing for those pairs",
+    # emitted by probe_direction.py
+    "CONCEPT_DIRECTION_MISSING": "the task's rule is geometric — the verifier says so by the DSL it calls — and the trajectory contains no geometric op at all, so the route reaches the right grid without the rule ever being performed",
     # emitted by probe_rearc.py
     "FAILS_REARC_INSTANCE":      "derive_operations did not solve instances drawn from the task's own RE-ARC generator and confirmed by its verifier — the rule it implements covers what your generate() samples, not what the task's generator produces",
     # emitted by probe_generator.py
@@ -93,7 +94,18 @@ def build_feedback(rec: dict) -> str:
     wrong_answer = {"FAILS_ORIGINAL_PAIR", "UPSTREAM_PAIR_UNVERIFIED"}
     wrong_rule = {"GENERATOR_RULE_MISMATCH"}
     narrow_rule = {"FAILS_REARC_INSTANCE"}
-    if any(f["code"] in narrow_rule for f in findings):
+    no_direction = {"CONCEPT_DIRECTION_MISSING"}
+    if any(f["code"] in no_direction for f in findings):
+        lines = [
+            "Your previous attempt at this task produced the correct grid, and that is "
+            "not what is wrong with it. The task's rule is a geometric one — the "
+            "verifier names it in the DSL it calls — and your trajectory carries it "
+            "out with none of the operations that would express it. The answer is "
+            "right and the rule is invisible in the route.",
+            "",
+            "Findings on the previous attempt:",
+        ]
+    elif any(f["code"] in narrow_rule for f in findings):
         lines = [
             "Your previous attempt at this task was replayed on instances drawn from "
             "the task's own RE-ARC generator — not on instances its generate() "
@@ -134,7 +146,15 @@ def build_feedback(rec: dict) -> str:
         meaning = CODE_MEANING.get(f["code"], "")
         lines.append(f"{i}. {f['code']} ({f['severity']}) — {meaning}.")
         lines.append(f"   Reviewer: {f['evidence'].strip()}")
-    if any(f["code"] in narrow_rule for f in findings):
+    if any(f["code"] in no_direction for f in findings):
+        lines += [
+            "",
+            "Do not pad the trajectory to satisfy this: an op added for appearance is "
+            "worse than the route you had. Re-derive from the rule itself, so that the "
+            "reflection is a Flip of the region it applies to, and what remains after "
+            "it is whatever the rule genuinely leaves to paint.",
+        ]
+    elif any(f["code"] in narrow_rule for f in findings):
         lines += [
             "",
             "Re-read the generator for this task and work out what it varies that "
