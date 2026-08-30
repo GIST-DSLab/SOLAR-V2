@@ -37,191 +37,266 @@ import random
 import numpy as np
 from collections import Counter
 
-from maker.sel_helpers import sel_of
-
 
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
-    bgc, linc, dotc = random.sample(cols, 3)
-    return {"bgc": bgc, "linc": linc, "dotc": dotc}
+    # bgc is fixed to 0 (ARC background convention): the block-grid is drawn on it and
+    # every stamped object colour is drawn from the remaining palette.
+    bgc = 0
+    others = [c for c in range(1, 10)]
+    linc, dotc = random.sample(others, 2)          # separator-line colour, marker colour
+    pool = [c for c in others if c not in (linc, dotc)]
+    random.shuffle(pool)                            # episode-consistent object palette
+    return {"bgc": bgc, "linc": linc, "dotc": dotc, "ccols_pool": pool}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, dotc) -> dict:
-    cols = interval(0, 10, 1)
-    h_ub = max(5, min(10, (max_h + 1) // 2))
-    w_ub = max(5, min(10, (max_w + 1) // 2))
-    h = unifint(diff_lb, diff_ub, (5, h_ub))
-    w = unifint(diff_lb, diff_ub, (5, w_ub))
-    remcols = difference(cols, (bgc, linc, dotc))
-    gi = canvas(bgc, (h, w))
-    loci = randint(1, h - 2)
-    locj = randint(1, w - 2)
-    if h == 5:
-        loci = choice((1, h - 2))
-    if w == 5:
-        locj = choice((1, w - 2))
-    npix = unifint(diff_lb, diff_ub, (1, 8))
-    ncols = unifint(diff_lb, diff_ub, (1, 7))
-    ccols = sample(remcols, ncols)
-    candsss = neighbors((loci, locj))
-    pixs = {(loci, locj)}
-    for k in range(npix):
-        pixs.add(choice(totuple((mapply(dneighbors, pixs) & candsss) - pixs)))
-    pixs = totuple(remove((loci, locj), pixs))
-    obj = {(choice(ccols), ij) for ij in pixs}
-    gi = fill(gi, dotc, {(loci, locj)})
-    gi = paint(gi, obj)
-    go = tuple(e for e in gi)
-    noccs = unifint(diff_lb, diff_ub, (1, (h * w) // (2 * len(pixs) + 1)))
-    succ = 0
-    tr = 0
-    maxtr = 6 * noccs
-    inds = ofcolor(gi, bgc) - mapply(dneighbors, neighbors((loci, locj)))
-    objn = shift(obj, (-loci, -locj))
-    triedandfailed = set()
-    while (tr < maxtr and succ < noccs) or succ == 0:
-        lopcands = totuple(inds - triedandfailed)
-        if len(lopcands) == 0:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, dotc, ccols_pool) -> dict:
+    def _uf(a, b):
+        if b < a:
+            b = a
+        vals = list(range(a, b + 1))
+        lo = int(diff_lb * (len(vals) - 1))
+        hi = int(diff_ub * (len(vals) - 1)) + 1
+        sub = vals[lo:hi]
+        return random.choice(sub if sub else vals)
+
+    D4 = ((1, 0), (-1, 0), (0, 1), (0, -1))
+    hub = max(5, min(10, (max_h + 1) // 2))
+    wub = max(5, min(10, (max_w + 1) // 2))
+
+    g = go = None
+    h = w = 0
+    for _attempt in range(300):
+        h = _uf(5, hub)
+        w = _uf(5, wub)
+        g = [[bgc] * w for _ in range(h)]
+
+        loci = random.randint(1, h - 2)
+        locj = random.randint(1, w - 2)
+        if h == 5:
+            loci = random.choice([1, h - 2])
+        if w == 5:
+            locj = random.choice([1, w - 2])
+
+        npix = _uf(1, 8)
+        ncols = _uf(1, min(7, len(ccols_pool)))
+        ccols = list(ccols_pool)[:ncols]
+
+        ring = {(loci + dr, locj + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1)}
+        ring.discard((loci, locj))
+        pixs = {(loci, locj)}
+        for _ in range(npix):
+            grow = set()
+            for (r, c) in pixs:
+                for dr, dc in D4:
+                    grow.add((r + dr, c + dc))
+            opts = sorted((grow & ring) - pixs)
+            if not opts:
+                break
+            pixs.add(random.choice(opts))
+        pixs = sorted(pixs - {(loci, locj)})
+        if not pixs:
+            continue
+
+        obj = {(r, c): random.choice(ccols) for (r, c) in pixs}
+        g[loci][locj] = dotc
+        for (r, c), col in obj.items():
+            g[r][c] = col
+        go = [row[:] for row in g]
+
+        # normalized stamp (marker at (0,0)) and its bounding box
+        objn = {(r - loci, c - locj): col for (r, c), col in obj.items()}
+        cells = list(objn.keys()) + [(0, 0)]
+        r0 = min(r for r, _ in cells); r1 = max(r for r, _ in cells)
+        c0 = min(c for _, c in cells); c1 = max(c for _, c in cells)
+        bbox_rel = [(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)]
+
+        # cells forbidden for further markers: around the template (as in the original)
+        ex = set()
+        for (rr, cc) in ring:
+            for dr, dc in D4:
+                ex.add((rr + dr, cc + dc))
+        ex |= {(loci + r, locj + c) for (r, c) in bbox_rel}
+        for (rr, cc) in list(ex):
+            for dr, dc in D4:
+                ex.add((rr + dr, cc + dc))
+
+        inds = {(r, c) for r in range(h) for c in range(w) if g[r][c] == bgc} - ex
+
+        noccs = _uf(1, max(1, (h * w) // (2 * len(pixs) + 1)))
+        succ = 0
+        tr = 0
+        maxtr = 6 * noccs
+        tried = set()
+        while (tr < maxtr and succ < noccs) or (succ == 0 and tr < 60):
+            cand = sorted(inds - tried)
+            if not cand:
+                break
+            tr += 1
+            a, b = random.choice(cand)
+            bb = [(a + r, b + c) for (r, c) in bbox_rel]
+            if all(p in inds for p in bb):
+                rem = set(bb)
+                for (r, c) in bb:
+                    for dr, dc in D4:
+                        rem.add((r + dr, c + dc))
+                inds = inds - rem
+                succ += 1
+                g[a][b] = dotc
+                go[a][b] = dotc
+                for (rr, cc), col in objn.items():
+                    go[a + rr][b + cc] = col
+            else:
+                tried.add((a, b))
+        if succ > 0:
             break
-        tr += 1
-        loci, locj = choice(lopcands)
-        plcd = shift(objn, (loci, locj))
-        plcdi = toindices(plcd)
-        if plcdi.issubset(inds):
-            inds = inds - (plcdi | {(loci, locj)})
-            succ += 1
-            gi = fill(gi, dotc, {(loci, locj)})
-            go = fill(go, dotc, {(loci, locj)})
-            go = paint(go, plcd)
-        else:
-            triedandfailed.add((loci, locj))
-    hfac = unifint(diff_lb, diff_ub, (1, (max_h - h + 1) // h))
-    wfac = unifint(diff_lb, diff_ub, (1, (max_w - w + 1) // w))
+
+    hfac = _uf(1, max(1, (max_h - h + 1) // h))
+    wfac = _uf(1, max(1, (max_w - w + 1) // w))
     fullh = hfac * h + h - 1
     fullw = wfac * w + w - 1
-    gi2 = canvas(linc, (fullh, fullw))
-    go2 = canvas(linc, (fullh, fullw))
-    bd = asindices(canvas(-1, (hfac, wfac)))
-    for a in range(h):
-        for b in range(w):
-            c = gi[a][b]
-            gi2 = fill(gi2, c, shift(bd, (a * (hfac + 1), b * (wfac + 1))))
-    for a in range(h):
-        for b in range(w):
-            c = go[a][b]
-            go2 = fill(go2, c, shift(bd, (a * (hfac + 1), b * (wfac + 1))))
-    gi, go = gi2, go2
-    return {'input': gi, 'output': go}
+
+    def up(src):
+        out = [[linc] * fullw for _ in range(fullh)]
+        for a in range(h):
+            for b in range(w):
+                col = src[a][b]
+                for i in range(hfac):
+                    for j in range(wfac):
+                        out[a * (hfac + 1) + i][b * (wfac + 1) + j] = col
+        return tuple(tuple(row) for row in out)
+
+    return {"input": up(g), "output": up(go)}
 
 
 def derive_operations(I, O):
+    """Replicate the multi-colour template block-shape onto every lone marker block.
+
+    Everything (block grid geometry, background, marker colour, which block-region is
+    the template, where it is anchored, where the copies go) is measured from I only.
+    """
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    H, W = I.shape
+    hi, wi = I.shape
     ops, sels = [], []
+    submit_sel = [0, 0, hi - 1, wi - 1]
 
-    # --- recover the lattice: first uniform row/col is the first separator line ---
-    hfac = H
-    for r in range(H):
-        if len(set(I[r].tolist())) == 1:
-            hfac = r
-            break
-    wfac = W
-    for c in range(W):
-        if len(set(I[:, c].tolist())) == 1:
-            wfac = c
-            break
-    hp, wp = hfac + 1, wfac + 1
-    h = (H + 1) // hp
-    w = (W + 1) // wp
+    # --- block-grid geometry: the separator lines are the constant rows/columns ---
+    sep_rows = [r for r in range(hi) if len(set(I[r].tolist())) == 1]
+    sep_cols = [c for c in range(wi) if len(set(I[:, c].tolist())) == 1]
+    if not sep_rows or not sep_cols:
+        return [34], [submit_sel]
+    hfac = sep_rows[0]                 # block height in pixels
+    wfac = sep_cols[0]                 # block width in pixels
+    hs, ws = hfac + 1, wfac + 1        # block pitch (block + separator)
+    h = (hi + 1) // hs
+    w = (wi + 1) // ws
+    if h < 1 or w < 1:
+        return [34], [submit_sel]
 
-    Ci = np.array([[I[a * hp, b * wp] for b in range(w)] for a in range(h)], dtype=int)
-    Co = np.array([[O[a * hp, b * wp] for b in range(w)] for a in range(h)], dtype=int)
-    bgc = Counter(Ci.flatten().tolist()).most_common(1)[0][0]
+    # logical (compressed) grid: one value per block
+    g = [[int(I[a * hs, b * ws]) for b in range(w)] for a in range(h)]
+    bgc = Counter([g[a][b] for a in range(h) for b in range(w)]).most_common(1)[0][0]
 
-    def pattern_at(G, r, c):
-        P = {}
-        for dr in (-1, 0, 1):
-            for dc in (-1, 0, 1):
-                rr, cc = r + dr, c + dc
-                if 0 <= rr < h and 0 <= cc < w and G[rr, cc] != bgc:
-                    P[(dr, dc)] = int(G[rr, cc])
-        return P
+    # --- connected block-components of non-background blocks ---
+    seen = [[False] * w for _ in range(h)]
+    comps = []
+    for a in range(h):
+        for b in range(w):
+            if g[a][b] != bgc and not seen[a][b]:
+                stack = [(a, b)]
+                seen[a][b] = True
+                cur = []
+                while stack:
+                    r, c = stack.pop()
+                    cur.append((r, c))
+                    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < h and 0 <= nc < w and not seen[nr][nc] and g[nr][nc] != bgc:
+                            seen[nr][nc] = True
+                            stack.append((nr, nc))
+                comps.append(cur)
+    if not comps:
+        return [34], [submit_sel]
 
-    def block(a, b):
-        return [(a * hp + i, b * wp + j) for i in range(hfac) for j in range(wfac)]
+    # the template is the component using the most distinct colours
+    ti = max(range(len(comps)), key=lambda k: (len({g[r][c] for r, c in comps[k]}), len(comps[k])))
+    template = comps[ti]
+    others = [comps[k] for k in range(len(comps)) if k != ti]
+    if not others:
+        return [34], [submit_sel]
 
-    # --- identify the marker color and the blob pattern stamped onto every marker ---
-    best = None
-    for cand in sorted(set(Ci.flatten().tolist()) - {bgc}):
-        S = [(r, c) for r in range(h) for c in range(w) if Ci[r, c] == cand]
-        s0 = max(S, key=lambda s: len(pattern_at(Ci, s[0], s[1])))
-        P = pattern_at(Co, s0[0], s0[1])
-        if P.get((0, 0)) != cand:
-            continue
-        T = Ci.copy()
-        ok = True
-        for (r, c) in S:
-            for (dr, dc), v in P.items():
-                rr, cc = r + dr, c + dc
-                if not (0 <= rr < h and 0 <= cc < w):
-                    ok = False
-                    break
-                T[rr, cc] = v
-            if not ok:
-                break
-        if ok and np.array_equal(T, Co):
-            best = (S, P, s0)
-            break
+    # marker colour = the colour of the lone components
+    dot_counts = Counter([g[r][c] for cm in others for (r, c) in cm])
+    dotc = dot_counts.most_common(1)[0][0]
 
-    if best is None:
-        # fallback: paint every differing lattice cell directly
-        for a in range(h):
-            for b in range(w):
-                if Ci[a, b] != Co[a, b]:
-                    ops.append(int(Co[a, b]))
-                    sels.append(sel_of(block(a, b)))
-        ops.append(34)
-        sels.append([0, 0, H - 1, W - 1])
-        return ops, sels
+    dot_cells = [(r, c) for (r, c) in template if g[r][c] == dotc]
+    if not dot_cells:
+        return [34], [submit_sel]
+    dot_r = min(r for r, _ in dot_cells)
+    dot_c = min(c for _, c in dot_cells)
 
-    S, P, s0 = best
-    r0 = min(dr for dr, _ in P)
-    r1 = max(dr for dr, _ in P)
-    c0 = min(dc for _, dc in P)
-    c1 = max(dc for _, dc in P)
+    r0 = min(r for r, _ in template); r1 = max(r for r, _ in template)
+    c0 = min(c for _, c in template); c1 = max(c for _, c in template)
+    th, tw = r1 - r0 + 1, c1 - c0 + 1
+    off_r, off_c = dot_r - r0, dot_c - c0
+    rel = {(r - r0, c - c0): g[r][c] for (r, c) in template}
 
-    dests = [s for s in S if pattern_at(Ci, s[0], s[1]) != P]
+    # destinations: each lone marker, aligned so the template's marker lands on it
+    dsts = []
+    for cm in others:
+        ur = min(r for r, _ in cm)
+        uc = min(c for _, c in cm)
+        d = (ur - off_r, uc - off_c)
+        if d != (r0, c0) and d not in dsts:
+            dsts.append(d)
+    dsts.sort()
+    if not dsts:
+        return [34], [submit_sel]
 
-    if dests:
-        # copy the template blob's lattice-aligned bounding box from the input
-        src_r, src_c = (s0[0] + r0), (s0[1] + c0)
-        ops.append(28)
-        sels.append([src_r * hp, src_c * wp,
-                     (r1 - r0) * hp + hfac - 1, (c1 - c0) * wp + wfac - 1])
+    src_pr, src_pc = r0 * hs, c0 * ws
+    box_h = th * hs - 1                 # pixel height of the template block-region
+    box_w = tw * ws - 1
 
-        cur = Ci.copy()
-        for s in dests:
-            ops.append(30)
-            sels.append([(s[0] + r0) * hp, (s[1] + c0) * wp, 0, 0])
-            for dr in range(r0, r1 + 1):
-                for dc in range(c0, c1 + 1):
-                    v = int(Ci[s0[0] + dr, s0[1] + dc])
-                    if v != 0:  # Paste is transparent on 0
-                        cur[s[0] + dr, s[1] + dc] = v
+    # 1) copy the template block-region from the input (full rectangle: blocks + separators)
+    ops.append(28); sels.append([src_pr, src_pc, box_h - 1, box_w - 1])
+    # 2) stamp it on every marker
+    for (dr_, dc_) in dsts:
+        ops.append(30); sels.append([dr_ * hs, dc_ * ws, 0, 0])   # paste origin
 
-        # repair only cells the transparent paste could not deliver
-        for s in dests:
-            for dr in range(r0, r1 + 1):
-                for dc in range(c0, c1 + 1):
-                    a, b = s[0] + dr, s[1] + dc
-                    if cur[a, b] != Co[a, b]:
-                        ops.append(int(Co[a, b]))
-                        sels.append(sel_of(block(a, b)))
-                        cur[a, b] = Co[a, b]
+    # --- repair, measured from I: where two stamp rectangles overlap, the later paste can
+    # cover an earlier stamp's block with its own background block. Simulate the pastes and
+    # the intended stamping (both from I) and restore the covered blocks.
+    sim = I.copy()
+    clip = I[src_pr:src_pr + box_h, src_pc:src_pc + box_w].copy()
+    for (dr_, dc_) in dsts:
+        pr, pc = dr_ * hs, dc_ * ws
+        for i in range(box_h):
+            for j in range(box_w):
+                v = int(clip[i, j])
+                if v != 0 and 0 <= pr + i < hi and 0 <= pc + j < wi:
+                    sim[pr + i, pc + j] = v
 
-    ops.append(34)
-    sels.append([0, 0, H - 1, W - 1])
+    want = I.copy()
+    for (dr_, dc_) in dsts:
+        for (rr, cc), col in rel.items():
+            ar, ac = dr_ + rr, dc_ + cc
+            if 0 <= ar < h and 0 <= ac < w:
+                want[ar * hs:ar * hs + hfac, ac * ws:ac * ws + wfac] = col
+
+    for (dr_, dc_) in dsts:                      # one stamp region at a time
+        for rr in range(th):
+            for cc in range(tw):
+                ar, ac = dr_ + rr, dc_ + cc
+                if not (0 <= ar < h and 0 <= ac < w):
+                    continue
+                pr, pc = ar * hs, ac * ws
+                blk_now = sim[pr:pr + hfac, pc:pc + wfac]
+                blk_want = want[pr:pr + hfac, pc:pc + wfac]
+                if not np.array_equal(blk_now, blk_want):
+                    col = int(blk_want[0, 0])
+                    ops.append(col); sels.append([pr, pc, hfac - 1, wfac - 1])  # one block
+                    sim[pr:pr + hfac, pc:pc + wfac] = col
+
+    ops.append(34); sels.append(submit_sel)
     return ops, sels
 
 
@@ -265,7 +340,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

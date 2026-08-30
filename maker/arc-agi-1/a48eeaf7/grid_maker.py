@@ -34,253 +34,192 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
+import numpy as np
+from collections import Counter
+
+from maker.sel_helpers import sel_of
+
+
+# ---------------------------------------------------------------- colors -----
+# The rule ("every dot slides to the nearest cell of the ring around the block")
+# is colour-agnostic, but bgc / sqc / dotc are all sampled by the generator, so
+# all three are fixed per episode.  dotc is kept non-zero: ARCLE's object ops
+# (Move) treat 0 as "nothing here", and every dot has to be grabbed and moved.
+VARIANTS = [{"ncorn": 0}, {"ncorn": 4}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    """bgc / sqc / dotc are all sampled by the original generator -> fix them per episode."""
-    cols = list(range(10))
-    bgc, sqc, dotc = random.sample(cols, 3)
-    return {"bgc": bgc, "sqc": sqc, "dotc": dotc}
+    dotc = random.choice([c for c in range(10) if c != 0])
+    rest = [c for c in range(10) if c != dotc]
+    bgc, sqc = random.sample(rest, 2)
+
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [{"ncorn": random.randint(0, 4)}
+                     for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(examples)
+    else:
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
+
+    return {"bgc": bgc, "sqc": sqc, "dotc": dotc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, sqc=None, dotc=None) -> dict:
-    if bgc is None or sqc is None or dotc is None:
-        cols = list(range(10))
-        bgc, sqc, dotc = random.sample(cols, 3)
-
-    def unifint(lb, ub):
-        if ub < lb:
-            ub = lb
-        return random.randint(lb + int((ub - lb) * diff_lb), lb + int((ub - lb) * diff_ub))
-
-    hub = max(8, min(30, int(max_h)))
-    wub = max(8, min(30, int(max_w)))
-    h = unifint(8, hub)
-    w = unifint(8, wub)
-    ih = unifint(2, h // 2)
-    iw = unifint(2, w // 2)
-    loci = random.randint(2, h - ih - 2)
-    locj = random.randint(2, w - iw - 2)
-
-    gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * w for _ in range(h)]
-    for r in range(loci, loci + ih):
-        for c in range(locj, locj + iw):
-            gi[r][c] = sqc
-            go[r][c] = sqc
-
-    A = [(x, locj - 1) for x in range(loci, loci + ih)]
-    Ap = [(x, random.randint(0, locj - 2)) for x in range(loci, loci + ih)]
-    B = [(x, locj + iw) for x in range(loci, loci + ih)]
-    Bp = [(x, random.randint(locj + iw + 1, w - 1)) for x in range(loci, loci + ih)]
-    C = [(loci - 1, x) for x in range(locj, locj + iw)]
-    Cp = [(random.randint(0, loci - 2), x) for x in range(locj, locj + iw)]
-    D = [(loci + ih, x) for x in range(locj, locj + iw)]
-    Dp = [(random.randint(loci + ih + 1, h - 1), x) for x in range(locj, locj + iw)]
-
+# -------------------------------------------------------------- generator ----
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc: int, sqc: int, dotc: int, ncorn=None, **kwargs) -> dict:
+    hub = max(8, min(30, max_h))
+    wub = max(8, min(30, max_w))
+    h = unifint(diff_lb, diff_ub, (8, hub))
+    w = unifint(diff_lb, diff_ub, (8, wub))
+    ih = unifint(diff_lb, diff_ub, (2, h // 2))
+    iw = unifint(diff_lb, diff_ub, (2, w // 2))
+    loci = randint(2, h - ih - 2)
+    locj = randint(2, w - iw - 2)
+    gi = canvas(bgc, (h, w))
+    go = canvas(bgc, (h, w))
+    sq = backdrop(frozenset({(loci, locj), (loci + ih - 1, locj + iw - 1)}))
+    A = [(x, locj - 1) for x in interval(loci, loci + ih, 1)]
+    Ap = [(x, randint(0, locj - 2)) for x in interval(loci, loci + ih, 1)]
+    B = [(x, locj + iw) for x in interval(loci, loci + ih, 1)]
+    Bp = [(x, randint(locj + iw + 1, w - 1)) for x in interval(loci, loci + ih, 1)]
+    C = [(loci - 1, x) for x in interval(locj, locj + iw, 1)]
+    Cp = [(randint(0, loci - 2), x) for x in interval(locj, locj + iw, 1)]
+    D = [(loci + ih, x) for x in interval(locj, locj + iw, 1)]
+    Dp = [(randint(loci + ih + 1, h - 1), x) for x in interval(locj, locj + iw, 1)]
     srarr = Ap + Bp + Cp + Dp
     dearr = A + B + C + D
-    num = unifint(1, len(srarr))
-    locs = set(random.sample(range(len(srarr)), num))
-    for j in sorted(locs):
-        sr, sc = srarr[j]
-        dr, dc = dearr[j]
-        gi[sr][sc] = dotc
-        go[dr][dc] = dotc
-
-    ncorn = unifint(0, 4)
-
-    def ray(start, d):
-        pts = []
-        r, c = start
-        while 0 <= r < h and 0 <= c < w:
-            pts.append((r, c))
-            r += d[0]
-            c += d[1]
-        return pts
-
-    corner_defs = [
-        ((loci - 1, locj - 1), (loci - 2, locj - 2), (-1, -1)),
-        ((loci - 1, locj + iw), (loci - 2, locj + iw + 1), (-1, 1)),
-        ((loci + ih, locj - 1), (loci + ih + 1, locj - 2), (1, -1)),
-        ((loci + ih, locj + iw), (loci + ih + 1, locj + iw + 1), (1, 1)),
-    ]
-    for k in range(min(4, ncorn)):
-        tgt, st, d = corner_defs[k]
-        go[tgt[0]][tgt[1]] = dotc
-        pts = ray(st, d)
-        if pts:
-            rr, cc = random.choice(pts)
-            gi[rr][cc] = dotc
-
-    def rot90cw(g):
-        return [list(row) for row in zip(*g[::-1])]
-
-    for _ in range(random.choice([0, 1, 2, 3])):
-        gi = rot90cw(gi)
-        go = rot90cw(go)
-
-    return {"input": gi, "output": go}
+    inds = interval(0, len(srarr), 1)
+    num = unifint(diff_lb, diff_ub, (1, len(srarr)))
+    locs = sample(inds, num)
+    srarr = [e for j, e in enumerate(srarr) if j in locs]
+    dearr = [e for j, e in enumerate(dearr) if j in locs]
+    gi = fill(gi, sqc, sq)
+    go = fill(go, sqc, sq)
+    for s, d in zip(srarr, dearr):
+        gi = fill(gi, dotc, {s})
+        go = fill(go, dotc, {d})
+    if ncorn is None:
+        ncorn = unifint(diff_lb, diff_ub, (0, 4))
+    fullinds = asindices(gi)
+    if ncorn > 0:
+        go = fill(go, dotc, {(loci - 1, locj - 1)})
+        cands = shoot((loci - 2, locj - 2), (-1, -1)) & fullinds
+        locc = choice(totuple(cands))
+        gi = fill(gi, dotc, {locc})
+    if ncorn > 1:
+        go = fill(go, dotc, {(loci - 1, locj + iw)})
+        cands = shoot((loci - 2, locj + iw + 1), (-1, 1)) & fullinds
+        locc = choice(totuple(cands))
+        gi = fill(gi, dotc, {locc})
+    if ncorn > 2:
+        go = fill(go, dotc, {(loci + ih, locj - 1)})
+        cands = shoot((loci + ih + 1, locj - 2), (1, -1)) & fullinds
+        locc = choice(totuple(cands))
+        gi = fill(gi, dotc, {locc})
+    if ncorn > 3:
+        go = fill(go, dotc, {(loci + ih, locj + iw)})
+        cands = shoot((loci + ih + 1, locj + iw + 1), (1, 1)) & fullinds
+        locc = choice(totuple(cands))
+        gi = fill(gi, dotc, {locc})
+    rotf = choice((identity, rot90, rot180, rot270))
+    gi = rotf(gi)
+    go = rotf(go)
+    return {'input': gi, 'output': go}
 
 
+# ------------------------------------------------------------- operations ----
 def derive_operations(I, O):
-    """Every scattered dot travels to the nearest cell of the ring (outbox) that
-    surrounds the solid rectangle.  Each dot is SLID there with Move ops (grab once,
-    then empty selections), and its vacated cell is repaired with one Color(bgc).
-    When the dot colour is 0 ARCLE cannot grab it (object buffer keeps only nonzero
-    cells), so those dots are erased at the source and drawn at the destination."""
-    import numpy as np
-    from collections import Counter
-    from maker.sel_helpers import sel_of
-
+    """
+    Rule (measured from I alone):
+      I holds one solid rectangular block plus scattered single dots of a second
+      colour.  Every dot slides — in a straight line, or around a corner when it
+      sits on a diagonal — onto the nearest cell of the one-cell-wide ring
+      (outbox) that hugs the block.  Each dot is grabbed and MOVED cell by cell;
+      the cell it left is repainted with the background afterwards.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
 
-    ops, sels = [], []
-    g = I.copy()
+    # --- identify the three colour roles from I --------------------------------
+    cells_of = {}
+    for r in range(h):
+        for c in range(w):
+            cells_of.setdefault(int(I[r, c]), []).append((r, c))
 
-    # ---- colour roles -------------------------------------------------------
-    cnt = Counter(I.flatten().tolist())
-    bgc = cnt.most_common(1)[0][0]
-    others = [c for c in cnt if c != bgc]
-
-    def bbox_of(color):
-        cells = [(int(r), int(c)) for r, c in zip(*np.where(I == color))]
+    def is_rect(cells):
         rs = [p[0] for p in cells]
         cs = [p[1] for p in cells]
-        return cells, (min(rs), max(rs), min(cs), max(cs))
+        return len(cells) == (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1)
 
-    best = None
-    for c in others:
-        cells, (r0, r1, c0, c1) = bbox_of(c)
-        if len(cells) == (r1 - r0 + 1) * (c1 - c0 + 1) and len(cells) >= 4:
-            if best is None or len(cells) > best[0]:
-                best = (len(cells), c, (r0, r1, c0, c1))
-    if best is None and others:
-        c = max(others, key=lambda x: cnt[x])
-        cells, box = bbox_of(c)
-        best = (len(cells), c, box)
-    if best is None:
-        ops.append(34)
-        sels.append(sel_of([(r, c) for r in range(h) for c in range(w)]))
-        return ops, sels
+    rect_cols = [c for c, cl in cells_of.items() if is_rect(cl)]
+    sqc = max(rect_cols, key=lambda c: len(cells_of[c]))
+    others = [c for c in cells_of if c != sqc]
+    bgc = max(others, key=lambda c: len(cells_of[c]))
+    dotc = max([c for c in others if c != bgc], key=lambda c: len(cells_of[c]))
 
-    sqc = best[1]
-    r0, r1, c0, c1 = best[2]
-    dot_cols = [c for c in others if c != sqc]
-    if not dot_cols:
-        ops.append(34)
-        sels.append(sel_of([(r, c) for r in range(h) for c in range(w)]))
-        return ops, sels
-    dotc = dot_cols[0]
+    block = cells_of[sqc]
+    r0 = min(p[0] for p in block); r1 = max(p[0] for p in block)
+    c0 = min(p[1] for p in block); c1 = max(p[1] for p in block)
 
-    # ---- the ring (outbox) around the rectangle ----------------------------
-    ring = set()
-    for r in range(r0 - 1, r1 + 2):
-        ring.add((r, c0 - 1))
-        ring.add((r, c1 + 1))
-    for c in range(c0 - 1, c1 + 2):
-        ring.add((r0 - 1, c))
-        ring.add((r1 + 1, c))
-    ring = sorted(p for p in ring if 0 <= p[0] < h and 0 <= p[1] < w)
+    # --- the ring the dots are attracted to ------------------------------------
+    ring = [(r, c)
+            for r in range(r0 - 1, r1 + 2)
+            for c in range(c0 - 1, c1 + 2)
+            if (r in (r0 - 1, r1 + 1) or c in (c0 - 1, c1 + 1))
+            and 0 <= r < h and 0 <= c < w]
+    corners = {(r0 - 1, c0 - 1), (r0 - 1, c1 + 1),
+               (r1 + 1, c0 - 1), (r1 + 1, c1 + 1)}
 
-    sources = [(int(r), int(c)) for r, c in zip(*np.where(I == dotc))]
+    def nearest_ring(cell):
+        sr, sc = cell
+        return min(ring, key=lambda t: (abs(t[0] - sr) + abs(t[1] - sc), t[0], t[1]))
 
-    def nearest(src):
-        return min(ring, key=lambda p: (abs(p[0] - src[0]) + abs(p[1] - src[1]), p[0], p[1]))
+    dots = [(p, nearest_ring(p)) for p in cells_of[dotc]]
 
-    pairs = [(s, nearest(s)) for s in sources]
-
-    corners = {(r0 - 1, c0 - 1): 0, (r0 - 1, c1 + 1): 1,
-               (r1 + 1, c0 - 1): 2, (r1 + 1, c1 + 1): 3}
-
+    # walk the ring side by side: top edge, right edge, bottom edge, left edge,
+    # then the four corner dots.
     def order_key(item):
-        (sr, sc), (tr, tc) = item
+        (_sr, _sc), (tr, tc) = item
         if (tr, tc) in corners:
-            return (1, corners[(tr, tc)], tr, tc)
+            return (4, tr, tc)
         if tr == r0 - 1:
-            return (0, 0, tc, tr)      # top edge, left -> right
+            return (0, tc, tr)
         if tc == c1 + 1:
-            return (0, 1, tr, tc)      # right edge, top -> bottom
+            return (1, tr, tc)
         if tr == r1 + 1:
-            return (0, 2, tc, tr)      # bottom edge, left -> right
-        return (0, 3, tr, tc)          # left edge, top -> bottom
+            return (2, tc, tr)
+        return (3, tr, tc)
 
-    pairs.sort(key=order_key)
+    dots.sort(key=order_key)
 
-    # ---- emitters -----------------------------------------------------------
-    def paint(cells, color):
-        cells = [(r, c) for (r, c) in cells if int(g[r, c]) != int(color)]
-        if not cells:
-            return
-        ops.append(int(color))
-        sels.append(sel_of(cells))
-        for (r, c) in cells:
-            g[r, c] = color
-
-    def slide(src, tgt):
-        """Grab the dot once, then walk it with empty selections. Returns False if
-        the object cannot be grabbed (colour 0) or a step would be invisible."""
-        sr, sc = src
-        tr, tc = tgt
-        color = int(g[sr, sc])
-        if color == 0:
-            return False
+    ops, sels = [], []
+    for (sr, sc), (tr, tc) in dots:
         dr, dc = tr - sr, tc - sc
-        steps = []
-        if dr:
-            steps += [(20 if dr < 0 else 21, (-1 if dr < 0 else 1, 0))] * abs(dr)
-        if dc:
-            steps += [(22 if dc > 0 else 23, (0, 1 if dc > 0 else -1))] * abs(dc)
-        if not steps:
-            return True
-        snap = g.copy()
-        snap[sr, sc] = 0                      # ARCLE zeroes the grabbed cell
-        prev = g
+        if dr == 0 and dc == 0:
+            continue
         cur = (sr, sc)
-        frames = []
-        for op, d in steps:
-            nxt = (cur[0] + d[0], cur[1] + d[1])
-            ng = snap.copy()
-            if 0 <= nxt[0] < h and 0 <= nxt[1] < w:
-                ng[nxt[0], nxt[1]] = color
-            if np.array_equal(ng, prev):
-                return False                  # invisible step -> use the paint fallback
-            frames.append((op, ng))
-            prev = ng
-            cur = nxt
-        for i, (op, ng) in enumerate(frames):
-            ops.append(op)
-            sels.append(sel_of([src]) if i == 0 else sel_of([]))
-        g[:, :] = frames[-1][1]
-        # the only 0 left is the dot's original footprint
-        if cur != (sr, sc) and int(g[sr, sc]) != int(bgc):
+        grabbed = False
+        # vertical leg first, then horizontal leg (both stay clear of the block)
+        for _ in range(abs(dr)):
+            ops.append(20 if dr < 0 else 21)
+            sels.append(sel_of([cur]) if not grabbed else sel_of([]))
+            grabbed = True
+            cur = (cur[0] + (-1 if dr < 0 else 1), cur[1])
+        for _ in range(abs(dc)):
+            ops.append(23 if dc < 0 else 22)
+            sels.append(sel_of([cur]) if not grabbed else sel_of([]))
+            grabbed = True
+            cur = (cur[0], cur[1] + (-1 if dc < 0 else 1))
+        # the grab zeroed the dot's original footprint; restore the background
+        if bgc != 0:
             ops.append(int(bgc))
             sels.append(sel_of([(sr, sc)]))
-            g[sr, sc] = bgc
-        return True
-
-    for src, tgt in pairs:
-        if src == tgt:
-            continue
-        if not slide(src, tgt):
-            # dot colour is 0 (ungrabbable): erase it where it is, draw it on the ring
-            paint([src], bgc)
-            paint([tgt], dotc)
-
-    # ---- last-resort consistency guard (should never fire) ------------------
-    if not np.array_equal(g, O):
-        leftovers = {}
-        for r in range(h):
-            for c in range(w):
-                if int(g[r, c]) != int(O[r, c]):
-                    leftovers.setdefault(int(O[r, c]), []).append((r, c))
-        for color, cells in leftovers.items():
-            paint(cells, color)
 
     ops.append(34)
-    sels.append(sel_of([(r, c) for r in range(h) for c in range(w)]))
+    sels.append([0, 0, h - 1, w - 1])   # bbox == whole grid, intentional
     return ops, sels
 
 

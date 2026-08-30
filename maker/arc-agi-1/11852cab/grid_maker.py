@@ -34,226 +34,270 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-from collections import Counter
-
 import numpy as np
 
-from maker.sel_helpers import sel_of
+try:
+    from maker.sel_helpers import sel_of
+except Exception:
+    def sel_of(cells):
+        return {"cells": [[int(r), int(c)] for (r, c) in cells]}
+
+# the four D4-orbits of a 5x5 block (all cells with even (i+j))
+_RINGS = (
+    ((2, 2),),
+    ((1, 1), (1, 3), (3, 1), (3, 3)),
+    ((0, 2), (2, 0), (2, 4), (4, 2)),
+    ((0, 0), (0, 4), (4, 0), (4, 4)),
+)
+_RING_OF = {}
+for _k, _rg in enumerate(_RINGS):
+    for _p in _rg:
+        _RING_OF[_p] = _k
 
 
+# ------------------------------------------------------- block detection (I only)
+def _is_block(g, r0, c0, bgc):
+    """The verifier's window test, measured on a grid alone."""
+    h, w = len(g), len(g[0])
+    if r0 < 1 or c0 < 1 or r0 + 5 > h - 1 or c0 + 5 > w - 1:
+        return False
+    # the 7x7 frame around the 5x5 must be pure background
+    for j in range(c0 - 1, c0 + 6):
+        if g[r0 - 1][j] != bgc or g[r0 + 5][j] != bgc:
+            return False
+    for i in range(r0 - 1, r0 + 6):
+        if g[i][c0 - 1] != bgc or g[i][c0 + 5] != bgc:
+            return False
+    cells = {}
+    for i in range(5):
+        for j in range(5):
+            v = g[r0 + i][c0 + j]
+            if v == bgc:
+                continue
+            if (i + j) % 2 == 1:          # odd cells must be background
+                return False
+            cells[(i, j)] = v
+    if (2, 2) not in cells:               # centre must be present
+        return False
+    rs = [i for i, _ in cells]
+    cs = [j for _, j in cells]
+    if min(rs) != 0 or max(rs) != 4 or min(cs) != 0 or max(cs) != 4:
+        return False                      # content must span the whole 5x5
+    ringcol = {}                          # every ring is monochrome
+    nring = {}
+    for (i, j), v in cells.items():
+        k = _RING_OF[(i, j)]
+        if ringcol.setdefault(k, v) != v:
+            return False
+        nring[k] = nring.get(k, 0) + 1
+    # at least one ring around the centre is already whole
+    if not any(nring.get(k, 0) == 4 for k in (1, 2, 3)):
+        return False
+    return True
+
+
+def _block_score(g, r0, c0, bgc):
+    """How strongly a window looks like a placed block (tie-break only)."""
+    inner = sum(1 for (i, j) in ((1, 1), (1, 3), (3, 1), (3, 3))
+                if g[r0 + i][c0 + j] != bgc)
+    nfg = sum(1 for i in range(5) for j in range(5)
+              if g[r0 + i][c0 + j] != bgc)
+    return (10 * (1 if inner else 0)) + nfg
+
+
+def _find_blocks(g, bgc):
+    """All 5x5 blocks; placed blocks never overlap, so overlapping candidates
+    are resolved by keeping the largest mutually disjoint family."""
+    h, w = len(g), len(g[0])
+    cands = [(r0, c0) for r0 in range(1, max(1, h - 5))
+             for c0 in range(1, max(1, w - 5)) if _is_block(g, r0, c0, bgc)]
+    n = len(cands)
+    adj = [set() for _ in range(n)]
+    for a in range(n):
+        for b in range(a + 1, n):
+            if abs(cands[a][0] - cands[b][0]) < 5 and \
+               abs(cands[a][1] - cands[b][1]) < 5:
+                adj[a].add(b)
+                adj[b].add(a)
+    score = [_block_score(g, r0, c0, bgc) for (r0, c0) in cands]
+    free = [a for a in range(n) if not adj[a]]
+    rest = [a for a in range(n) if adj[a]]
+    seen = {}
+
+    def best(nodes):
+        if not nodes:
+            return (0, 0, ())
+        if nodes in seen:
+            return seen[nodes]
+        v = max(nodes, key=lambda a: (len(adj[a] & set(nodes)), score[a]))
+        without = best(tuple(a for a in nodes if a != v))
+        c, s, ch = best(tuple(a for a in nodes if a != v and a not in adj[v]))
+        with_v = (c + 1, s + score[v], ch + (v,))
+        res = max(with_v, without, key=lambda t: (t[0], t[1]))
+        seen[nodes] = res
+        return res
+
+    if len(rest) <= 22:
+        chosen = list(best(tuple(rest))[2])
+    else:                                   # greedy fallback
+        chosen, taken = [], set()
+        for a in sorted(rest, key=lambda a: -score[a]):
+            if a not in taken:
+                chosen.append(a)
+                taken |= adj[a] | {a}
+    return sorted(cands[a] for a in free + chosen)
+
+
+def _closure(g, bgc):
+    """Complete every block: each ring is filled out to its whole orbit."""
+    out = [list(row) for row in g]
+    for (r0, c0) in _find_blocks(g, bgc):
+        for ring in _RINGS:
+            col = None
+            for (i, j) in ring:
+                if g[r0 + i][c0 + j] != bgc:
+                    col = g[r0 + i][c0 + j]
+            if col is None:
+                continue
+            for (i, j) in ring:
+                out[r0 + i][c0 + j] = col
+    return out
+
+
+# ------------------------------------------------------------------ sample_colors
 def sample_colors(num_examples=None) -> dict:
-    """Fix background and the palette the ring-patterns are drawn from.
-
-    0 is kept out of the object palette whenever bgc != 0: the completion is done by
-    Copy/Flip/Paste layering, and Copy/Paste treat 0 as 'nothing'."""
     cols = list(range(10))
     bgc = random.choice(cols)
-    pool = [c for c in cols if c != bgc and c != 0]
-    numc = random.randint(1, len(pool))
-    ccols = random.sample(pool, numc)
+    rem = [c for c in cols if c != bgc]
+    numc = random.randint(1, 9)
+    ccols = random.sample(rem, numc)
     return {"bgc": bgc, "ccols": ccols}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols, **kwargs) -> dict:
-    r1 = ((0, 0), (0, 4), (4, 0), (4, 4))
-    r2 = ((2, 0), (0, 2), (4, 2), (2, 4))
-    r3 = ((1, 1), (3, 1), (1, 3), (3, 3))
-    r4 = ((2, 2),)
-    rings = [r4, r3, r2, r1]
-    bx = backdrop(frozenset(r1))
-    hub = max(7, min(30, int(max_h)))
-    wub = max(7, min(30, int(max_w)))
-    ccols = list(ccols)
-    res = None
-    for _attempt in range(40):
-        h = unifint(diff_lb, diff_ub, (7, hub))
-        w = unifint(diff_lb, diff_ub, (7, wub))
-        gi = canvas(bgc, (h, w))
-        go = canvas(bgc, (h, w))
-        inds = shift(asindices(trim(gi)), (1, 1))
-        nobjs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 36)))
-        succ = 0
-        tr = 0
-        maxtr = 10 * nobjs
+# ----------------------------------------------------------------------- generate
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols) -> dict:
+    def unifint(bounds):
+        a, b = bounds
+        lo = max(a, int(a + (b - a) * diff_lb))
+        hi = min(b, int(a + (b - a) * diff_ub))
+        if hi < lo:
+            lo, hi = hi, lo
+        return random.randint(lo, hi)
+
+    mh = max(7, min(30, int(max_h)))
+    mw = max(7, min(30, int(max_w)))
+
+    def build_block():
+        for _ in range(40):
+            ringcols = [random.choice(ccols) for _ in range(4)]
+            idx = random.randint(1, 3)
+            cells = {}
+            for p in _RINGS[0]:
+                cells[p] = ringcols[0]
+            for p in _RINGS[idx]:
+                cells[p] = ringcols[idx]
+            rest = [k for k in (1, 2, 3) if k != idx]
+            chosen = random.sample(rest, unifint((1, 2)))
+            keeps = [4 - unifint((0, 3)) for _ in chosen]
+            if all(k == 4 for k in keeps):
+                # a ring must be left incomplete, else there is nothing to do
+                keeps[random.randrange(len(keeps))] = 3
+            for k, keep in zip(chosen, keeps):
+                for p in random.sample(list(_RINGS[k]), keep):
+                    cells[p] = ringcols[k]
+            rs = [i for i, _ in cells]
+            cs = [j for _, j in cells]
+            if min(rs) != 0 or max(rs) != 4 or min(cs) != 0 or max(cs) != 4:
+                continue
+            if not any(p in cells for p in _RINGS[1]):
+                continue
+            return cells
+        return None
+
+    gi = [[bgc] * mw for _ in range(mh)]
+    for _attempt in range(50):
+        h = unifint((7, mh))
+        w = unifint((7, mw))
+        gi = [[bgc] * w for _ in range(h)]
+        avail = set((i, j) for i in range(1, h - 1) for j in range(1, w - 1))
+        nobjs = unifint((1, max(1, (h * w) // 36)))
+        succ, tr, maxtr = 0, 0, 10 * nobjs + 10
         while succ < nobjs and tr < maxtr:
             tr += 1
-            cands = sfilter(inds, lambda ij: ij[0] <= h - 5 and ij[0] <= w - 5)
-            if len(cands) == 0:
+            cands = [(i, j) for (i, j) in avail if i <= h - 6 and j <= w - 6]
+            if not cands:
                 break
-            loc = choice(totuple(cands))
-            plcd = shift(bx, loc)
-            if plcd.issubset(inds):
-                inds = (inds - plcd) - outbox(plcd)
-                ringcols = [choice(ccols) for k in range(4)]
-                plcdrings = [shift(r, loc) for r in rings]
-                gi = fill(gi, ringcols[0], plcdrings[0])
-                go = fill(go, ringcols[0], plcdrings[0])
-                idx = randint(1, 3)
-                gi = fill(gi, ringcols[idx], plcdrings[idx])
-                go = fill(go, ringcols[idx], plcdrings[idx])
-                remrings = plcdrings[1:idx] + plcdrings[idx + 1:]
-                remringcols = ringcols[1:idx] + ringcols[idx + 1:]
-                numrs = unifint(diff_lb, diff_ub, (1, 2))
-                locs = sample((0, 1), numrs)
-                remrings = [rr for j, rr in enumerate(remrings) if j in locs]
-                remringcols = [rr for j, rr in enumerate(remringcols) if j in locs]
-                tofillgi = merge(frozenset(
-                    recolor(col, frozenset(sample(totuple(remring),
-                                                  4 - unifint(diff_lb, diff_ub, (0, 3)))))
-                    for remring, col in zip(remrings, remringcols)
-                ))
-                tofillgo = merge(frozenset(
-                    recolor(col, remring) for remring, col in zip(remrings, remringcols)
-                ))
-                if min(shape(tofillgi)) == 5:
-                    succ += 1
-                    gi = paint(gi, tofillgi)
-                    go = paint(go, tofillgo)
-        res = {'input': gi, 'output': go}
-        if gi != go:
-            return res
-    return res
+            r0, c0 = random.choice(sorted(cands))
+            box = set((r0 + i, c0 + j) for i in range(5) for j in range(5))
+            if not box <= avail:
+                continue
+            cells = build_block()
+            if cells is None:
+                continue
+            for (i, j), col in cells.items():
+                gi[r0 + i][c0 + j] = col
+            avail -= set((r0 + i, c0 + j)
+                         for i in range(-1, 6) for j in range(-1, 6))
+            succ += 1
+        if succ == 0:
+            continue
+        go = _closure(gi, bgc)
+        if go == gi:
+            continue
+        return {'input': tuple(tuple(r) for r in gi),
+                'output': tuple(tuple(r) for r in go)}
+    return {'input': tuple(tuple(r) for r in gi),
+            'output': tuple(tuple(r) for r in _closure(gi, bgc))}
 
 
+# --------------------------------------------------------------- derive_operations
 def derive_operations(I, O):
-    """Each 5x5 patch holds concentric 4-fold-symmetric rings; broken rings are
-    completed by reflecting the patch onto itself (mirror h, mirror v, then a quarter
-    turn), each reflection layered over the kept copy of the patch."""
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     h, w = I.shape
-    bgc = int(Counter(I.flatten().tolist()).most_common(1)[0][0])
+    cnt = {}
+    for v in I.flatten().tolist():
+        cnt[v] = cnt.get(v, 0) + 1
+    bgc = max(sorted(cnt), key=lambda c: cnt[c])
+
+    grid = [list(map(int, row)) for row in I.tolist()]
     ops, sels = [], []
 
-    R1 = [(0, 0), (0, 4), (4, 0), (4, 4)]
-    R2 = [(0, 2), (2, 0), (2, 4), (4, 2)]
-    R3 = [(1, 1), (1, 3), (3, 1), (3, 3)]
-    R4 = [(2, 2)]
-    RINGSET = set(R1 + R2 + R3 + R4)
-
-    def d4_imgs(r, c):
-        return [(r, c), (r, 4 - c), (4 - r, c), (4 - r, 4 - c),
-                (c, r), (c, 4 - r), (4 - c, r), (4 - c, 4 - r)]
-
-    def closure(sub):
-        out = np.zeros((5, 5), dtype=int)
-        for r in range(5):
-            for c in range(5):
-                v = int(sub[r, c])
-                if v != bgc:
-                    for (rr, cc) in d4_imgs(r, c):
-                        out[rr, cc] = v
-        return out
-
-    def valid(r0, c0):
-        sub = I[r0:r0 + 5, c0:c0 + 5]
-        if sub[2, 2] == bgc:
-            return False
-        for r in range(5):
-            for c in range(5):
-                if sub[r, c] != bgc and (r, c) not in RINGSET:
-                    return False
-        full = False
-        for ring in (R1, R2, R3):
-            vals = [int(sub[r, c]) for (r, c) in ring if sub[r, c] != bgc]
-            if len(set(vals)) > 1:
-                return False
-            if len(vals) == 4:
-                full = True
-        if not full:
-            return False
-        for r in range(r0 - 1, r0 + 6):
-            for c in range(c0 - 1, c0 + 6):
-                if r0 <= r < r0 + 5 and c0 <= c < c0 + 5:
-                    continue
-                if 0 <= r < h and 0 <= c < w and I[r, c] != bgc:
-                    return False
-        tgt = O[r0:r0 + 5, c0:c0 + 5]
-        return np.array_equal(closure(sub), np.where(tgt == bgc, 0, tgt))
-
-    chset = {(r, c) for r in range(h) for c in range(w) if I[r, c] != O[r, c]}
-
-    blocks = []
-    if chset:
-        scored = []
-        for r0 in range(h - 4):
-            for c0 in range(w - 4):
-                cnt = sum(1 for (r, c) in chset if r0 <= r < r0 + 5 and c0 <= c < c0 + 5)
-                if cnt and valid(r0, c0):
-                    scored.append((cnt, r0, c0))
-        scored.sort(key=lambda t: (-t[0], t[1], t[2]))
-        used, covered = set(), set()
-        for cnt, r0, c0 in scored:
-            cells = {(r0 + i, c0 + j) for i in range(5) for j in range(5)}
-            if cells & used:
-                continue
-            newly = (chset & cells) - covered
-            if not newly:
-                continue
-            used |= cells
-            covered |= newly
-            blocks.append((r0, c0))
-        blocks.sort()
-
-    G = I.copy()
-    for (r0, c0) in blocks:
-        tgt = O[r0:r0 + 5, c0:c0 + 5].copy()
-        if np.array_equal(G[r0:r0 + 5, c0:c0 + 5], tgt):
-            continue
-        if bgc != 0 and np.any(G[r0:r0 + 5, c0:c0 + 5] == 0):
-            continue  # 0 used as a ring colour here -> clipboard layering unusable
-
-        # clear this patch's background so the mirrored copies can be layered on it
-        if bgc != 0:
-            bgcells = [(r0 + i, c0 + j) for i in range(5) for j in range(5)
-                       if G[r0 + i, c0 + j] == bgc]
-            if bgcells:
-                ops.append(0)
-                sels.append(sel_of(bgcells))
-                for (r, c) in bgcells:
-                    G[r, c] = 0
-
-        target_obj = np.where(tgt == bgc, 0, tgt)
-        # mirror the patch onto itself: left<->right, up<->down, then a quarter turn
-        for opcode, fn in ((26, np.fliplr), (27, np.flipud), (24, lambda a: np.rot90(a, 1))):
-            blk = G[r0:r0 + 5, c0:c0 + 5].copy()
-            if np.array_equal(blk, target_obj):
-                break
-            t = np.array(fn(blk))
-            if np.array_equal(t, blk):
-                continue  # patch already symmetric this way: the op would change nothing
-            ops.append(29)
-            sels.append([r0, c0, 4, 4])          # keep a copy of the whole 5x5 patch
-            ops.append(opcode)
-            sels.append([r0, c0, 4, 4])          # bbox == exactly the 5x5 patch, reflected whole
-            ops.append(30)
-            sels.append([r0, c0, 0, 0])          # lay the kept copy back over the reflection
-            union = t.copy()
-            union[blk != 0] = blk[blk != 0]
-            G[r0:r0 + 5, c0:c0 + 5] = union
-
-        # put the patch's background back
-        if bgc != 0:
-            zc = [(r0 + i, c0 + j) for i in range(5) for j in range(5)
-                  if G[r0 + i, c0 + j] == 0]
-            if zc:
-                ops.append(int(bgc))
-                sels.append(sel_of(zc))
-                for (r, c) in zc:
-                    G[r, c] = bgc
-
-    # safety net: anything a patch could not be reflected into place (never hit for
-    # normal instances) gets painted per colour
-    rem = {}
-    for r in range(h):
-        for c in range(w):
-            if G[r, c] != O[r, c]:
-                rem.setdefault(int(O[r, c]), []).append((r, c))
-    for col in sorted(rem):
-        ops.append(int(col))
-        sels.append(sel_of(rem[col]))
-        for (r, c) in rem[col]:
-            G[r, c] = col
+    # every block is located in I alone; nothing below looks at O
+    for (r0, c0) in _find_blocks(grid, bgc):
+        rect = [r0, c0, 4, 4]          # exactly the whole 5x5 block, bg included
+        # Reflect the block across its vertical axis, then its horizontal axis,
+        # then its main diagonal (rotate CCW + flip up/down). After each
+        # reflection the marks the block carried just before it are drawn back
+        # on top, so the block accumulates every mirror image of itself and its
+        # partial rings close up.
+        for opgroup in ((26,), (27,), (24, 27)):
+            before = [row[c0:c0 + 5] for row in grid[r0:r0 + 5]]
+            for op in opgroup:
+                sub = [row[c0:c0 + 5] for row in grid[r0:r0 + 5]]
+                if op == 26:                                  # flip left/right
+                    new = [list(reversed(r)) for r in sub]
+                elif op == 27:                                # flip up/down
+                    new = [list(r) for r in reversed(sub)]
+                else:                                         # 24 = rotate CCW
+                    new = [[sub[j][4 - i] for j in range(5)] for i in range(5)]
+                if new == sub:
+                    continue                       # nothing would change: skip
+                ops.append(op)
+                sels.append(rect)
+                for i in range(5):
+                    for j in range(5):
+                        grid[r0 + i][c0 + j] = new[i][j]
+            bycol = {}
+            for i in range(5):
+                for j in range(5):
+                    v = before[i][j]
+                    if v != bgc and grid[r0 + i][c0 + j] != v:
+                        bycol.setdefault(v, []).append((r0 + i, c0 + j))
+            for v in sorted(bycol):
+                ops.append(int(v))
+                sels.append(sel_of(bycol[v]))
+                for (r, c) in bycol[v]:
+                    grid[r][c] = v
 
     ops.append(34)
     sels.append([0, 0, h - 1, w - 1])

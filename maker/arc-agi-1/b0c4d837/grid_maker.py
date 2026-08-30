@@ -33,111 +33,160 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
 import numpy as np
-from random import randint, choice, sample as rsample
+from maker.sel_helpers import sel_of
 
-ROTS = ["identity", "rot90", "rot180", "rot270"]
+
+# ---------------------------------------------------------------- variants
+# Structural parameter of this task: ntofill (= how many of the 9 output cells
+# get the fill colour) and the rotation applied to the input canvas.
+# ntofill is restricted to {4, 5}: those are exactly the counts for which the
+# middle output row is non-uniform, i.e. the vmirror of the middle row (the
+# rule the verifier states) is a genuinely visible operation.
+VARIANTS = [
+    {"ntofill": 4, "rot": 0},
+    {"ntofill": 5, "rot": 1},
+    {"ntofill": 4, "rot": 2},
+    {"ntofill": 5, "rot": 3},
+]
 
 
 def sample_colors(num_examples=None) -> dict:
-    bgc, boxc, fillc = rsample(list(range(10)), 3)
+    cols = list(range(10))
+    bgc, boxc, fillc = random.sample(cols, 3)
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(ROTS):
-        examples = [{"rot": r} for r in ROTS]
-        examples += [{"rot": choice(ROTS)} for _ in range(n_ex - len(ROTS))]
-        from random import shuffle
-        shuffle(examples)
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(examples)
     else:
-        examples = [{"rot": r} for r in rsample(ROTS, n_ex)]
-    plan = examples + [dict(choice(examples))]
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "boxc": boxc, "fillc": fillc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, boxc, fillc, rot=None) -> dict:
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        b = a
+    lo = a + int((b - a) * diff_lb)
+    hi = a + int((b - a) * diff_ub)
+    if hi < lo:
+        lo, hi = hi, lo
+    lo = max(a, lo)
+    hi = min(b, hi)
+    if hi < lo:
+        hi = lo
+    return random.randint(lo, hi)
+
+
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, boxc, fillc,
+             ntofill=None, rot=None) -> dict:
     if rot is None:
-        rot = choice(ROTS)
-    h = unifint(diff_lb, diff_ub, (5, max_h))
-    w = unifint(diff_lb, diff_ub, (5, max_w))
-    oh = unifint(diff_lb, diff_ub, (3, h - 1))
-    ow = unifint(diff_lb, diff_ub, (3, w - 1))
-    loci = randint(0, h - oh)
-    locj = randint(0, w - ow)
-    subg = canvas(boxc, (oh, ow))
-    subg2 = canvas(fillc, (oh - 1, ow - 2))
-    ntofill = unifint(diff_lb, diff_ub, (1, min(9, oh - 2)))
-    for j in range(ntofill):
-        subg2 = fill(subg2, bgc, connect((j, 0), (j, ow - 2)))
-    subg = paint(subg, shift(asobject(subg2), (0, 1)))
-    gi = canvas(bgc, (h, w))
-    gi = paint(gi, shift(asobject(subg), (loci, locj)))
-    go = repeat(fillc, ntofill) + repeat(bgc, 9 - ntofill)
-    go = (go[:3], go[3:6][::-1], go[6:])
-    if rot == "rot90":
-        gi = rot90(gi)
-    elif rot == "rot180":
-        gi = rot180(gi)
-    elif rot == "rot270":
-        gi = rot270(gi)
-    return {'input': gi, 'output': go}
+        rot = random.choice([0, 1, 2, 3])
+    if ntofill is None:
+        ntofill = random.choice([4, 5])
+
+    # after a 90/270 rotation the canvas is transposed -> swap the limits
+    if rot in (0, 2):
+        h_lim, w_lim = max_h, max_w
+    else:
+        h_lim, w_lim = max_w, max_h
+    h_lim = max(5, min(30, int(h_lim)))
+    w_lim = max(5, min(30, int(w_lim)))
+
+    # feasibility: box height oh needs oh >= ntofill + 2 and oh <= h - 1
+    ntofill = max(1, min(int(ntofill), 9, h_lim - 3))
+    h_lo = max(5, ntofill + 3)
+    h = _unifint(diff_lb, diff_ub, (h_lo, h_lim))
+    w = _unifint(diff_lb, diff_ub, (5, w_lim))
+
+    oh = _unifint(diff_lb, diff_ub, (ntofill + 2, h - 1))
+    ow = _unifint(diff_lb, diff_ub, (3, w - 1))
+    loci = random.randint(0, h - oh)
+    locj = random.randint(0, w - ow)
+
+    g = [[bgc] * w for _ in range(h)]
+    # solid box of boxc
+    for r in range(oh):
+        for c in range(ow):
+            g[loci + r][locj + c] = boxc
+    # interior stripes: first `ntofill` rows bgc, the rest fillc
+    for r in range(oh - 1):
+        v = bgc if r < ntofill else fillc
+        for c in range(1, ow - 1):
+            g[loci + r][locj + c] = v
+
+    gi = np.array(g, dtype=int)
+    if rot:
+        gi = np.rot90(gi, k=rot)
+
+    seq = [fillc] * ntofill + [bgc] * (9 - ntofill)
+    go = [list(seq[0:3]), list(seq[3:6][::-1]), list(seq[6:9])]
+
+    return {"input": gi.tolist(), "output": go}
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
 
-    # --- read the three color roles out of I by bounding-box extent ---
-    def bb(col):
-        rs, cs = np.nonzero(I == col)
-        r0, r1, c0, c1 = rs.min(), rs.max(), cs.min(), cs.max()
-        return ((r1 - r0 + 1) * (c1 - c0 + 1), r0, c0, r1, c1)
+    # ---- identify the three colour roles the way the task builds them -------
+    cells = {}
+    for c in np.unique(I):
+        rs, cs = np.where(I == c)
+        cells[int(c)] = (rs, cs)
 
-    present = [int(c) for c in np.unique(I)]
-    info = {c: bb(c) for c in present}
-    bgc = max(present, key=lambda c: info[c][0])          # spans the whole canvas
-    rest = [c for c in present if c != bgc]
-    boxc = max(rest, key=lambda c: info[c][0])            # the frame
-    fillc = min(rest, key=lambda c: info[c][0])           # the filled block inside it
+    def bbox_area(c):
+        rs, cs = cells[c]
+        return (rs.max() - rs.min() + 1) * (cs.max() - cs.min() + 1)
 
-    _, br0, bc0, br1, bc1 = info[boxc]
-    _, fr0, fc0, fr1, fc1 = info[fillc]
+    ordered = sorted(cells.keys(), key=lambda c: (-bbox_area(c), -len(cells[c][0])))
+    bgc = ordered[0]                      # background spans the whole canvas
+    boxc = ordered[1]                     # the box frame (bigger bbox)
+    fillc = ordered[2]                    # the filled block inside the box
 
-    # frame's two long sides tell us which axis the stripes run along
-    side_cols_full = (all(I[r, bc0] == boxc for r in range(br0, br1 + 1)) and
-                      all(I[r, bc1] == boxc for r in range(br0, br1 + 1)))
-    if side_cols_full:
-        n = (br1 - br0 + 1) - (fr1 - fr0 + 1) - 1        # empty rows inside the frame
-    else:
-        n = (bc1 - bc0 + 1) - (fc1 - fc0 + 1) - 1        # empty cols inside the frame
-    n = max(0, min(9, int(n)))
+    # ---- how many stripes of background sit inside the box -----------------
+    rs, cs = cells[boxc]
+    r0, r1, c0, c1 = int(rs.min()), int(rs.max()), int(cs.min()), int(cs.max())
+    boxset = set(zip(rs.tolist(), cs.tolist()))
+    left_full = all((r, c0) in boxset for r in range(r0, r1 + 1))
+    right_full = all((r, c1) in boxset for r in range(r0, r1 + 1))
+    frs, fcs = cells[fillc]
+    if left_full and right_full:          # box stands upright -> measure heights
+        box_dim = r1 - r0 + 1
+        fill_dim = int(frs.max() - frs.min() + 1)
+    else:                                 # box is on its side -> measure widths
+        box_dim = c1 - c0 + 1
+        fill_dim = int(fcs.max() - fcs.min() + 1)
+    k = int(box_dim - fill_dim - 1)
+    k = max(0, min(9, k))
 
     ops, sels = [], []
 
-    # --- take a 3x3 patch of background from I as the canvas ---
-    anchor = None
-    for r in range(hi - 2):
-        for c in range(wi - 2):
-            if np.all(I[r:r + 3, c:c + 3] == bgc):
-                anchor = (r, c)
-                break
-        if anchor:
-            break
-    if anchor is None:
-        anchor = (0, 0)
-    ops.append(33); sels.append([anchor[0], anchor[1], 2, 2])
-    if not np.all(I[anchor[0]:anchor[0] + 3, anchor[1]:anchor[1] + 3] == bgc):
-        ops.append(bgc); sels.append([0, 0, 2, 2])
+    # 1. the answer lives on a 3x3 canvas -> shrink the canvas to 3x3.
+    #    bbox is exactly the full 3x3 rectangle we keep.
+    ops.append(33); sels.append([0, 0, 2, 2])
 
-    # --- stamp n fill cells along the snake path: row0 L->R, row1 R->L, row2 L->R ---
-    k0 = min(n, 3)
-    if k0 > 0:
-        ops.append(fillc); sels.append([0, 0, 0, k0 - 1])
-    k1 = min(max(n - 3, 0), 3)
-    if k1 > 0:
-        ops.append(fillc); sels.append([1, 3 - k1, 0, k1 - 1])
-    k2 = min(max(n - 6, 0), 3)
-    if k2 > 0:
-        ops.append(fillc); sels.append([2, 0, 0, k2 - 1])
+    # 2. lay the background base over the whole little canvas
+    #    (skip only when the canvas already holds nothing but bgc)
+    if not np.all(I[:3, :3] == bgc):
+        ops.append(int(bgc))
+        sels.append(sel_of([(r, c) for r in range(3) for c in range(3)]))
+
+    # 3. write k fill-coloured cells in reading order, row by row
+    seq = [fillc] * k + [bgc] * (9 - k)
+    for row in range(3):
+        seg = [(row, c) for c in range(3) if seq[row * 3 + c] == fillc]
+        if seg:
+            ops.append(int(fillc)); sels.append(sel_of(seg))
+
+    # 4. the rule's reflection: mirror the middle row left<->right.
+    #    bbox = exactly the whole middle row, background included.
+    mid = seq[3:6]
+    if mid != mid[::-1]:
+        ops.append(26); sels.append([1, 0, 0, 2])
 
     ops.append(34); sels.append([0, 0, 2, 2])
     return ops, sels
@@ -183,7 +232,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

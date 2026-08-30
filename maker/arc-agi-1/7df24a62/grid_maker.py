@@ -35,19 +35,26 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
+from collections import Counter
 
-# the 8 orientations of a square box, and the ARCLE ops that produce each one
+from maker.sel_helpers import sel_of
+
+# the eight ways a box can be laid down, the ARCLE ops that carry each one, and
+# the straight mirror left over once a diagonal one has had to be drawn instead
 _TF = [
-    lambda a: np.array(a),          # identity
-    lambda a: np.fliplr(a),         # vmirror
-    lambda a: np.flipud(a),         # hmirror
-    lambda a: np.rot90(a, 2),       # rot180
-    lambda a: np.rot90(a, 1),       # rot90 CCW
-    lambda a: np.rot90(a, 3),       # rot90 CW
-    lambda a: np.array(a).T,        # dmirror  (transpose)     = flipud(rot90CCW)
-    lambda a: np.rot90(a, 2).T,     # cmirror  (anti-transpose)= flipud(rot90CW)
+    lambda a: np.array(a),                 # 0 as it is
+    lambda a: np.fliplr(a),                # 1 vmirror
+    lambda a: np.flipud(a),                # 2 hmirror
+    lambda a: np.rot90(a, 2),              # 3 rot180
+    lambda a: np.rot90(a, 1),              # 4 quarter turn ccw
+    lambda a: np.rot90(a, 3),              # 5 quarter turn cw
+    lambda a: np.array(a).T,               # 6 dmirror = flipud(ccw)
+    lambda a: np.rot90(np.array(a).T, 2),  # 7 cmirror = fliplr(ccw)
 ]
-_TOPS = [[], [26], [27], [26, 27], [24], [25], [24, 27], [25, 27]]
+_TOPS = [[], [26], [27], [26, 27], [24], [25], [24, 27], [24, 26]]
+_RESID = {6: [], 4: [27], 5: [26], 7: [26, 27]}   # left to do after a drawn dmirror
+_APPLY = {26: lambda a: np.fliplr(a), 27: lambda a: np.flipud(a),
+          24: lambda a: np.rot90(a, 1), 25: lambda a: np.rot90(a, 3)}
 
 
 def _unifint(diff_lb, diff_ub, bounds):
@@ -61,200 +68,239 @@ def _unifint(diff_lb, diff_ub, bounds):
     return random.randint(lo, hi)
 
 
+def _find_box(I):
+    """The box in I: a solid rectangle of one colour with a pattern inside it.
+
+    Everything the rule needs is read off here and nowhere else — which colour
+    frames the box, which colour draws the pattern, which colour the grid is
+    made of, and how big the box is."""
+    I = np.asarray(I, dtype=int)
+    cnt = Counter(I.ravel().tolist())
+    bgc = cnt.most_common(1)[0][0]
+    best = None
+    for col in cnt:
+        if col == bgc:
+            continue
+        rs, cs = np.where(I == col)
+        r0, c0 = int(rs.min()), int(cs.min())
+        h, w = int(rs.max()) - r0 + 1, int(cs.max()) - c0 + 1
+        if h < 3 or w < 3:
+            continue
+        blk = I[r0:r0 + h, c0:c0 + w]
+        if not (np.all(blk[0] == col) and np.all(blk[-1] == col)
+                and np.all(blk[:, 0] == col) and np.all(blk[:, -1] == col)):
+            continue                      # not a solid frame of this colour
+        inner = blk[1:-1, 1:-1]
+        others = sorted(set(inner.ravel().tolist()) - {col})
+        if len(others) != 1:
+            continue                      # the pattern is drawn in one colour
+        nz = (inner == others[0])
+        if not (nz[0].any() and nz[-1].any() and nz[:, 0].any() and nz[:, -1].any()):
+            continue                      # and it fills the box interior
+        key = (max(h, w), h * w, r0, c0)
+        if best is None or key < best[0]:
+            best = (key, col, others[0], r0, c0, h, w)
+    if best is None:
+        return None
+    _, sqc, noisec, r0, c0, h, w = best
+    return bgc, sqc, noisec, r0, c0, h, w
+
+
+def _occurrences(I, bgc, sqc, model):
+    """Every place the box's bare pattern sits on clean grid, and how it lies.
+
+    The grid is read with one row/column of background around it, the way a box
+    may hang over the edge; a position comes back in the grid's own coordinates
+    and may be negative."""
+    I = np.asarray(I, dtype=int)
+    H, W = I.shape
+    pad = np.full((H + 2, W + 2), bgc, dtype=int)
+    pad[1:-1, 1:-1] = I
+    res = {}
+    for k in range(8):
+        blk = _TF[k](model)
+        tgt = np.where(blk == sqc, bgc, blk)   # the box with its frame taken away
+        th, tw = tgt.shape
+        for pr in range(H + 3 - th):
+            for pc in range(W + 3 - tw):
+                if (pr - 1, pc - 1) in res:
+                    continue
+                if np.array_equal(pad[pr:pr + th, pc:pc + tw], tgt):
+                    res[(pr - 1, pc - 1)] = k
+    return sorted(res.items())
+
+
+def _complete(I):
+    """I with a box drawn around every occurrence of its pattern."""
+    I = np.asarray(I, dtype=int)
+    H, W = I.shape
+    info = _find_box(I)
+    if info is None:
+        return I.copy(), None, []
+    bgc, sqc, noisec, br, bc, oh, ow = info
+    model = I[br:br + oh, bc:bc + ow].copy()
+    occ = _occurrences(I, bgc, sqc, model)
+    G = I.copy()
+    for (r, c), k in occ:
+        blk = _TF[k](model)
+        th, tw = blk.shape
+        for rr in range(max(r, 0), min(r + th, H)):
+            for cc in range(max(c, 0), min(c + tw, W)):
+                G[rr, cc] = blk[rr - r, cc - c]
+    return G, info, occ
+
+
 def sample_colors(num_examples=None) -> dict:
+    # all three roles are fixed for the episode: which colour the grid is, which
+    # draws the pattern, which frames the box
     cols = list(range(10))
-    bgc = random.choice(cols)
-    # box colour and pattern colour stay non-zero so Copy/Paste can carry the box
-    sqc = random.choice([c for c in cols if c != bgc and c != 0])
-    noisec = random.choice([c for c in cols if c not in (bgc, sqc, 0)])
+    bgc, noisec, sqc = random.sample(cols, 3)
     return {"bgc": bgc, "noisec": noisec, "sqc": sqc}
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, sqc) -> dict:
-    hub = min(32, max_h + 2)          # grids are trimmed by 1 on every side
-    hlb = min(12, hub)
-    wub = min(32, max_w + 2)
-    wlb = min(12, wub)
-    h = _unifint(diff_lb, diff_ub, (hlb, hub))
-    w = _unifint(diff_lb, diff_ub, (wlb, wub))
-    odub = max(4, min(7, h // 3, w // 3))
-    od = _unifint(diff_lb, diff_ub, (4, odub))     # square box -> every orientation is square
-    if h < od + 3 or w < od + 3:
-        raise ValueError("grid too small for the box")
+    hub = max(12, min(32, max_h + 2))     # a grid is trimmed by one all round
+    wub = max(12, min(32, max_w + 2))
+    for _attempt in range(60):
+        h = _unifint(diff_lb, diff_ub, (min(12, hub), hub))
+        w = _unifint(diff_lb, diff_ub, (min(12, wub), wub))
+        oh = _unifint(diff_lb, diff_ub, (3, max(3, min(7, h // 3))))
+        ow = _unifint(diff_lb, diff_ub, (3, max(3, min(7, w // 3))))
+        if h < oh + 3 or w < ow + 3:
+            continue
 
-    interior = [(r, c) for r in range(1, od - 1) for c in range(1, od - 1)]
-    obj = {random.choice(interior)}
-    while True:
-        rs = [p[0] for p in obj]
-        cs = [p[1] for p in obj]
-        if max(rs) - min(rs) == od - 3 and max(cs) - min(cs) == od - 3:
-            break
-        obj.add(random.choice([p for p in interior if p not in obj]))
+        interior = [(r, c) for r in range(1, oh - 1) for c in range(1, ow - 1)]
+        obj = {random.choice(interior)}
+        while True:
+            rs = [p[0] for p in obj]
+            cs = [p[1] for p in obj]
+            if max(rs) - min(rs) == oh - 3 and max(cs) - min(cs) == ow - 3:
+                break
+            obj.add(random.choice([p for p in interior if p not in obj]))
+        model = np.full((oh, ow), sqc, dtype=int)
+        for (r, c) in obj:
+            model[r, c] = noisec
+        targ = np.where(model == sqc, bgc, model)
 
-    pat = np.full((od, od), sqc, dtype=int)        # source: box colour + pattern
-    targ = np.full((od, od), bgc, dtype=int)       # target: background + pattern
-    for (r, c) in obj:
-        pat[r, c] = noisec
-        targ[r, c] = noisec
+        gi = np.full((h, w), bgc, dtype=int)
+        loci = random.randint(1, h - oh - 1)
+        locj = random.randint(1, w - ow - 1)
+        gi[loci:loci + oh, locj:locj + ow] = model
 
-    gi = np.full((h, w), bgc, dtype=int)
-    loci = random.randint(1, h - od - 1)
-    locj = random.randint(1, w - od - 1)
-    gi[loci:loci + od, locj:locj + od] = pat
+        blocked = set()
+        for r in range(loci, loci + oh):
+            for c in range(locj, locj + ow):
+                blocked.add((r, c))
+                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    blocked.add((r + dr, c + dc))
+        inds = {(r, c) for r in range(1, h - 1) for c in range(1, w - 1)
+                if (r, c) not in blocked}
+        if len(inds) < 4 * oh * ow:
+            continue
+        namt = _unifint(diff_lb, diff_ub, (1, max(1, len(inds) // 4)))
+        for p in random.sample(sorted(inds), min(namt, len(inds))):
+            gi[p] = noisec
 
-    blocked = set()
-    for r in range(loci, loci + od):
-        for c in range(locj, locj + od):
-            blocked.add((r, c))
-            for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                blocked.add((r + dr, c + dc))
-    inds = set()
-    for r in range(1, h - 1):
-        for c in range(1, w - 1):
-            if gi[r, c] == bgc and (r, c) not in blocked:
-                inds.add((r, c))
-    if len(inds) < 4 * od * od:
-        raise ValueError("not enough free space")
+        noccs = _unifint(diff_lb, diff_ub, (1, max(1, (h * w) // (oh * ow * 4))))
+        succ, tr, maxtr = 0, 0, 5 * noccs
+        while succ < noccs and tr < maxtr:
+            tr += 1
+            t = _TF[random.randrange(8)](targ)
+            th, tw = t.shape
+            cands = [ij for ij in sorted(inds)
+                     if 1 <= ij[0] <= h - th - 1 and 1 <= ij[1] <= w - tw - 1]
+            if not cands:
+                continue
+            r0, c0 = random.choice(cands)
+            fp = {(r0 + i, c0 + j) for i in range(th) for j in range(tw)}
+            if fp <= inds:
+                succ += 1
+                inds -= fp
+                gi[r0:r0 + th, c0:c0 + tw] = t
+        if succ == 0:
+            continue
 
-    namt = _unifint(diff_lb, diff_ub, (1, max(1, len(inds) // 4)))
-    for (r, c) in random.sample(sorted(inds), min(namt, len(inds))):
-        gi[r, c] = noisec
-
-    targs = [_TF[k](targ) for k in range(8)]
-    sours = [_TF[k](pat) for k in range(8)]
-
-    noccs = _unifint(diff_lb, diff_ub, (1, max(1, (h * w) // (od * od * 4))))
-    succ, tr, maxtr = 0, 0, 5 * noccs
-    while succ < noccs and tr < maxtr:
-        tr += 1
-        k = random.randrange(8)
-        cands = [ij for ij in sorted(inds)
-                 if 1 <= ij[0] <= h - od - 1 and 1 <= ij[1] <= w - od - 1]
-        if not cands:
-            break
-        r0, c0 = random.choice(cands)
-        fp = {(r0 + i, c0 + j) for i in range(od) for j in range(od)}
-        if fp <= inds:
-            succ += 1
-            inds -= fp
-            gi[r0:r0 + od, c0:c0 + od] = targs[k]
-
-    # every place (any orientation) where the bare pattern sits on clean background
-    occ = {}
-    for k in range(8):
-        t = targs[k]
-        for r in range(h - od + 1):
-            for c in range(w - od + 1):
-                if (r, c) in occ:
-                    continue
-                if np.array_equal(gi[r:r + od, c:c + od], t):
-                    occ[(r, c)] = k
-    if not occ:
-        raise ValueError("no occurrence of the pattern")
-
-    used = set()
-    for (r, c), k in sorted(occ.items()):
-        # keep every drawn box whole and unambiguous after the trim
-        if not (1 <= r and 1 <= c and r + od <= h - 1 and c + od <= w - 1):
-            raise ValueError("occurrence would be clipped by the trim")
-        fp = {(r + i, c + j) for i in range(od) for j in range(od)}
-        if fp & used:
-            raise ValueError("overlapping occurrences")
-        used |= fp
-
-    go = gi.copy()
-    for (r, c), k in sorted(occ.items()):
-        go[r:r + od, c:c + od] = sours[k]
-
-    return {"input": gi[1:-1, 1:-1].tolist(), "output": go[1:-1, 1:-1].tolist()}
+        I = gi[1:-1, 1:-1]
+        O, info, occ = _complete(I)
+        if info is None or not occ:
+            continue
+        if info[:3] != (bgc, sqc, noisec) or info[5:] != (oh, ow):
+            continue
+        H2, W2 = I.shape
+        if any(r < 0 or c < 0 or r + _TF[k](model).shape[0] > H2
+               or c + _TF[k](model).shape[1] > W2 for (r, c), k in occ):
+            continue                      # keep every drawn box whole
+        ops, _sels = derive_operations(I, O)
+        if not (set(ops) & {24, 25, 26, 27}):
+            continue                      # the episode must show a box turned over
+        return {"input": I.tolist(), "output": O.tolist()}
+    raise ValueError("could not lay out an instance")
 
 
 def derive_operations(I, O):
+    # O is never read: the box, the pattern, the places it recurs and the way
+    # each one lies are all measured from I.
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    ho, wo = O.shape
+    H, W = I.shape
     ops, sels = [], []
 
-    # box colour = the colour with the most compact bounding box (bgc and the
-    # pattern colour are both scattered over the whole grid)
-    sqc, best = None, None
-    for col in sorted(set(I.flatten().tolist())):
-        rs, cs = np.where(I == col)
-        ext = max(rs.max() - rs.min() + 1, cs.max() - cs.min() + 1)
-        if best is None or ext < best:
-            best, sqc = ext, col
-    rs, cs = np.where(I == sqc)
-    br, bc = int(rs.min()), int(cs.min())
-    od = int(max(rs.max() - br + 1, cs.max() - bc + 1))
-    od = min(od, ho - br, wo - bc)
-    P = I[br:br + od, bc:bc + od]            # the box, as it stands in the input
-
-    # each copy of the box in O, together with the orientation it is shown in
-    boxes = []
-    for r in range(ho - od + 1):
-        for c in range(wo - od + 1):
-            win = O[r:r + od, c:c + od]
-            if np.array_equal(win, I[r:r + od, c:c + od]):
-                continue                      # nothing new here (e.g. the original box)
-            for k in range(8):
-                if np.array_equal(win, _TF[k](P)):
-                    boxes.append((r, c, k))
-                    break
-
-    G = I.copy()
-    copied = False
-    for (r, c, k) in boxes:
-        want = _TF[k](P)
-        if np.array_equal(G[r:r + od, c:c + od], want):
-            continue
-        if not copied:
-            # CopyI the original box; selection is exactly its full od x od rectangle
-            ops.append(28)
-            sels.append([br, bc, od - 1, od - 1])
-            copied = True
-        if (P == 0).any():
-            # Paste cannot carry 0s: lay a base of the box colour over the whole
-            # destination rectangle first, then draw the pattern on top of it
-            base = np.full((od, od), sqc, dtype=int)
-            if not np.array_equal(G[r:r + od, c:c + od], base):
-                ops.append(int(sqc))
-                sels.append([r, c, od - 1, od - 1])   # exactly the destination rectangle
-                G[r:r + od, c:c + od] = base
-        # stamp the box over the pattern that matched here
-        reg = G[r:r + od, c:c + od].copy()
-        m = P != 0
-        reg[m] = P[m]
-        if not np.array_equal(reg, G[r:r + od, c:c + od]):
-            ops.append(30)
-            sels.append([r, c, 0, 0])
-            G[r:r + od, c:c + od] = reg
-        # mirror / rotate the stamped box into the orientation this copy appears in
-        for op in _TOPS[k]:
-            reg = G[r:r + od, c:c + od]
-            if op == 26:
-                nreg = np.fliplr(reg)
-            elif op == 27:
-                nreg = np.flipud(reg)
-            elif op == 24:
-                nreg = np.rot90(reg, 1)
+    info = _find_box(I)
+    if info is not None:
+        bgc, sqc, noisec, br, bc, oh, ow = info
+        model = I[br:br + oh, bc:bc + ow].copy()
+        G = I.copy()
+        copied = False
+        for (r, c), k in _occurrences(I, bgc, sqc, model):
+            blk = _TF[k](model)
+            th, tw = blk.shape
+            inside = (r >= 0 and c >= 0 and r + th <= H and c + tw <= W)
+            if inside and np.array_equal(G[r:r + th, c:c + tw], blk):
+                continue                  # a box already drawn here covers this one
+            # ARCLE turns a region a quarter only when that region is square
+            turnable = (k < 4 or oh == ow)
+            if inside and turnable and bool((model != 0).all()):
+                if not copied:            # the box, exactly its own rectangle
+                    ops.append(28); sels.append([br, bc, oh - 1, ow - 1])
+                    copied = True
+                ops.append(30); sels.append([r, c, 0, 0])   # stamp it over the pattern
+                cur = model.copy()
+                G[r:r + oh, c:c + ow] = cur
+                resid = _TOPS[k]
             else:
-                nreg = np.rot90(reg, 3)
-            if np.array_equal(nreg, reg):
-                continue                       # this orientation is already reached
-            ops.append(op)
-            sels.append([r, c, od - 1, od - 1])  # exactly the destination rectangle (square)
-            G[r:r + od, c:c + od] = nreg
-
-    if not np.array_equal(G, O):               # safety net; never used on valid instances
-        for rr in range(ho):
-            for cc in range(wo):
-                if G[rr, cc] != O[rr, cc]:
-                    ops.append(int(O[rr, cc]))
-                    sels.append([rr, cc, 0, 0])
-                    G[rr, cc] = O[rr, cc]
+                if not inside:
+                    u, resid = k, []      # a box over the edge cannot be turned in place
+                elif turnable:
+                    u, resid = 0, _TOPS[k]
+                else:
+                    u, resid = 6, _RESID[k]   # draw the diagonal, mirror the rest
+                U = _TF[u](model)
+                uh, uw = U.shape
+                box = [(rr, cc) for rr in range(max(r, 0), min(r + uh, H))
+                       for cc in range(max(c, 0), min(c + uw, W))]
+                fill = [p for p in box if G[p] != sqc]
+                if fill:                  # the body of the box, pattern included
+                    ops.append(int(sqc)); sels.append(sel_of(fill))
+                    for p in fill:
+                        G[p] = sqc
+                nz = [p for p in box
+                      if U[p[0] - r, p[1] - c] == noisec and G[p] != noisec]
+                if nz:                    # the pattern back on top of it
+                    ops.append(int(noisec)); sels.append(sel_of(nz))
+                    for p in nz:
+                        G[p] = noisec
+                cur = U
+            for op in resid:              # turn it the way this copy lies
+                nxt = _APPLY[op](cur)
+                if np.array_equal(nxt, cur):
+                    continue              # this orientation is already reached
+                # exactly the box's own rectangle, its background included
+                ops.append(op)
+                sels.append([r, c, cur.shape[0] - 1, cur.shape[1] - 1])
+                cur = nxt
+                G[r:r + cur.shape[0], c:c + cur.shape[1]] = cur
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, H - 1, W - 1])
     return ops, sels
 
 

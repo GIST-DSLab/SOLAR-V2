@@ -33,42 +33,40 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import math
 import random
 import numpy as np
 
 try:
     from maker.sel_helpers import sel_of
-except Exception:  # pragma: no cover - fallback with the documented mask format
+except Exception:  # pragma: no cover — documented mask format fallback
     def sel_of(cells):
-        return {"cells": [[int(r), int(c)] for r, c in cells]}
+        uniq = sorted({(int(r), int(c)) for r, c in cells})
+        return {"cells": [[r, c] for r, c in uniq]}
 
 
-# ---------------------------------------------------------------- helpers ---
 def _unifint(diff_lb, diff_ub, bounds):
     a, b = bounds
     if b < a:
         b = a
-    lo = int(math.ceil(a + (b - a) * diff_lb))
-    hi = int(math.floor(a + (b - a) * diff_ub))
+    lo = int(a + (b - a) * diff_lb)
+    hi = int(a + (b - a) * diff_ub)
     lo = max(a, min(lo, b))
     hi = max(a, min(hi, b))
     if hi < lo:
-        hi = lo
+        lo, hi = hi, lo
     return random.randint(lo, hi)
 
 
-# the one discrete structural variant of this task: whether the whole instance
-# is diagonally mirrored (bars run as columns instead of rows)
-VARIANTS = [{"transposed": False}, {"transposed": True}]
+# The one discrete structural variant: the generator's coin flip mirrors the whole
+# instance diagonally, so the bars run as rows or as columns.  Both must be shown.
+VARIANTS = [{"mirrored": False}, {"mirrored": True}]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc, sqc = random.sample(cols, 2)
-    rem = [c for c in cols if c not in (bgc, sqc)]
-    random.shuffle(rem)
-
+    bgc, sqc = random.sample(cols, 2)          # background and marker-square colour
+    barcols = [c for c in cols if c not in (bgc, sqc)]
+    random.shuffle(barcols)                    # the palette the bars are drawn from
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -77,119 +75,137 @@ def sample_colors(num_examples=None) -> dict:
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "sqc": sqc, "colorder": rem, "instance_plan": plan}
+    return {"bgc": bgc, "sqc": sqc, "barcols": barcols, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc, colorder,
-             transposed=None, **kwargs) -> dict:
-    if transposed is None:
-        transposed = random.choice([True, False])
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc, barcols, mirrored=None):
+    """RE-ARC generate_8e1813be with the colours fixed per episode.
 
-    # dimensions of the grid BEFORE the optional diagonal mirror
-    H = max_w if transposed else max_h
-    W = max_h if transposed else max_w
+    Kept from the original: nbars in 3..8, one full-width bar per colour, hmarg
+    background rows spliced in among them, an nbars x nbars square isolated by a
+    background ring, and the optional diagonal mirror.  Changed: 30 -> max_h/max_w,
+    and w starts at 2*nbars+2 with locj placed so that nbars consecutive columns
+    stay clear of the square — i.e. every bar is readable end to end somewhere,
+    which is what the original leaves to chance at its smallest widths.
+    """
+    if mirrored is None:
+        mirrored = random.choice([True, False])
 
-    hi_n = min(8, H // 3, W - 3, len(colorder))
-    if hi_n < 3:
+    # dimensions of the grid BEFORE the optional mirror (bars are rows there)
+    H = min(30, max_w if mirrored else max_h)      # bound for h2 = nbars + hmarg
+    W = min(30, max_h if mirrored else max_w)      # bound for the bar length w
+    nb_ub = min(8, len(barcols), H // 3, (W - 2) // 2)
+    if nb_ub < 3:
         raise ValueError("grid bounds too small for this task")
-    nbars = _unifint(diff_lb, diff_ub, (3, hi_n))
-    ccols = list(colorder[:nbars])
+    nbars = _unifint(diff_lb, diff_ub, (3, nb_ub))
+    ccols = random.sample(list(barcols), nbars)
 
-    w = _unifint(diff_lb, diff_ub, (nbars + 3, W))
+    w = _unifint(diff_lb, diff_ub, (2 * nbars + 2, W))
     hmarg = _unifint(diff_lb, diff_ub, (2 * nbars, H - nbars))
+    h2 = nbars + hmarg
 
     gi = [[c] * w for c in ccols]
     bgrow = [bgc] * w
     for _ in range(hmarg):
-        idx = random.randint(0, nbars - 1)
+        idx = random.randint(0, nbars - 1)         # as in the original
         gi = gi[:idx] + [list(bgrow)] + gi[idx:]
-    h2 = nbars + hmarg
 
     loci = random.randint(1, h2 - nbars - 2)
-    locj = random.randint(1, w - nbars - 2)
-    # the marker square (size == number of bars) ...
-    for i in range(loci, loci + nbars):
+    locj = random.choice([j for j in range(1, w - nbars - 1)
+                          if (j - 1 >= nbars or w - j - nbars - 1 >= nbars)])
+    for i in range(loci, loci + nbars):            # the square
         for j in range(locj, locj + nbars):
             gi[i][j] = sqc
-    # ... isolated by a background ring
-    for i in range(loci - 1, loci + nbars + 1):
+    for i in range(loci - 1, loci + nbars + 1):    # its background ring
         for j in range(locj - 1, locj + nbars + 1):
             if i in (loci - 1, loci + nbars) or j in (locj - 1, locj + nbars):
                 gi[i][j] = bgc
 
     go = [[c] * nbars for c in ccols]
-
-    if transposed:
+    if mirrored:
         gi = [list(r) for r in zip(*gi)]
         go = [list(r) for r in zip(*go)]
-
     return {"input": tuple(tuple(r) for r in gi),
             "output": tuple(tuple(r) for r in go)}
 
 
 def derive_operations(I, O):
-    """
-    Rule: the isolated square marks the answer canvas (its side == number of bars).
-    The bar colours, taken in order, are written into that canvas as its columns
-    (that is the colour list, repeated).  When the bars run horizontally the
-    canvas is then reflected across its diagonal so the stripes lie along the
-    bars -- the reflection is performed here (Rotate90 + FlipV == transpose),
-    and without it the submitted grid is wrong.
+    """Squeeze the bars together, then keep that block.  Everything is read off I.
+
+    Read from I alone: a bar is a colour whose cells all lie in one row (or all in
+    one column) — the square and the background span many of both.  Their count n
+    is the answer's side, their orientation says whether the bars are rows or
+    columns, their order along the grid is their order in the answer, and n
+    consecutive lines across which every bar is unbroken (the square hides pieces
+    of the ones it crosses) is the strip the answer is cut from.
+
+    Each bar then has to travel from where it is to its own slot — bar k to line k.
+    That move is done as a REFLECTION: mirroring the strip segment between slot k
+    and bar k carries the bar onto slot k, and carries nothing else, because the
+    bars before k are already parked outside the segment and the bars after k are
+    still beyond its far end.  A reflection is also the only rigid motion that can
+    carry a BLACK bar: ARCLE's Move keeps only non-zero cells of a selection, so a
+    colour-0 bar cannot be dragged, while FlipH/FlipV mirror the whole region and
+    leave its zeros as zeros.  Bars the square cut into are repaired first, in
+    their own colour, on their own line — the only cells this ever paints.
+    Finally the n x n block is cropped out.  O is never inspected.
     """
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    n = int(O.shape[0])
+
+    # --- the bars: colours confined to a single row or a single column ---------
+    n_row1 = n_col1 = 0
+    found = []
+    for v in np.unique(I):
+        cells = np.argwhere(I == v)
+        r0, r1 = int(cells[:, 0].min()), int(cells[:, 0].max())
+        c0, c1 = int(cells[:, 1].min()), int(cells[:, 1].max())
+        one_row, one_col = (r0 == r1), (c0 == c1)
+        n_row1 += one_row
+        n_col1 += one_col
+        if one_row or one_col:
+            found.append((r0, c0, int(v)))
+    rowcase = n_row1 > n_col1            # bars run as rows, else as columns
+    bars = sorted((r0 if rowcase else c0, v) for (r0, c0, v) in found)
+    n = len(bars)
+
+    # canonical view: bars as columns of G, bar k at column p, target column k
+    G = I.T if rowcase else I
+
+    # --- the strip: n consecutive lines crossing every bar (fewest gaps wins) ---
+    best = None
+    for b in range(G.shape[0] - n + 1):
+        gaps = sum(1 for r in range(b, b + n) for p, c in bars if G[r, p] != c)
+        if best is None or gaps < best[0]:
+            best = (gaps, b)
+    b = best[1]
+
+    def back(r, c):                       # canonical cell -> cell of I
+        return (c, r) if rowcase else (r, c)
+
     ops, sels = [], []
 
-    # orientation of the answer's stripes
-    rows_const = all(len(set(O[i].tolist())) == 1 for i in range(O.shape[0]))
-    if rows_const:
-        # answer row i == colour i  ->  pre-reflection canvas has column i == colour i
-        seq = [int(O[i, 0]) for i in range(n)]
-        need_reflect = True
-    else:
-        seq = [int(O[0, j]) for j in range(O.shape[1])]
-        need_reflect = False
+    # --- restore the pieces of a bar the square covers, inside the strip -------
+    for p, c in bars:
+        hidden = [back(r, p) for r in range(b, b + n) if G[r, p] != c]
+        if hidden:
+            ops.append(int(c))
+            sels.append(sel_of(hidden))
 
-    # locate the marker square: the only colour forming a solid n x n block
-    sr, sc = 0, 0
-    barset = set(seq)
-    for c in np.unique(I):
-        c = int(c)
-        if c in barset:
+    # --- fold each bar onto its slot: mirror the strip segment [slot k .. bar p]
+    flip = 27 if rowcase else 26          # rows -> FlipV (flipud), cols -> FlipH
+    for k, (p, c) in enumerate(bars):
+        if p == k:                        # already standing in its slot
             continue
-        cells = np.argwhere(I == c)
-        if len(cells) != n * n:
-            continue
-        r0, c0 = int(cells[:, 0].min()), int(cells[:, 1].min())
-        r1, c1 = int(cells[:, 0].max()), int(cells[:, 1].max())
-        if r1 - r0 + 1 == n and c1 - c0 + 1 == n:
-            sr, sc = r0, c0
-            break
+        # the selection IS exactly this full rectangle: the whole segment is
+        # reflected, background and all, which is what moves the bar to slot k
+        sels.append([k, b, p - k, n - 1] if rowcase else [b, k, n - 1, p - k])
+        ops.append(flip)
 
-    # write the bar colours, in bar order, as the columns of the marker square
-    for j in range(n):
-        col_cells = [(sr + i, sc + j) for i in range(n)]
-        if all(int(I[r, c]) == seq[j] for r, c in col_cells):
-            continue  # already this colour -> the op would do nothing
-        ops.append(seq[j])
-        sels.append(sel_of(col_cells))
-
-    square_cells = [(sr + i, sc + j) for i in range(n) for j in range(n)]
-    # crop the canvas down to the marker square (selection IS exactly that block)
+    # --- keep the assembled n x n block ---------------------------------------
     ops.append(33)
-    sels.append(sel_of(square_cells))
-
-    full = [(i, j) for i in range(n) for j in range(n)]
-    if need_reflect:
-        # diagonal reflection of the whole canvas = Rotate90 (CCW) then FlipV
-        ops.append(24)
-        sels.append(sel_of(full))
-        ops.append(27)
-        sels.append(sel_of(full))
-
+    sels.append([0, b, n - 1, n - 1] if rowcase else [b, 0, n - 1, n - 1])
     ops.append(34)
-    sels.append(sel_of(full))
+    sels.append([0, 0, n - 1, n - 1])
     return ops, sels
 
 

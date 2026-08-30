@@ -33,156 +33,214 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
 import random
+import numpy as np
 from collections import Counter
 
-from maker.sel_helpers import sel_of
 
-
-# ----------------------------------------------------------------------------- 1
 def sample_colors(num_examples=None) -> dict:
-    # The generator samples only one color randomly that carries a *role*:
-    # the background. Object colors are arbitrary picks from the remaining
-    # colors and are simply copied into the output column, so the rule
-    # (order objects by size, list their colors) does not depend on them.
-    cols = list(range(10))
-    bgc = random.choice(cols)
+    # Only the background colour is a structural role here: the rule (order the
+    # objects by size, reflect the resulting colour column) does not depend on
+    # which colours the objects have, so object colours stay free per instance.
+    bgc = random.choice(range(10))
     return {"bgc": bgc}
 
 
-# ----------------------------------------------------------------------------- 2
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, **kwargs) -> dict:
-    cols = interval(0, 10, 1)
-    remcols = remove(bgc, cols)
-    gi = canvas(bgc, (min(10, max_h), min(10, max_w)))
-    go = []
-    for _attempt in range(20):
-        h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
-        w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
-        nobjs = unifint(diff_lb, diff_ub, (1, max(1, min(30, (h * w) // 25))))
-        gi = canvas(bgc, (h, w))
-        numcells = unifint(diff_lb, diff_ub, (nobjs + 1, 36))
-        base = asindices(canvas(-1, (6, 6)))
-        maxtr = 10
-        inds = asindices(gi)
-        go = []
-        for k in range(nobjs):
-            if len(inds) == 0 or numcells < 2:
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        if b < a:
+            a, b = b, a
+        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
+
+    def make_shape(size):
+        base = [(i, j) for i in range(6) for j in range(6)]
+        sp = random.choice(base)
+        shp = {sp}
+        for _ in range(size - 1):
+            cand = [x for x in base
+                    if x not in shp
+                    and any(abs(x[0] - y[0]) <= 1 and abs(x[1] - y[1]) <= 1 for y in shp)]
+            if not cand:
                 break
-            lo = nobjs - k
-            hi_ = numcells - 1
-            if lo > hi_:
+            shp.add(random.choice(cand))
+        if len(shp) != size:
+            return None
+        mr = min(r for r, c in shp)
+        mc = min(c for r, c in shp)
+        return frozenset((r - mr, c - mc) for r, c in shp)
+
+    cols = [c for c in range(10) if c != bgc]
+    hlo = min(10, max_h)
+    wlo = min(10, max_w)
+
+    best = None
+    for _attempt in range(60):
+        h = unifint(diff_lb, diff_ub, (hlo, max_h))
+        w = unifint(diff_lb, diff_ub, (wlo, max_w))
+        area = h * w
+        maxobjs = max(2, min(8, area // 25))
+        nobjs = unifint(diff_lb, diff_ub, (2, maxobjs))
+
+        # DISTINCT object sizes: the output order is "sorted by size", so equal
+        # sizes would make the ordering ambiguous / unlearnable.
+        pool = list(range(1, max(nobjs + 1, min(13, nobjs + 6))))
+        sizes = None
+        for _t in range(30):
+            cand = sorted(random.sample(pool, nobjs))
+            if sum(cand) <= min(36, area // 4):
+                sizes = cand
                 break
-            numcells = unifint(diff_lb, diff_ub, (lo, hi_))
-            if numcells == 0:
-                break
-            sp = choice(totuple(base))
-            shp = {sp}
-            reminds = remove(sp, base)
-            for kk in range(numcells - 1):
-                cands = totuple((reminds - shp) & mapply(neighbors, shp))
-                if len(cands) == 0:
+        if sizes is None:
+            sizes = list(range(1, nobjs + 1))
+        while len(sizes) > 2 and sum(sizes) > min(36, area // 4):
+            sizes.pop()
+        if sum(sizes) > area // 4:
+            continue
+
+        inds = set((i, j) for i in range(h) for j in range(w))
+        placed = []
+        for s in sizes:
+            shp = None
+            for _t in range(10):
+                shp = make_shape(s)
+                if shp is not None:
                     break
-                shp.add(choice(cands))
-            shp = normalize(shp)
-            validloc = False
-            rems = sfilter(inds, lambda ij: ij[0] <= h - height(shp) and ij[1] <= w - width(shp))
-            if len(rems) == 0:
-                break
-            loc = choice(totuple(rems))
-            tr = 0
-            while not validloc and tr < maxtr:
-                loc = choice(totuple(inds))
-                validloc = shift(shp, loc).issubset(inds)
-                tr += 1
-            if validloc:
-                plcd = shift(shp, loc)
-                col = choice(remcols)
-                go.append(col)
-                inds = (inds - plcd) - mapply(neighbors, plcd)
-                gi = fill(gi, col, plcd)
-        if len(go) > 0:
-            break
-    return {'input': gi, 'output': dmirror((tuple(go),))}
+            if shp is None:
+                continue
+            sh = max(r for r, c in shp) + 1
+            sw = max(c for r, c in shp) + 1
+            if sh > h or sw > w:
+                continue
+            cands = [ij for ij in inds if ij[0] <= h - sh and ij[1] <= w - sw]
+            found = None
+            for _tr in range(20):
+                if not cands:
+                    break
+                loc = random.choice(cands)
+                plcd = frozenset((loc[0] + r, loc[1] + c) for r, c in shp)
+                if plcd <= inds:
+                    found = plcd
+                    break
+            if found is None:
+                continue
+            placed.append((s, found))
+            halo = set()
+            for (r, c) in found:
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        halo.add((r + dr, c + dc))
+            inds = inds - found - halo
+
+        if len(placed) < 2:
+            continue
+
+        placed.sort(key=lambda t: t[0])          # ascending size
+        n = len(placed)
+        # colour sequence must not be a palindrome, otherwise the reflection
+        # that defines this task would be invisible
+        colseq = [random.choice(cols) for _ in range(n)]
+        tries = 0
+        while colseq == colseq[::-1] and tries < 100:
+            colseq = [random.choice(cols) for _ in range(n)]
+            tries += 1
+        if colseq == colseq[::-1]:
+            alt = [c for c in cols if c != colseq[0]]
+            if alt:
+                colseq[-1] = random.choice(alt)
+
+        gi = [[bgc for _ in range(w)] for _ in range(h)]
+        for (s, cells), col in zip(placed, colseq):
+            for (r, c) in cells:
+                gi[r][c] = col
+
+        gi = tuple(tuple(row) for row in gi)
+        go = tuple((c,) for c in reversed(colseq))   # hmirror of the ascending column
+        best = {'input': gi, 'output': go}
+        break
+
+    if best is None:
+        # minimal but valid fallback instance, still built the same way
+        h = max(10, hlo)
+        w = max(10, wlo)
+        c1 = random.choice(cols)
+        c2 = random.choice([c for c in cols if c != c1])
+        gi = [[bgc for _ in range(w)] for _ in range(h)]
+        gi[0][0] = c1
+        gi[3][3] = c2
+        gi[3][4] = c2
+        best = {'input': tuple(tuple(r) for r in gi),
+                'output': ((c2,), (c1,))}
+    return best
 
 
-# ----------------------------------------------------------------------------- 3
 def derive_operations(I, O):
-    """
-    Rule: every object (8-connected, single-colored, non-background blob) is
-    reduced to one cell of its color; the cells are stacked into a single
-    column ordered by object size (ascending), and that column is then
-    MIRRORED top<->bottom (hmirror) to give the final answer.
+    try:
+        from maker.sel_helpers import sel_of
+    except Exception:
+        def sel_of(cells):
+            return {"cells": [(int(r), int(c)) for r, c in cells]}
 
-    Trajectory:
-      1. CropGrid  -> canvas becomes the n x 1 column the answer lives in.
-      2. one Color op per object, written top-to-bottom in ASCENDING size
-         order (smallest object first) -- the pre-mirror column.
-      3. FlipV (op27 = flipud = hmirror) on that whole column -- the
-         reflection the rule is about, performed, not just reflected in the
-         final grid.
-    """
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    n = O.shape[0]
+    h, w = I.shape
 
-    # background: the color the generator paints the canvas with before
-    # placing the (sparse, <=36 cells total) objects -> the majority color.
+    # --- everything below is measured from I only -------------------------
+    # background: the colour the canvas was painted with before objects were
+    # placed; objects cover at most a quarter of the canvas, so it is the
+    # strict majority colour.
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # --- find the objects: 8-connected, single colored, non background ------
-    seen = np.zeros((hi, wi), dtype=bool)
+    # objects: same-colour, diagonally connected components of non-background
+    seen = np.zeros((h, w), dtype=bool)
     comps = []
-    for r in range(hi):
-        for c in range(wi):
-            if I[r, c] != bgc and not seen[r, c]:
-                col = int(I[r, c])
-                stack = [(r, c)]
-                seen[r, c] = True
-                size = 0
-                while stack:
-                    rr, cc = stack.pop()
-                    size += 1
-                    for dr in (-1, 0, 1):
-                        for dc in (-1, 0, 1):
-                            nr, nc = rr + dr, cc + dc
-                            if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] \
-                                    and I[nr, nc] == col:
-                                seen[nr, nc] = True
-                                stack.append((nr, nc))
-                comps.append((size, col))
+    for r in range(h):
+        for c in range(w):
+            if seen[r, c] or I[r, c] == bgc:
+                continue
+            col = int(I[r, c])
+            stack = [(r, c)]
+            seen[r, c] = True
+            cells = []
+            while stack:
+                rr, cc = stack.pop()
+                cells.append((rr, cc))
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        nr, nc = rr + dr, cc + dc
+                        if 0 <= nr < h and 0 <= nc < w and not seen[nr, nc] and I[nr, nc] == col:
+                            seen[nr, nc] = True
+                            stack.append((nr, nc))
+            comps.append((len(cells), min(cells), col))
 
-    comps.sort(key=lambda t: t[0])                      # ascending by size
-    asc = [c for _, c in comps]                         # pre-mirror column
-    desc_target = [int(O[i, 0]) for i in range(n)]
-    if len(asc) != n or list(reversed(asc)) != desc_target:
-        # size ties (not produced by this generator, but stay robust)
-        asc = list(reversed(desc_target))
+    # reading order of the objects: smallest first (ties broken by position,
+    # though the generator gives every object a distinct size)
+    comps.sort(key=lambda t: (t[0], t[1]))
+    asc = [t[2] for t in comps]
+    n = max(1, len(asc))
 
     ops, sels = [], []
 
-    # 1. the answer is a single column of n cells: resize the canvas to it.
-    #    (bbox == exactly the whole region we want the canvas to become)
-    ops.append(33); sels.append([0, 0, n - 1, 0])
+    # 1. shrink the canvas to the n x 1 column that will hold one cell per
+    #    object (n counted from I).  Full-rectangle selection: the crop bbox.
+    ops.append(33)
+    sels.append([0, 0, n - 1, 0])
+    cur = [int(I[i, 0]) for i in range(n)]   # transparent crop keeps these values
 
-    # what the canvas holds after the crop: column 0 of I, zero-padded below
-    cur = [int(I[r, 0]) if r < hi else 0 for r in range(n)]
-
-    # 2. write one cell per object, ordered by object size.
-    mirror = (asc != list(reversed(asc)))               # identity flip? skip it
-    target = asc if mirror else desc_target
-    for i, col in enumerate(target):
-        if cur[i] != col:                               # already that color -> no-op
-            ops.append(int(col)); sels.append(sel_of([(i, 0)]))
+    # 2. write one cell per object, smallest object at the top
+    for i, col in enumerate(asc):
+        if cur[i] != col:
+            ops.append(int(col))
+            sels.append(sel_of([(i, 0)]))
             cur[i] = int(col)
 
-    # 3. the reflection itself: flipud of the whole n x 1 column
-    if mirror:
-        ops.append(27); sels.append([0, 0, n - 1, 0])   # bbox == the entire grid
+    # 3. reflect the column up<->down (the mirror this task is about);
+    #    selection is the whole n x 1 grid, a genuine full rectangle
+    if n > 1 and cur != cur[::-1]:
+        ops.append(27)
+        sels.append([0, 0, n - 1, 0])
 
-    ops.append(34); sels.append([0, 0, n - 1, 0])
+    ops.append(34)
+    sels.append([0, 0, n - 1, 0])
     return ops, sels
 
 

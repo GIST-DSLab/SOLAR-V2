@@ -34,374 +34,193 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-from collections import Counter
-
 import numpy as np
-
+from collections import Counter
 from maker.sel_helpers import sel_of
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# The rule of 6aa20dc0
-#   The grid holds ONE complete "template": a small square object whose two
-#   opposite corners carry two marker colours (c1, c2) and whose remaining cells
-#   are the fill colour fgc (the template is the only component with 3 colours).
-#   Scattered elsewhere are INCOMPLETE copies: only the two corner markers
-#   survive, upscaled by some factor 1..4 and mirrored by some element of
-#   {identity, dmirror, cmirror, hmirror, vmirror}, everything around those
-#   markers being background.  The transformation completes every such copy by
-#   painting its missing fgc cells (interior background holes stay background).
-# ─────────────────────────────────────────────────────────────────────────────
-
-# object = set of (colour, (row, col)) cells
-_DIRS4 = ((-1, 0), (1, 0), (0, -1), (0, 1))
-
-
-def _ul(obj):
-    return (min(ij[0] for _, ij in obj), min(ij[1] for _, ij in obj))
-
-
-def _lr(obj):
-    return (max(ij[0] for _, ij in obj), max(ij[1] for _, ij in obj))
-
-
-def _shift(obj, d):
-    di, dj = d
-    return frozenset((v, (ij[0] + di, ij[1] + dj)) for v, ij in obj)
-
-
-def _normalize(obj):
-    di, dj = _ul(obj)
-    return _shift(obj, (-di, -dj))
-
-
-def _identity(obj):
-    return frozenset(obj)
-
-
-def _dmirror(obj):
-    a, b = _ul(obj)
-    return frozenset((v, (ij[1] - b + a, ij[0] - a + b)) for v, ij in obj)
-
-
-def _hmirror(obj):
-    d = _ul(obj)[0] + _lr(obj)[0]
-    return frozenset((v, (d - ij[0], ij[1])) for v, ij in obj)
-
-
-def _vmirror(obj):
-    d = _ul(obj)[1] + _lr(obj)[1]
-    return frozenset((v, (ij[0], d - ij[1])) for v, ij in obj)
-
-
-def _cmirror(obj):
-    return _vmirror(_dmirror(_vmirror(obj)))
-
-
-_MIRRORS = (_identity, _dmirror, _cmirror, _hmirror, _vmirror)
-
-
-def _upscale(obj, f):
-    if f == 1:
-        return frozenset(obj)
-    di, dj = _ul(obj)
-    out = set()
-    for v, ij in obj:
-        i = (ij[0] - di) * f + di
-        j = (ij[1] - dj) * f + dj
-        for a in range(f):
-            for b in range(f):
-                out.add((v, (i + a, j + b)))
-    return frozenset(out)
-
-
-def _components(grid, bgc):
-    """8-connected, multi-colour, background-excluding components."""
-    h, w = len(grid), len(grid[0])
-    seen = [[False] * w for _ in range(h)]
-    comps = []
-    for r in range(h):
-        for c in range(w):
-            if seen[r][c] or grid[r][c] == bgc:
-                continue
-            stack = [(r, c)]
-            seen[r][c] = True
-            cells = []
-            while stack:
-                i, j = stack.pop()
-                cells.append((grid[i][j], (i, j)))
-                for di in (-1, 0, 1):
-                    for dj in (-1, 0, 1):
-                        a, b = i + di, j + dj
-                        if 0 <= a < h and 0 <= b < w and not seen[a][b] \
-                                and grid[a][b] != bgc:
-                            seen[a][b] = True
-                            stack.append((a, b))
-            comps.append(cells)
-    return comps
-
-
-def _occurrences(grid, patt, bgc):
-    """Every top-left placement at which `patt` matches `grid` exactly."""
-    h, w = len(grid), len(grid[0])
-    mi = min(ij[0] for _, ij in patt)
-    mj = min(ij[1] for _, ij in patt)
-    cells = [(v, ij[0] - mi, ij[1] - mj) for v, ij in patt]
-    cells.sort(key=lambda t: (t[0] == bgc, t[1], t[2]))   # markers first (early exit)
-    oh = max(t[1] for t in cells) + 1
-    ow = max(t[2] for t in cells) + 1
-    res = []
-    for i in range(h - oh + 1):
-        for j in range(w - ow + 1):
-            ok = True
-            for v, a, b in cells:
-                if grid[i + a][j + b] != v:
-                    ok = False
-                    break
-            if ok:
-                res.append((i, j))
-    return res
-
-
-def _rule(grid):
-    """Read the rule off the input alone.
-
-    Returns (bgc, fgc, {completed object (absolute cells): placement}).
-    A copy is recognised where the template's non-fgc cells (its two corner
-    markers), in some mirroring at some upscale, sit on the grid with pure
-    background in the 4-neighbour ring around them — matched on a
-    background-padded canvas so copies touching the border still count.
-    """
-    h, w = len(grid), len(grid[0])
-    bgc = Counter(v for row in grid for v in row).most_common(1)[0][0]
-    comps = _components(grid, bgc)
-    if not comps:
-        return None
-    ncols = [len({v for v, _ in cm}) for cm in comps]
-    mx = max(ncols)
-    key = [cell for cm, nc in zip(comps, ncols) if nc == mx for cell in cm]
-    rs = [ij[0] for _, ij in key]
-    cs = [ij[1] for _, ij in key]
-    tmpl = frozenset(
-        (grid[r][c], (r, c))
-        for r in range(min(rs), max(rs) + 1)
-        for c in range(min(cs), max(cs) + 1)
-        if grid[r][c] != bgc
-    )
-    if not tmpl:
-        return None
-    fgc = Counter(v for v, _ in tmpl).most_common(1)[0][0]
-    base = _normalize(tmpl)
-    padded = [[bgc] * (w + 2) for _ in range(h + 2)]
-    for r in range(h):
-        prow = padded[r + 1]
-        for c in range(w):
-            prow[c + 1] = grid[r][c]
-    placements = {}
-    for fac in (1, 2, 3, 4):
-        up = _upscale(base, fac)
-        for mf in _MIRRORS:
-            stamp = _normalize(mf(up))
-            vis = [cell for cell in stamp if cell[0] != fgc]
-            if not vis:
-                continue
-            visn = _normalize(frozenset(vis))
-            visidx = {ij for _, ij in visn}
-            ring = set()
-            for i, j in visidx:
-                for di, dj in _DIRS4:
-                    p = (i + di, j + dj)
-                    if p not in visidx:
-                        ring.add(p)
-            patt = list(visn) + [(bgc, p) for p in ring]
-            # the pattern's ring reaches (-1,-1), so normalising it shifts by
-            # (1,1) — which cancels the (1,1) padding offset exactly
-            for loc in _occurrences(padded, patt, bgc):
-                placements[frozenset(_shift(stamp, loc))] = loc
-    return bgc, fgc, placements
-
-
-def _apply_rule(grid):
-    res = _rule(grid)
-    if res is None:
-        return None
-    bgc, fgc, placements = res
-    h, w = len(grid), len(grid[0])
-    out = [row[:] for row in grid]
-    done = {}
-    for obj in placements:
-        for v, (i, j) in obj:
-            if not (0 <= i < h and 0 <= j < w):
-                continue
-            if done.get((i, j), v) != v:
-                return None                       # ambiguous overlap
-            if grid[i][j] != bgc and grid[i][j] != v:
-                return None                       # would overwrite other content
-            done[(i, j)] = v
-            out[i][j] = v
-    return out
-
-
-# ── 1. colours ───────────────────────────────────────────────────────────────
 def sample_colors(num_examples=None) -> dict:
-    # the generator samples 4 distinct colours: background, fill colour, and the
-    # two corner-marker colours.  The rule (which colour gets painted) depends on
-    # the fill colour role, so all four are fixed for the whole episode.
-    # No discrete structural variants exist: upscale factor and mirroring vary
-    # per copy INSIDE every instance, so every case is already demonstrated.
-    bgc, fgc, c1, c2 = random.sample(range(10), 4)
+    cols = list(range(10))
+    bgc, fgc, c1, c2 = random.sample(cols, 4)
     return {"bgc": bgc, "fgc": fgc, "c1": c1, "c2": c2}
 
 
-# ── 2. generator ─────────────────────────────────────────────────────────────
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        a, b = b, a
-    d = random.uniform(diff_lb, diff_ub)
-    return min(max(a, round(a + (b - a) * d)), b)
-
-
-def _attempt(diff_lb, diff_ub, max_h, max_w, bgc, fgc, c1, c2, nocc_cap):
-    h = _unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
-    w = _unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
-    od = _unifint(diff_lb, diff_ub, (2, 4))
-
-    ncellsextra = random.randint(1, max(1, (od ** 2 - 2) // 2))
-    pool = [(i, j) for i in range(od) for j in range(od)
-            if (i, j) not in ((0, 0), (od - 1, od - 1))]
-    extracells = set(random.sample(pool, ncellsextra))
-    extracells.add(random.choice([(0, 1), (1, 0)]))              # dneighbour of (0,0)
-    extracells.add(random.choice([(od - 2, od - 1), (od - 1, od - 2)]))
-
-    obj = {(c1, (0, 0)), (c2, (od - 1, od - 1))}
-    obj |= {(fgc, ij) for ij in extracells}
-    obj = frozenset(obj) | _dmirror(frozenset(obj))              # diagonal symmetry
-    if random.choice((True, False)):
-        obj = _hmirror(obj)
-
-    # the template must read as ONE 3-coloured component, else it is not the
-    # unique max-colour object the rule keys on
-    tgrid = [[bgc] * od for _ in range(od)]
-    for v, (i, j) in obj:
-        tgrid[i][j] = v
-    tcomps = _components(tgrid, bgc)
-    if len(tcomps) != 1 or len({v for v, _ in tcomps[0]}) != 3:
-        return None
-
-    gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * w for _ in range(h)]
-    loci = random.randint(0, h - od)
-    locj = random.randint(0, w - od)
-    for v, (i, j) in _shift(obj, (loci, locj)):
-        gi[i][j] = v
-        go[i][j] = v
-
-    inds = {(i, j) for i in range(h) for j in range(w)}
-    inds -= {(i, j)
-             for i in range(loci - 1, loci + od + 1)
-             for j in range(locj - 1, locj + od + 1)}
-
-    nocc = _unifint(diff_lb, diff_ub, (1, max(1, (h * w) // (od ** 2 * 2))))
-    if nocc_cap is not None:
-        nocc = min(nocc, nocc_cap)
-    succ, tr, maxtr = 0, 0, 4 * nocc
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc, c1, c2) -> dict:
+    cols = interval(0, 10, 1)
+    h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
+    w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
+    od = unifint(diff_lb, diff_ub, (2, min(4, min(h, w))))
+    ncellsextra = randint(1, max(1, (od ** 2 - 2) // 2))
+    sinds = asindices(canvas(-1, (od, od)))
+    extracells = set(sample(totuple(sinds - {(0, 0), (od - 1, od - 1)}), ncellsextra))
+    extracells.add(choice(totuple(dneighbors((0, 0)) & sinds)))
+    extracells.add(choice(totuple(dneighbors((od - 1, od - 1)) & sinds)))
+    extracells = frozenset(extracells)
+    obj = frozenset({(c1, (0, 0)), (c2, (od - 1, od - 1))}) | recolor(fgc, extracells)
+    obj = obj | dmirror(obj)
+    if choice((True, False)):
+        obj = hmirror(obj)
+    gi = canvas(bgc, (h, w))
+    loci = randint(0, h - od)
+    locj = randint(0, w - od)
+    plcd = shift(obj, (loci, locj))
+    gi = paint(gi, plcd)
+    go = tuple(e for e in gi)
+    inds = asindices(gi)
+    inds = inds - backdrop(outbox(plcd))
+    nocc = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // (od ** 2 * 2))))
+    succ = 0
+    tr = 0
+    maxtr = 4 * nocc
     while succ < nocc and tr < maxtr:
         tr += 1
-        fac = random.randint(1, 4)
-        mf1 = random.choice(_MIRRORS)
-        mf2 = random.choice(_MIRRORS)
-        cobj = _normalize(_upscale(mf2(mf1(obj)), fac))
-        ohx = _lr(cobj)[0] + 1
-        owx = _lr(cobj)[1] + 1
-        cands = [ij for ij in inds if ij[0] <= h - ohx and ij[1] <= w - owx]
-        if not cands:
+        fac = randint(1, 4)
+        mf1 = choice((identity, dmirror, vmirror, cmirror, hmirror))
+        mf2 = choice((identity, dmirror, vmirror, cmirror, hmirror))
+        mf = compose(mf2, mf1)
+        cobj = normalize(upscale(mf(obj), fac))
+        ohx, owx = shape(cobj)
+        cands = sfilter(inds, lambda ij: ij[0] <= h - ohx and ij[1] <= w - owx)
+        if len(cands) == 0:
             continue
-        locc = random.choice(sorted(cands))
-        cobjo = _shift(cobj, locc)
-        cobjoi = {ij for _, ij in cobjo}
-        if not cobjoi <= inds:
-            continue
-        succ += 1
-        r0 = min(ij[0] for ij in cobjoi) - 1
-        r1 = max(ij[0] for ij in cobjoi) + 1
-        c0 = min(ij[1] for ij in cobjoi) - 1
-        c1b = max(ij[1] for ij in cobjoi) + 1
-        inds -= {(i, j) for i in range(r0, r1 + 1) for j in range(c0, c1b + 1)}
-        for v, (i, j) in cobjo:
-            go[i][j] = v
-            if v != fgc:                    # only the corner markers survive in I
-                gi[i][j] = v
-    if succ < 1:
-        return None
-
-    # background must be the grid's unambiguous majority colour
-    cnt = Counter(v for row in gi for v in row).most_common(2)
-    if cnt[0][0] != bgc or (len(cnt) > 1 and cnt[0][1] == cnt[1][1]):
-        return None
-    # the generator's own output must coincide with what the rule produces:
-    # markers of separate copies can accidentally line up into an extra readable
-    # copy, and such instances are ambiguous — resample them away
-    if _apply_rule(gi) != go:
-        return None
-    return {"input": gi, "output": go}
+        locc = choice(totuple(cands))
+        cobjo = shift(cobj, locc)
+        cobji = sfilter(cobjo, lambda cij: cij[0] != fgc)
+        cobjoi = toindices(cobjo)
+        if cobjoi.issubset(inds):
+            succ += 1
+            inds = inds - backdrop(outbox(cobjoi))
+            gi = paint(gi, cobji)
+            go = paint(go, cobjo)
+    return {'input': gi, 'output': go}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc, c1, c2) -> dict:
-    max_h = max(10, min(int(max_h), 30))
-    max_w = max(10, min(int(max_w), 30))
-    for k in range(400):
-        cap = None if k < 120 else (3 if k < 240 else 1)
-        inst = _attempt(diff_lb, diff_ub, max_h, max_w, bgc, fgc, c1, c2, cap)
-        if inst is not None:
-            return inst
-    raise ValueError("6aa20dc0: could not sample a consistent instance")
-
-
-# ── 3. operations ────────────────────────────────────────────────────────────
 def derive_operations(I, O):
-    """One Color(fgc) op per incomplete copy: paint that copy's missing cells.
-
-    Everything is measured from I: the template is the 3-coloured component, fgc
-    is the colour dominating it, and each copy is located by matching the
-    template's markers (mirrored / upscaled, surrounded by background).  Copies
-    are completed one whole object at a time, in reading order.
-    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
-    grid = I.tolist()
-    cur = [row[:] for row in grid]
     ops, sels = [], []
 
-    res = _rule(grid)
-    if res is not None:
-        bgc, fgc, placements = res
-        for obj, loc in sorted(placements.items(), key=lambda kv: kv[1]):
-            cells = [(i, j) for v, (i, j) in obj
-                     if v == fgc and 0 <= i < h and 0 <= j < w and cur[i][j] != fgc]
-            if not cells:                 # already completed by an overlapping copy
-                continue
-            for i, j in cells:
-                cur[i][j] = fgc
-            ops.append(int(fgc))
-            sels.append(sel_of(cells))
+    # ---- background: canvas colour the generator paints before placing anything
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # safety net: emits nothing for instances this generate() produces (the rule
-    # above reproduces O exactly there); present only so a foreign (I, O) pair
-    # from the raw RE-ARC generator still yields a correct trajectory
-    rest = [(r, c) for r in range(h) for c in range(w) if cur[r][c] != O[r, c]]
-    while rest:
-        col = int(O[rest[0][0], rest[0][1]])
-        grp = [(r, c) for r, c in rest if int(O[r, c]) == col]
-        for r, c in grp:
-            cur[r][c] = col
-        ops.append(col)
-        sels.append(sel_of(grp))
-        rest = [(r, c) for r, c in rest if int(O[r, c]) != col]
+    # ---- 1) find the TEMPLATE: multicolour diagonal components, max #colours
+    seen = np.zeros((h, w), dtype=bool)
+    comps = []
+    for r in range(h):
+        for c in range(w):
+            if I[r, c] == bgc or seen[r, c]:
+                continue
+            stack, comp = [(r, c)], []
+            seen[r, c] = True
+            while stack:
+                rr, cc = stack.pop()
+                comp.append((rr, cc))
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        nr, nc = rr + dr, cc + dc
+                        if 0 <= nr < h and 0 <= nc < w and not seen[nr, nc] and I[nr, nc] != bgc:
+                            seen[nr, nc] = True
+                            stack.append((nr, nc))
+            comps.append(comp)
+
+    if not comps:
+        ops.append(34); sels.append([0, 0, h - 1, w - 1])
+        return ops, sels
+
+    ncol = [len({int(I[r, c]) for r, c in comp}) for comp in comps]
+    mx = max(ncol)
+    tmpl_cells = [p for comp, n in zip(comps, ncol) if n == mx for p in comp]
+    tr0 = min(p[0] for p in tmpl_cells); tr1 = max(p[0] for p in tmpl_cells)
+    tc0 = min(p[1] for p in tmpl_cells); tc1 = max(p[1] for p in tmpl_cells)
+
+    base = {}
+    for r in range(tr0, tr1 + 1):
+        for c in range(tc0, tc1 + 1):
+            if I[r, c] != bgc:
+                base[(r - tr0, c - tc0)] = int(I[r, c])
+    if not base:
+        ops.append(34); sels.append([0, 0, h - 1, w - 1])
+        return ops, sels
+    BH, BW = tr1 - tr0 + 1, tc1 - tc0 + 1
+
+    # body colour of the template = its most common non-background colour
+    fgc = Counter(base.values()).most_common(1)[0][0]
+
+    # ---- 2) build the 20 legal stamps: upscale 1..4 x {id,dmirror,cmirror,hmirror,vmirror}
+    def mirror(cells, H, W, mf):
+        if mf == 'identity':
+            return {(r, c): v for (r, c), v in cells.items()}, H, W
+        if mf == 'dmirror':
+            return {(c, r): v for (r, c), v in cells.items()}, W, H
+        if mf == 'cmirror':
+            return {(W - 1 - c, H - 1 - r): v for (r, c), v in cells.items()}, W, H
+        if mf == 'hmirror':
+            return {(H - 1 - r, c): v for (r, c), v in cells.items()}, H, W
+        return {(r, W - 1 - c): v for (r, c), v in cells.items()}, H, W
+
+    units = []
+    for f in range(1, 5):
+        up = {}
+        for (r, c), v in base.items():
+            for dr in range(f):
+                for dc in range(f):
+                    up[(r * f + dr, c * f + dc)] = v
+        UH, UW = BH * f, BW * f
+        for mf in ('identity', 'dmirror', 'cmirror', 'hmirror', 'vmirror'):
+            cells, H2, W2 = mirror(up, UH, UW, mf)
+            units.append((cells, H2, W2))
+
+    # ---- 3) locate occurrences: the marker cells present in I, body cells still empty
+    sites = []
+    seen_sets = set()
+    for cells, UH, UW in units:
+        marks = {p: v for p, v in cells.items() if v != fgc}
+        body = [p for p, v in cells.items() if v == fgc]
+        if not marks or not body:
+            continue
+        mset = set(marks)
+        ring = set()
+        for (r, c) in mset:
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                if (r + dr, c + dc) not in mset:
+                    ring.add((r + dr, c + dc))
+        for r0 in range(h - UH + 1):
+            for c0 in range(w - UW + 1):
+                ok = True
+                for (r, c), v in marks.items():
+                    if I[r0 + r, c0 + c] != v:
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                for (r, c) in body:
+                    if I[r0 + r, c0 + c] != bgc:
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                for (r, c) in ring:
+                    rr, cc = r0 + r, c0 + c
+                    if 0 <= rr < h and 0 <= cc < w and I[rr, cc] != bgc:
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                filled = frozenset((r0 + r, c0 + c) for (r, c) in body)
+                if filled in seen_sets:
+                    continue
+                seen_sets.add(filled)
+                sites.append((r0, c0, sorted(filled)))
+
+    # ---- 4) stamp the template body at each matched occurrence, one op per site
+    sites.sort(key=lambda s: (s[0], s[1]))
+    for _r0, _c0, filled in sites:
+        ops.append(int(fgc))
+        sels.append(sel_of(filled))
 
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])     # full-grid rectangle: Submit
+    sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 
@@ -445,7 +264,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
