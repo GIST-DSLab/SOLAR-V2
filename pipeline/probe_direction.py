@@ -40,11 +40,22 @@ CONCEPTS = {
                     {"Rotate90", "Rotate270", "FlipH", "FlipV"}),
     "translation": ({"move", "gravitate"},
                     {"MoveU", "MoveD", "MoveL", "MoveR"}),
-    "replication": ({"occurrences", "hupscale", "vupscale", "upscale", "repeat"},
+    # upscale is deliberately absent. Enlarging a grid has no operation in
+    # ARCLE, so a trajectory that scales something up has to draw the result --
+    # painting is the route here, not a way of avoiding it. `repeat`,
+    # `occurrences` and the periods do stamp a shape somewhere else, and Copy/
+    # Paste is there for that.
+    "replication": ({"occurrences", "repeat", "hperiod", "vperiod"},
                     {"CopyI", "CopyO", "Paste"}),
     "reframing":   ({"crop", "subgrid", "trim", "compress", "downscale"},
                     {"ResizeGrid", "CopyInput"}),
 }
+
+# Concepts worth naming but not worth forcing. ARCLE has Move, so a fall that
+# is painted could have been moved and it is better when it is -- but a rule
+# that ends up placing cells is not wrong for placing them, and a trajectory
+# should not acquire a Move to satisfy this line.
+SOFT = {"translation"}
 
 FINDING_CODES = {
     "CONCEPT_DIRECTION_MISSING":
@@ -53,8 +64,66 @@ FINDING_CODES = {
 }
 
 
+# functions that reduce a grid to a measurement: whatever is transformed to feed
+# one of these was transformed in order to be measured, and the measurement is a
+# number, not the answer
+REDUCERS = {"size", "width", "height", "colorcount", "numcolors", "mostcolor",
+            "leastcolor", "palette", "hperiod", "vperiod", "ulcorner", "lrcorner",
+            "index", "dedupe", "shape", "portrait", "square", "even"}
+
+
+def _test_only(fn: ast.FunctionDef) -> set[str]:
+    """DSL names the verifier only ever looks through, never applies.
+
+    RE-ARC's verifiers are single-assignment, so a name's role can be read off
+    the chain it feeds. `matcher` turns a function into a boolean, and nothing
+    downstream of a boolean can be the grid that comes back -- so a transform
+    reaching the return only through one is a test the verifier runs to decide
+    something, not the transformation the task performs. d8c310e9 asks whether
+    the grid deduplicates under `cmirror` in order to find which axis its
+    pattern repeats along; it is a period-and-tile task, and reading that
+    cmirror as the rule had every regeneration told to put in a flip the task
+    does not contain.
+    """
+    assigns, consumers = {}, collections.defaultdict(set)
+    for st in fn.body:
+        if not (isinstance(st, ast.Assign) and isinstance(st.targets[0], ast.Name)):
+            continue
+        tgt = st.targets[0].id
+        assigns[tgt] = st.value
+        for n in ast.walk(st.value):
+            if isinstance(n, ast.Name):
+                consumers[n.id].add(tgt)
+
+    def base(node) -> bool:
+        """A boolean, or a measurement: nothing past here is the grid."""
+        return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                and (node.func.id == "matcher" or node.func.id in REDUCERS))
+
+    test = {k for k, v in assigns.items() if base(v)}
+    changed = True
+    while changed:                       # a node is a test if every use of it is
+        changed = False                  # -- and an unused one is the return value
+        for k in assigns:
+            if k in test or not consumers[k]:
+                continue
+            if consumers[k] <= test:
+                test.add(k)
+                changed = True
+
+    names = collections.defaultdict(set)
+    for k, v in assigns.items():
+        for n in ast.walk(v):
+            if isinstance(n, ast.Name) and n.id not in assigns:
+                names[n.id].add(k)
+    # the reducer's own name still says what the task is -- 29ec7d0e transposes
+    # only to read a period off the result, and the period is the rule
+    return {nm for nm, used_in in names.items()
+            if used_in and used_in <= test and nm not in REDUCERS}
+
+
 def verifier_concepts(rearc_root: Path) -> dict[str, set[str]]:
-    """Per task, the DSL names it calls, with inverse pairs dropped."""
+    """Per task, the DSL names it calls, with scaffolding and tests dropped."""
     tree = ast.parse((rearc_root / "verifiers.py").read_text(encoding="utf-8"))
     out = {}
     for fn in tree.body:
@@ -69,7 +138,7 @@ def verifier_concepts(rearc_root: Path) -> dict[str, set[str]]:
         for m in ("hmirror", "vmirror", "dmirror", "cmirror"):
             if names[m] >= 2:
                 scaffold.add(m)
-        out[fn.name[len("verify_"):]] = set(names) - scaffold
+        out[fn.name[len("verify_"):]] = set(names) - scaffold - _test_only(fn)
     return out
 
 
@@ -113,7 +182,7 @@ def main() -> None:
             rec["verdict"] = "REVISE"
             rec["findings"].append({
                 "code": "CONCEPT_DIRECTION_MISSING",
-                "severity": "medium",
+                "severity": "low" if name in SOFT else "medium",
                 "evidence": (
                     f"This task's RE-ARC verifier calls {', '.join(sorted(named))}, "
                     f"so the rule is a {name}. A trajectory carrying that out would "

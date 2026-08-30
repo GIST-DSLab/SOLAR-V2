@@ -47,6 +47,10 @@ CODE_MEANING = {
     # emitted by probe_originals.py, not by the LLM critic
     "FAILS_ORIGINAL_PAIR":       "the trajectory does not reproduce the task's own original ARC pairs, though the vendored verifier does — so the rule it implements holds on the instances generate() samples but not on the task as written",
     "UPSTREAM_PAIR_UNVERIFIED":  "the trajectory does not reproduce some original ARC pairs, and neither does the vendored RE-ARC verifier — the generator models the task differently there, and it is the reference, so nothing needs fixing for those pairs",
+    # emitted by probe_answer_copy.py
+    "ANSWER_COPIED_FROM_O":      "handed the output of a different instance, derive_operations drew that output — so the parameters of the route are read from O rather than measured from I, and the trajectory is a transcription of an answer",
+    # emitted by choose_maker.py
+    "CONCEPT_ROUTE_READS_ANSWER": "no version of this maker both performs the transformation the verifier names and derives its parameters from I — the ones that perform it read the answer, the ones that do not read it do not perform it, and the two have to hold at once",
     # emitted by probe_direction.py
     "CONCEPT_DIRECTION_MISSING": "the task's rule is geometric — the verifier says so by the DSL it calls — and the trajectory contains no geometric op at all, so the route reaches the right grid without the rule ever being performed",
     # emitted by probe_rearc.py
@@ -94,8 +98,32 @@ def build_feedback(rec: dict) -> str:
     wrong_answer = {"FAILS_ORIGINAL_PAIR", "UPSTREAM_PAIR_UNVERIFIED"}
     wrong_rule = {"GENERATOR_RULE_MISMATCH"}
     narrow_rule = {"FAILS_REARC_INSTANCE"}
+    copied = {"ANSWER_COPIED_FROM_O"}
+    both = {"CONCEPT_ROUTE_READS_ANSWER"}
     no_direction = {"CONCEPT_DIRECTION_MISSING"}
-    if any(f["code"] in no_direction for f in findings):
+    if any(f["code"] in both for f in findings):
+        lines = [
+            "Several versions of this maker have been written and measured, and none "
+            "of them is acceptable — not the one in the release, not the ones the "
+            "earlier rounds produced, not the original. They fail in two directions "
+            "and the fix for one has been producing the other: the versions that "
+            "perform the task's transformation take its parameters off O, and the "
+            "versions that touch nothing but I do not perform it at all. What is "
+            "wanted is a single route that does both, and a version that satisfies "
+            "only one of them is not an improvement on what is already there.",
+            "",
+            "Findings on the previous attempt:",
+        ]
+    elif any(f["code"] in copied for f in findings):
+        lines = [
+            "Your previous attempt at this task was given the input of one instance "
+            "and the output of a different one — an output that is not the answer to "
+            "that input and cannot be derived from it. It drew that output anyway. "
+            "Whatever your derive_operations measures, it is measuring it in O.",
+            "",
+            "Findings on the previous attempt:",
+        ]
+    elif any(f["code"] in no_direction for f in findings):
         lines = [
             "Your previous attempt at this task produced the correct grid, and that is "
             "not what is wrong with it. The task's rule is a geometric one — the "
@@ -146,7 +174,28 @@ def build_feedback(rec: dict) -> str:
         meaning = CODE_MEANING.get(f["code"], "")
         lines.append(f"{i}. {f['code']} ({f['severity']}) — {meaning}.")
         lines.append(f"   Reviewer: {f['evidence'].strip()}")
-    if any(f["code"] in no_direction for f in findings):
+    if any(f["code"] in both for f in findings):
+        lines += [
+            "",
+            "Both conditions are checked, on the same instances, and a version that "
+            "trades one for the other will be rejected the way its predecessors were. "
+            "Perform the transformation the verifier names, and measure where it "
+            "applies, along which axis and how far, from I alone. Do not pad the "
+            "route with an operation added for appearance, and do not keep a branch "
+            "that paints O when the transformation does not fit — that branch is the "
+            "transcription, however seldom it runs. If some part of the rule "
+            "genuinely resolves to painting cells, derive those cells from I too.",
+        ]
+    elif any(f["code"] in copied for f in findings):
+        lines += [
+            "",
+            "Rewrite derive_operations so that everything it decides — which cells, "
+            "which colour, how far, which orientation — is computed from I and from "
+            "the rule the task's generator implements. Use O to check yourself, not "
+            "to read parameters out of. The test above will be run again: given a "
+            "mismatched pair your ops must fail to produce it.",
+        ]
+    elif any(f["code"] in no_direction for f in findings):
         lines += [
             "",
             "Do not pad the trajectory to satisfy this: an op added for appearance is "
