@@ -208,6 +208,14 @@ def build_feedback(rec: dict) -> str:
     elif any(f["code"] in copied for f in findings):
         lines += [
             "",
+            "One property of the engine to design around, since it is a common "
+            "reason a route ends up reading O: Move, Flip, Rotate and Paste carry "
+            "an object buffer that holds only the non-zero cells of the selection, "
+            "so cells of colour 0 are not written at the destination — whatever "
+            "was there stays. If the rule moves a shape made of colour 0, or needs "
+            "cells cleared where something lands, paint those cells rather than "
+            "expecting the operation to do it.",
+            "",
             "Rewrite derive_operations so that everything it decides — which cells, "
             "which colour, how far, which orientation — is computed from I and from "
             "the rule the task's generator implements. Use O to check yourself, not "
@@ -225,10 +233,7 @@ def build_feedback(rec: dict) -> str:
             "region the rule keeps for a reframing — and what remains after it is "
             "whatever the rule genuinely leaves to paint.",
             "",
-            "One property of the engine to design around: Paste does not write the "
-            "cells of the copied region that hold colour 0 — they leave whatever was "
-            "already there. If the rule needs those cells cleared, clear them before "
-            "the Paste rather than expecting the Paste to do it.",
+
         ]
     elif any(f["code"] in narrow_rule for f in findings):
         lines += [
