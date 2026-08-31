@@ -33,81 +33,90 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
 import numpy as np
 from collections import Counter
+from maker.sel_helpers import sel_of
 
 
 def sample_colors(num_examples=None) -> dict:
+    # generator: cols = interval(0,10,1) minus (2,3,4); bgc, dotc = sample(cols, 2)
     cols = [c for c in range(10) if c not in (2, 3, 4)]
     bgc, dotc = random.sample(cols, 2)
     return {"bgc": bgc, "dotc": dotc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, dotc, **kwargs) -> dict:
-    def unifint(diff_lb, diff_ub, bounds):
-        a, b = bounds
-        lo = a + int((b - a) * diff_lb)
-        hi = a + int((b - a) * diff_ub)
-        if hi < lo:
-            hi = lo
-        return random.randint(lo, hi)
-
-    h = unifint(diff_lb, diff_ub, (2, min(30, max_h)))
-    w3_ub = max(1, min(10, max_w // 3))
-    w3 = unifint(diff_lb, diff_ub, (1, w3_ub))
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, dotc: int) -> dict:
+    h = unifint(diff_lb, diff_ub, (2, max_h))
+    w3ub = max(1, min(10, max_w // 3))
+    w3 = unifint(diff_lb, diff_ub, (1, w3ub))
     w = w3 * 3
-
-    gi = [[bgc for _ in range(w)] for _ in range(h)]
-    go = [[bgc for _ in range(w)] for _ in range(h)]
-
+    gi = canvas(bgc, (h, w))
+    go = canvas(bgc, (h, w))
     for ii in range(h):
         dev = unifint(diff_lb, diff_ub, (0, w3 // 2 + 1))
-        loc = w3 // 3 + random.choice((+dev, -dev))
+        loc = w3 // 3 + choice((+dev, -dev))
         loc = min(max(0, loc), w3 - 1)
-        ofs, col = random.choice(((0, 2), (1, 4), (2, 3)))
+        ofs, col = choice(((0, 2), (1, 4), (2, 3)))
         loc += ofs * w3
-        gi[ii][loc] = dotc
-        for jj in range(w):
-            go[ii][jj] = col
-
-    return {"input": gi, "output": go}
+        gi = fill(gi, dotc, {(ii, loc)})
+        ln = connect((ii, 0), (ii, w - 1))
+        go = fill(go, col, ln)
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    """
+    Rule: the grid is split into three vertical thirds.  Each row holds exactly one dot;
+    the third the dot falls in names a colour (left->2, middle->4, right->3) and that
+    colour is REPEATED across the whole row.
+
+    Route: write the per-row colours once into column 0 (three Color ops, one per colour
+    group), then CopyO that single column and Paste it at every remaining column origin —
+    the replication is actually performed, column by column.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+    ho, wo = O.shape
+
     ops, sels = [], []
 
-    # background = the color filling the canvas; the dot color is the rare one
+    # dot colour = least frequent colour in I (one dot per row, background everywhere else)
     cnt = Counter(I.flatten().tolist())
-    bgc = cnt.most_common(1)[0][0]
+    dotc = min(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
-    third_w = wi // 3
+    third = wi // 3
     band_color = {0: 2, 1: 4, 2: 3}
 
-    # each row holds exactly one dot; its column-third picks the row's stripe color
-    row_col = []
+    # measure each row's dot -> its band -> its colour
+    row_color = {}
     for r in range(hi):
-        dot_cs = [c for c in range(wi) if I[r, c] != bgc]
-        c = dot_cs[0]
-        t = min(c // third_w, 2)
-        row_col.append(band_color[t])
+        cols = np.flatnonzero(I[r] == dotc)
+        if len(cols) == 0:
+            continue
+        c = int(cols[0])
+        b = min(c // third, 2)
+        row_color[r] = band_color[b]
 
-    # paint contiguous same-color row bands as single regions
-    r = 0
-    while r < hi:
-        color = row_col[r]
-        r2 = r
-        while r2 + 1 < hi and row_col[r2 + 1] == color:
-            r2 += 1
-        ops.append(color)
-        sels.append([r, 0, r2 - r, wi - 1])
-        r = r2 + 1
+    # 1. lay the source column: paint (r, 0) for every row, grouped by colour
+    groups = {}
+    for r in sorted(row_color):
+        groups.setdefault(row_color[r], []).append((r, 0))
+    for col in sorted(groups, key=lambda k: groups[k][0][0]):
+        ops.append(int(col))
+        sels.append(sel_of(groups[col]))
+
+    # 2. copy that column from the working grid (content we just produced)
+    ops.append(29)
+    sels.append([0, 0, hi - 1, 0])          # full rectangle: the whole first column
+
+    # 3. repeat it across the grid: paste at every remaining column origin
+    for c in range(1, wi):
+        ops.append(30)
+        sels.append([0, c, 0, 0])           # paste origin only
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -151,7 +160,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

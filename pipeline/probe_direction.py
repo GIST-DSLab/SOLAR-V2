@@ -42,10 +42,15 @@ CONCEPTS = {
                     {"MoveU", "MoveD", "MoveL", "MoveR"}),
     # upscale is deliberately absent. Enlarging a grid has no operation in
     # ARCLE, so a trajectory that scales something up has to draw the result --
-    # painting is the route here, not a way of avoiding it. `repeat`,
-    # `occurrences` and the periods do stamp a shape somewhere else, and Copy/
-    # Paste is there for that.
-    "replication": ({"occurrences", "repeat", "hperiod", "vperiod"},
+    # painting is the route here, not a way of avoiding it.
+    #
+    # `occurrences` is absent for a different reason: it is not a replication.
+    # It answers "where does this pattern appear", and what the rule does at
+    # the places it finds is almost always a recolor or a fill -- read the
+    # verifiers and the call after it is `paint`, `fill` or `recolor`, not a
+    # copy of anything. Asking for a Paste here asks for an op that carries no
+    # part of the rule.
+    "replication": ({"repeat", "hperiod", "vperiod"},
                     {"CopyI", "CopyO", "Paste"}),
     "reframing":   ({"crop", "subgrid", "trim", "compress", "downscale"},
                     {"ResizeGrid", "CopyInput"}),
@@ -69,7 +74,13 @@ FINDING_CODES = {
 # number, not the answer
 REDUCERS = {"size", "width", "height", "colorcount", "numcolors", "mostcolor",
             "leastcolor", "palette", "hperiod", "vperiod", "ulcorner", "lrcorner",
-            "index", "dedupe", "shape", "portrait", "square", "even"}
+            "index", "dedupe", "shape", "portrait", "square", "even",
+            # arithmetic on a measurement is still a measurement. 3eda0437
+            # mirrors the grid to read the tallest run off it and take a
+            # maximum; without these the chain escapes into `maximum` and the
+            # mirror reads as the rule.
+            "maximum", "minimum", "increment", "decrement", "interval",
+            "valmax", "valmin"}
 
 
 def _test_only(fn: ast.FunctionDef) -> set[str]:
@@ -122,6 +133,115 @@ def _test_only(fn: ast.FunctionDef) -> set[str]:
             if used_in and used_in <= test and nm not in REDUCERS}
 
 
+def _cycled(fn: ast.FunctionDef) -> set[str]:
+    """Transforms the verifier applies in a cycle that returns where it began.
+
+    `power(compose(rot90, f), FOUR)` is not a rotation the task performs -- four
+    quarter turns are the identity. It is how the DSL says "and the same in
+    every orientation", and 150deff5 builds its whole rule that way. A route
+    that turned the grid four times to satisfy it would be turning it for show.
+    """
+    assigns, consumers = {}, collections.defaultdict(set)
+    for st in fn.body:
+        if not (isinstance(st, ast.Assign) and isinstance(st.targets[0], ast.Name)):
+            continue
+        assigns[st.targets[0].id] = st.value
+        for n in ast.walk(st.value):
+            if isinstance(n, ast.Name):
+                consumers[n.id].add(st.targets[0].id)
+
+    cyc = set()
+    for k, v in assigns.items():
+        if isinstance(v, ast.Call) and isinstance(v.func, ast.Name) and v.func.id == "power":
+            seen, stack = set(), [a.id for a in v.args if isinstance(a, ast.Name)]
+            while stack:                 # everything folded into the repeated step
+                cur = stack.pop()
+                if cur in seen:
+                    continue
+                seen.add(cur)
+                node = assigns.get(cur)
+                if node is None:
+                    cyc.add(cur)
+                    continue
+                stack += [n.id for n in ast.walk(node) if isinstance(n, ast.Name)]
+    return {n for n in cyc if n in TURNS}
+
+
+MEASURES = REDUCERS | {"color"}
+
+TURNS = {"rot90", "rot180", "rot270", "hmirror", "vmirror", "dmirror", "cmirror"}
+
+
+def _ssa(fn: ast.FunctionDef) -> dict[str, ast.AST]:
+    return {st.targets[0].id: st.value for st in fn.body
+            if isinstance(st, ast.Assign) and isinstance(st.targets[0], ast.Name)}
+
+
+def _from_input(name: str, assigns: dict, seen=None) -> bool:
+    """Does this value descend from I, or was it built out of constants?
+
+    A measurement taken from I does not carry the grid forward: 98cf29f8 reads
+    one colour off the input and assembles a three-cell pattern around it, and
+    that pattern is a thing the verifier made, not a piece of the grid. So the
+    walk stops at anything that turns a grid into a number, a colour or a shape.
+    """
+    if name == "I":
+        return True
+    seen = seen or set()
+    if name in seen or name not in assigns:
+        return False
+    seen.add(name)
+
+    def reached(node):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                and node.func.id in MEASURES:
+            return False
+        if isinstance(node, ast.Name):
+            return _from_input(node.id, assigns, seen)
+        return any(reached(c) for c in ast.iter_child_nodes(node))
+
+    return reached(assigns[name])
+
+
+def _not_of_the_grid(fn: ast.FunctionDef) -> set[str]:
+    """Turns applied to a shape the verifier built, not to anything from I.
+
+    98cf29f8 mirrors a three-cell pattern it assembles out of constants so it
+    can search for both orientations of it. The grid is never turned; what the
+    rule does at the places found is a fill. A route that flipped the grid to
+    account for this would be flipping it for show.
+    """
+    assigns = _ssa(fn)
+    out = set()
+    for v in assigns.values():
+        if not (isinstance(v, ast.Call) and isinstance(v.func, ast.Name)):
+            continue
+        if v.func.id not in TURNS:
+            continue
+        args = [a.id for a in v.args if isinstance(a, ast.Name)]
+        if args and not any(_from_input(a, assigns) for a in args):
+            out.add(v.func.id)
+    return out
+
+
+def _padded(fn: ast.FunctionDef) -> set[str]:
+    """`trim` that only undoes a border the verifier added itself.
+
+    canvas(add(TWO, shape(I))) ... trim(...) is a one-cell margin taken so that
+    neighbourhood logic has somewhere to look, and then given back. The grid
+    that comes out is the size the grid that went in was, so nothing about the
+    task is a reframing.
+    """
+    assigns = _ssa(fn)
+    grew = any(isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
+               and v.func.id == "add"
+               and any(isinstance(a, ast.Name) and a.id == "TWO" for a in v.args)
+               and any(isinstance(a, ast.Name) and isinstance(assigns.get(a.id), ast.Call)
+                       and assigns[a.id].func.id == "shape" for a in v.args)
+               for v in assigns.values())
+    return {"trim"} if grew else set()
+
+
 def verifier_concepts(rearc_root: Path) -> dict[str, set[str]]:
     """Per task, the DSL names it calls, with scaffolding and tests dropped."""
     tree = ast.parse((rearc_root / "verifiers.py").read_text(encoding="utf-8"))
@@ -138,6 +258,7 @@ def verifier_concepts(rearc_root: Path) -> dict[str, set[str]]:
         for m in ("hmirror", "vmirror", "dmirror", "cmirror"):
             if names[m] >= 2:
                 scaffold.add(m)
+        scaffold |= _cycled(fn) | _not_of_the_grid(fn) | _padded(fn)
         out[fn.name[len("verify_"):]] = set(names) - scaffold - _test_only(fn)
     return out
 

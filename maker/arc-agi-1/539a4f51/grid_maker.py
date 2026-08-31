@@ -37,118 +37,147 @@ import random
 import numpy as np
 from maker.sel_helpers import sel_of
 
-# The generator's `rotf` choice is the one discrete structural variant: it decides
-# which corner of the grid the nested-L "corner pattern" converges to.
-#   rot 0 -> apex top-left, 1 -> top-right (rot90 CW), 2 -> bottom-right (rot180),
-#   rot 3 -> bottom-left (rot270 CCW)
-# (the pattern is symmetric about its main diagonal, so these four rotations are
-#  exactly the four reflections identity / vmirror / cmirror / hmirror.)
+# The only discrete structural variant this task has is the global rotation the
+# generator applies to both grids (identity / rot90 / rot180 / rot270).
 VARIANTS = [{"rot": 0}, {"rot": 1}, {"rot": 2}, {"rot": 3}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    # background is hardcoded 0 in the generator, so it is not sampled here.
-    # The palette is fixed per episode for visual consistency; the rule itself is
-    # colour-agnostic (it only propagates whatever colours the corner already has).
-    colpool = random.sample(range(1, 10), 9)
-    n_ex = num_examples if num_examples else 4
+    # background is hardcoded 0 in the generator -> not a sampled role.
+    # The palette the nested-L colors are drawn from is sampled -> fix it per episode.
+    numc = random.randint(2, 9)
+    ccols = random.sample(list(range(1, 10)), numc)
+
+    n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
         examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
         random.shuffle(examples)
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"colpool": colpool, "instance_plan": plan}
+    plan = examples + [dict(random.choice(examples))]   # test orientation was shown
+    return {"ccols": ccols, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, colpool=None, rot=None) -> dict:
-    if colpool is None:
-        colpool = random.sample(range(1, 10), 9)
+def generate(diff_lb, diff_ub, max_h, max_w, ccols=None, rot=None) -> dict:
+    if ccols is None:
+        ccols = random.sample(list(range(1, 10)), random.randint(2, 9))
     if rot is None:
-        rot = random.choice([0, 1, 2, 3])
+        rot = random.choice(VARIANTS)["rot"]
 
-    dmax = min(15, max_h // 2, max_w // 2)
-    if dmax < 2:
-        dmax = 2
-    d = unifint(diff_lb, diff_ub, (2, dmax))
-    numc = unifint(diff_lb, diff_ub, (2, 9))
-    ccols = list(colpool[:numc])
-    numocc = unifint(diff_lb, diff_ub, (1, d))
+    dub = max(2, min(15, max_h // 2, max_w // 2))
+    try:
+        d = unifint(diff_lb, diff_ub, (2, dub))
+        numocc = unifint(diff_lb, diff_ub, (1, d))
+    except NameError:
+        d = random.randint(2, dub)
+        numocc = random.randint(1, d)
+
     arr = [random.choice(ccols) for _ in range(numocc)]
     while len(set(arr)) == 1:
         arr = [random.choice(ccols) for _ in range(d)]
-    m = len(arr)
+    n = len(arr)
 
-    # cell (r, c) belongs to the L-shaped shell number max(r, c)
-    gi = [[arr[max(r, c)] if max(r, c) < m else 0 for c in range(d)] for r in range(d)]
-    go = [[arr[max(r, c) % m] for c in range(2 * d)] for r in range(2 * d)]
+    # cell (r, c) belongs to the nested L of index max(r, c)
+    gi = [[arr[max(r, c)] if max(r, c) < n else 0 for c in range(d)] for r in range(d)]
+    go = [[arr[max(r, c) % n] for c in range(2 * d)] for r in range(2 * d)]
 
-    def rotk(g, k):
-        n = len(g)
-        if k == 0:
-            return [list(row) for row in g]
-        if k == 1:  # rot90 CW
-            return [[g[n - 1 - c][r] for c in range(n)] for r in range(n)]
-        if k == 2:  # rot180
-            return [[g[n - 1 - r][n - 1 - c] for c in range(n)] for r in range(n)]
-        return [[g[c][n - 1 - r] for c in range(n)] for r in range(n)]  # rot270 CCW
+    for _ in range(rot):                      # rot CW quarter turns on both grids
+        gi = [list(x) for x in zip(*gi[::-1])]
+        go = [list(x) for x in zip(*go[::-1])]
 
-    gi = rotk(gi, rot)
-    go = rotk(go, rot)
-    return {"input": tuple(tuple(row) for row in gi),
-            "output": tuple(tuple(row) for row in go)}
+    gi = tuple(tuple(int(v) for v in row) for row in gi)
+    go = tuple(tuple(int(v) for v in row) for row in go)
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     d = I.shape[0]
-    n = 2 * d
+    N = O.shape[0]                      # N == 2 * d
+
+    def canon_n(G):
+        """n if G is the canonical orientation (nested Ls anchored at top-left), else None."""
+        nz = np.argwhere(G != 0)
+        if nz.size == 0:
+            return None
+        r0, c0 = nz.min(axis=0)
+        r1, c1 = nz.max(axis=0)
+        if r0 != 0 or c0 != 0 or r1 != c1:
+            return None
+        n = int(r1) + 1
+        for r in range(G.shape[0]):
+            for c in range(G.shape[1]):
+                m = max(r, c)
+                want = G[m, m] if m < n else 0
+                if G[r, c] != want:
+                    return None
+        return n
+
+    k, n = None, None
+    for kk in range(4):
+        nn = canon_n(np.rot90(I, kk))
+        if nn is not None:
+            k, n = kk, nn
+            break
+    if k is None:                        # defensive fallback
+        nz = np.argwhere(I != 0)
+        r0, c0 = nz.min(axis=0)
+        r1, c1 = nz.max(axis=0)
+        k, n = 0, int(max(r1 - r0, c1 - c0)) + 1
+
     ops, sels = [], []
+    full_i = [0, 0, d - 1, d - 1]        # bbox == the whole input canvas (rotating everything)
+    full_o = [0, 0, N - 1, N - 1]        # bbox == the whole output canvas
 
-    # --- 1. Locate the apex of the nested-L pattern --------------------------
-    # In the canonical (apex top-left) frame the LAST row and LAST column are
-    # constant (all background, or all of the outermost shell colour) while the
-    # first row / first column never are (the shell colours are not all equal).
-    # So the constant edges are the ones FAR from the apex.
-    apex_bottom = len(set(I[d - 1].tolist())) != 1
-    apex_right = len(set(I[:, d - 1].tolist())) != 1
+    # 1. Turn the pattern into its canonical orientation (Ls anchored at top-left).
+    if k == 1:
+        ops.append(24); sels.append(full_i)                    # CCW
+    elif k == 2:
+        ops.append(24); sels.append(full_i)
+        ops.append(24); sels.append(full_i)
+    elif k == 3:
+        ops.append(25); sels.append(full_i)                    # CW
 
-    # --- 2. Reflect the grid so the apex sits at the top-left ---------------
-    # Whole-grid rectangles: the selections really are the entire region,
-    # background included, which is exactly what a mirror acts on.
-    full_in = [0, 0, d - 1, d - 1]
-    N = I
-    if apex_right:
-        ops.append(26); sels.append(full_in)      # FlipH: apex right -> left
-        N = np.fliplr(N)
-    if apex_bottom:
-        ops.append(27); sels.append(full_in)      # FlipV: apex bottom -> top
-        N = np.flipud(N)
+    # 2. Double the canvas.
+    ops.append(33); sels.append(full_o)
 
-    # shell colours, read off the main diagonal of the normalised grid
-    m = 0
-    while m < d and N[m, m] != 0:
-        m += 1
-    arr = [int(N[j, j]) for j in range(m)]
+    # 3. Replicate the colour sequence along the top row (period n).
+    ops.append(29); sels.append([0, 0, 0, n - 1])              # CopyO the n-colour sequence
+    c = n
+    while c < N:
+        ops.append(30); sels.append([0, c, 0, 0])
+        c += n
 
-    # --- 3. Double the canvas ------------------------------------------------
-    full_out = [0, 0, n - 1, n - 1]
-    ops.append(33); sels.append(full_out)          # background is 0 -> no fill needed
+    # 4. Replicate that periodic row down the whole canvas.
+    ops.append(29); sels.append([0, 0, 0, N - 1])              # CopyO the full periodic row
+    for r in range(1, N):
+        ops.append(30); sels.append([r, 0, 0, 0])
 
-    # --- 4. Keep growing the nest of L-shells outward, cycling the colours ---
-    for j in range(m, n):
-        cells = [(j, c) for c in range(j + 1)] + [(r, j) for r in range(j)]
-        ops.append(arr[j % m]); sels.append(sel_of(cells))
+    # 5. Keep only the upper triangle (c >= r); clear the strictly lower one to background 0
+    #    so the mirrored copy can be pasted into it.
+    lower = [(r, cc) for r in range(N) for cc in range(r)]
+    ops.append(0); sels.append(sel_of(lower))
 
-    # --- 5. Reflect back into the orientation the input came in -------------
-    if apex_right:
-        ops.append(26); sels.append(full_out)
-    if apex_bottom:
-        ops.append(27); sels.append(full_out)
+    # 6. The pattern is symmetric about the main diagonal: copy the upper triangle,
+    #    mirror the canvas diagonally (CCW rotate + vertical flip == transpose),
+    #    then paste the upper triangle back on top of the mirrored half.
+    ops.append(29); sels.append(full_o)                        # clipboard = upper triangle
+    ops.append(24); sels.append(full_o)
+    ops.append(27); sels.append(full_o)
+    ops.append(30); sels.append([0, 0, 0, 0])
 
-    ops.append(34); sels.append(full_out)
+    # 7. Restore the original orientation.
+    if k == 1:
+        ops.append(25); sels.append(full_o)
+    elif k == 2:
+        ops.append(25); sels.append(full_o)
+        ops.append(25); sels.append(full_o)
+    elif k == 3:
+        ops.append(24); sels.append(full_o)
+
+    ops.append(34); sels.append(full_o)
     return ops, sels
 
 

@@ -33,82 +33,119 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
 import numpy as np
+from maker.sel_helpers import sel_of
+
+
+def _unifint(diff_lb, diff_ub, bounds):
+    """Use RE-ARC's unifint when available, else uniform fallback."""
+    lo, hi = bounds
+    if hi < lo:
+        hi = lo
+    try:
+        return unifint(diff_lb, diff_ub, (lo, hi))  # noqa: F821
+    except NameError:
+        return random.randint(lo, hi)
 
 
 def sample_colors(num_examples=None) -> dict:
-    # Row-uniformity is the rule; the palette itself is free, but keep it
-    # episode-consistent so every instance shares one color scheme.
-    cols = list(range(10))
+    # The rule (row uniform -> 5, row mixed -> 0) is colour-independent:
+    # only the palette of cell colours is randomly sampled by the generator.
     ncols = random.randint(2, 10)
-    ccols = random.sample(cols, ncols)
+    ccols = random.sample(list(range(10)), ncols)
     return {"ccols": ccols}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, ccols=None) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, ccols=None) -> dict:
     if ccols is None:
         ccols = random.sample(list(range(10)), random.randint(2, 10))
     ccols = list(ccols)
 
-    h = unifint(diff_lb, diff_ub, (2, max_h))
-    w = unifint(diff_lb, diff_ub, (2, max_w))
-    gi = []
-    go = []
+    h = _unifint(diff_lb, diff_ub, (2, max(2, min(30, max_h))))
+    w = _unifint(diff_lb, diff_ub, (2, max(2, min(30, max_w))))
+
+    # every grid shows BOTH structural cases (uniform row / mixed row)
+    flags = [random.choice((True, False)) for _ in range(h)]
+    if all(flags):
+        flags[random.randrange(h)] = False
+    if not any(flags):
+        flags[random.randrange(h)] = True
+
+    gi, go = [], []
     for k in range(h):
-        singlecol = choice((True, False))
-        col = choice(ccols)
-        row = repeat(col, w)
-        if singlecol:
-            gi.append(row)
-            go.append(repeat(5, w))
+        col = random.choice(ccols)
+        row = [col] * w
+        if flags[k]:
+            gi.append(tuple(row))
+            go.append(tuple([5] * w))
         else:
-            remcols = remove(col, ccols)
-            if len(remcols) == 0:
-                gi.append(row)
-                go.append(repeat(5, w))
-                continue
-            nothercinv = unifint(diff_lb, diff_ub, (1, w - 1))
+            remcols = [c for c in ccols if c != col]
+            nothercinv = _unifint(diff_lb, diff_ub, (1, w - 1))
             notherc = w - 1 - nothercinv
             notherc = min(max(1, notherc), w - 1)
-            row = list(row)
-            indss = interval(0, w, 1)
-            for j in sample(indss, notherc):
-                row[j] = choice(remcols)
+            for j in random.sample(list(range(w)), notherc):
+                row[j] = random.choice(remcols)
             gi.append(tuple(row))
-            go.append(repeat(0, w))
+            go.append(tuple([0] * w))
+
     return {"input": tuple(gi), "output": tuple(go)}
 
 
 def derive_operations(I, O):
+    """
+    Rule: a row made of ONE colour becomes a row of 5s, any mixed row becomes a
+    row of 0s -- i.e. one per-row verdict REPEATED across the full width.
+
+    Route:
+      1. mark the verdict for every uniform row with a 5 in column 0
+         (the marker column carries the answer),
+      2. clear everything else (rest of the canvas + the mixed rows' markers)
+         to 0 -- the base layer, and the clearing Paste needs (Paste never
+         writes 0 cells),
+      3. CopyO the marker column and Paste it at every remaining column:
+         the replication itself.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-
-    # Rule read from I: a row painted in a single color -> 5, a mixed row -> 0.
-    need = []
-    for r in range(hi):
-        uniform = len(set(I[r].tolist())) == 1
-        if uniform:
-            need.append(5 if I[r, 0] != 5 else None)   # already 5 -> nothing to do
-        else:
-            need.append(0 if bool(np.any(I[r] != 0)) else None)
+    h, w = I.shape
 
     ops, sels = [], []
-    r = 0
-    while r < hi:
-        t = need[r]
-        if t is None:
-            r += 1
-            continue
-        r2 = r
-        while r2 + 1 < hi and need[r2 + 1] == t:   # merge adjacent rows of same class
-            r2 += 1
-        ops.append(int(t))
-        sels.append([r, 0, r2 - r, wi - 1])
-        r = r2 + 1
+    cur = I.copy()
+
+    uniform = [r for r in range(h) if len(set(I[r].tolist())) == 1]
+    uset = set(uniform)
+    mixed = [r for r in range(h) if r not in uset]
+
+    # 1. mark uniform rows with 5 in the leftmost column
+    marks = [(r, 0) for r in uniform]
+    if marks and any(cur[r, c] != 5 for r, c in marks):
+        ops.append(5)
+        sels.append(sel_of(marks))
+        for r, c in marks:
+            cur[r, c] = 5
+
+    # 2. clear everything that is not a mark
+    clear = [(r, c) for r in range(h) for c in range(1, w)] + [(r, 0) for r in mixed]
+    if clear and any(cur[r, c] != 0 for r, c in clear):
+        ops.append(0)
+        sels.append(sel_of(clear))
+        for r, c in clear:
+            cur[r, c] = 0
+
+    # 3. replicate the marker column across the whole width
+    if marks:
+        col0 = [(r, 0) for r in range(h)]
+        ops.append(29)                    # CopyO: the marker column I just built
+        sels.append(sel_of(col0))
+        for j in range(1, w):
+            ops.append(30)                # Paste at column j
+            sels.append(sel_of([(r, j) for r in range(h)]))
+            for r in uniform:
+                cur[r, j] = 5
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append(sel_of([(r, c) for r in range(h) for c in range(w)]))
     return ops, sels
 
 
@@ -152,7 +189,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

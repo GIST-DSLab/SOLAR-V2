@@ -33,78 +33,193 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-import numpy as np
-from collections import Counter
-
-
 def sample_colors(num_examples=None) -> dict:
-    cols = [c for c in range(10) if c != 3]
-    bgc = random.choice(cols)
+    import random
+    cols = [c for c in range(10) if c != 3]          # 3 is reserved for the marked lines
+    bgc = random.choice(cols)                        # interior fill color
     rem = [c for c in cols if c != bgc]
-    cola = random.choice(rem)
-    rem2 = [c for c in rem if c != cola]
-    colb = random.choice(rem2)
+    cola = random.choice(rem)                        # first perimeter arc color
+    colb = random.choice([c for c in rem if c != cola])   # second perimeter arc color
     return {"bgc": bgc, "cola": cola, "colb": colb}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, cola, colb) -> dict:
-    h = unifint(diff_lb, diff_ub, (min(7, max_h), max_h))
-    w = unifint(diff_lb, diff_ub, (min(7, max_w), max_w))
-    c = canvas(bgc, (h, w))
-    indord1 = apply(tojvec, interval(0, w, 1))
-    indord2 = apply(rbind(astuple, w - 1), interval(1, h - 1, 1))
-    indord3 = apply(lbind(astuple, h - 1), interval(w - 1, 0, -1))
-    indord4 = apply(toivec, interval(h - 1, 0, -1))
-    indord = indord1 + indord2 + indord3 + indord4
-    k = len(indord)
-    sp = randint(0, k)
-    arr = indord[sp:] + indord[:sp]
-    ep = randint(k // 2 - 3, k // 2 + 1)
-    a = arr[:ep]
-    b = arr[ep:]
-    gi = fill(c, cola, a)
-    gi = fill(gi, colb, b)
-    nr = unifint(diff_lb, diff_ub, (1, min(4, min(h, w) // 2)))
-    for kk in range(nr):
-        ring = box(frozenset({(1 + kk, 1 + kk), (h - 1 - kk, w - 1 - kk)}))
-        for br in (cola, colb):
-            bcands = totuple(ring & ofcolor(gi, bgc) & mapply(dneighbors, ofcolor(gi, br)))
-            jj = len(bcands)
-            jj2 = randint(max(0, jj // 2 - 2), min(jj, jj // 2 + 1))
-            ss = sample(bcands, jj2)
-            gi = fill(gi, br, ss)
-    res = shift(merge(frontiers(trim(gi))), (1, 1))
-    go = fill(gi, 3, res)
-    return {'input': gi, 'output': go}
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, cola=None, colb=None) -> dict:
+    import random
+    from collections import Counter
+
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        if b < a:
+            a, b = b, a
+        ba = min(a + int((b - a) * lb), b)
+        bb = min(a + int((b - a) * ub), b)
+        if ba > bb:
+            ba, bb = bb, ba
+        return random.randint(ba, bb)
+
+    cols_all = [c for c in range(10) if c != 3]
+    if bgc is None:
+        bgc = random.choice(cols_all)
+    rem = [c for c in cols_all if c != bgc]
+    if cola is None:
+        cola = random.choice(rem)
+    if colb is None:
+        colb = random.choice([c for c in rem if c != cola])
+
+    hi_h = max(7, min(30, int(max_h)))
+    hi_w = max(7, min(30, int(max_w)))
+
+    last = None
+    for _attempt in range(300):
+        h = unifint(diff_lb, diff_ub, (7, hi_h))
+        w = unifint(diff_lb, diff_ub, (7, hi_w))
+        g = [[bgc] * w for _ in range(h)]
+
+        # perimeter index order (top row, right col, bottom row, left col)
+        indord = [(0, j) for j in range(w)]
+        indord += [(i, w - 1) for i in range(1, h - 1)]
+        indord += [(h - 1, j) for j in range(w - 1, 0, -1)]
+        indord += [(i, 0) for i in range(h - 1, 0, -1)]
+        k = len(indord)
+        sp = random.randint(0, k)
+        arr = indord[sp:] + indord[:sp]
+        ep = random.randint(k // 2 - 3, k // 2 + 1)
+        ep = max(0, min(k, ep))
+        for (i, j) in arr[:ep]:
+            g[i][j] = cola
+        for (i, j) in arr[ep:]:
+            g[i][j] = colb
+
+        nr = unifint(diff_lb, diff_ub, (1, min(4, min(h, w) // 2)))
+        for kk in range(nr):
+            r1, c1, r2, c2 = 1 + kk, 1 + kk, h - 1 - kk, w - 1 - kk
+            if r2 < r1 or c2 < c1:
+                continue
+            ring = set()
+            for j in range(c1, c2 + 1):
+                ring.add((r1, j))
+                ring.add((r2, j))
+            for i in range(r1, r2 + 1):
+                ring.add((i, c1))
+                ring.add((i, c2))
+            for br in (cola, colb):
+                nbrs = set()
+                for i in range(h):
+                    for j in range(w):
+                        if g[i][j] == br:
+                            nbrs.update([(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)])
+                bcands = [p for p in ring if g[p[0]][p[1]] == bgc and p in nbrs]
+                jj = len(bcands)
+                lo = max(0, jj // 2 - 2)
+                hi = min(jj, jj // 2 + 1)
+                if hi < lo:
+                    lo, hi = hi, lo
+                jj2 = random.randint(lo, hi) if jj > 0 else 0
+                for (i, j) in random.sample(bcands, jj2):
+                    g[i][j] = br
+
+        # frontiers of trim(g): full uniform rows/cols of the trimmed grid, shifted by (1,1)
+        H, W = h - 2, w - 2
+        inner = [[g[r + 1][c + 1] for c in range(W)] for r in range(H)]
+        flat = [v for row in inner for v in row]
+        mc = Counter(flat).most_common(1)[0][0]
+        urows = [r for r in range(H) if len(set(inner[r])) == 1]
+        ucols = [c for c in range(W) if len(set(inner[r][c] for r in range(H))) == 1]
+        # keep verifier (mostcolor-based) and generator (frontiers) in agreement
+        ok = all(inner[r][0] == mc for r in urows) and all(inner[0][c] == mc for c in ucols)
+        if not ok:
+            continue
+        if not urows and not ucols:
+            last = (g, [row[:] for row in g])
+            continue
+        go = [row[:] for row in g]
+        for r in urows:
+            for c in range(W):
+                go[r + 1][c + 1] = 3
+        for c in ucols:
+            for r in range(H):
+                go[r + 1][c + 1] = 3
+        return {"input": g, "output": go}
+
+    if last is None:
+        g = [[bgc] * 7 for _ in range(7)]
+        for j in range(7):
+            g[0][j] = cola
+            g[6][j] = colb
+        for i in range(7):
+            g[i][0] = cola
+            g[i][6] = colb
+        go = [row[:] for row in g]
+        for r in range(1, 6):
+            for c in range(1, 6):
+                go[r][c] = 3
+        return {"input": g, "output": go}
+    return {"input": last[0], "output": last[1]}
 
 
 def derive_operations(I, O):
+    import numpy as np
+    from collections import Counter
+    try:
+        from maker.sel_helpers import sel_of
+    except Exception:
+        def sel_of(cells):
+            return {"cells": [[int(r), int(c)] for (r, c) in cells]}
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
+    h, w = I.shape
     ops, sels = [], []
 
-    # Rule (measured from I): inside the border, an interior row that is ENTIRELY
-    # background, or an interior column that is ENTIRELY background, becomes color 3.
-    # Background = dominant color of the trimmed interior.
-    interior = I[1:hi - 1, 1:wi - 1]
-    bgc = Counter(interior.flatten().tolist()).most_common(1)[0][0]
+    def rect(r0, c0, nh, nw):
+        return [(r, c) for r in range(r0, r0 + nh) for c in range(c0, c0 + nw)]
 
-    # Fully-background interior rows -> paint interior span (cols 1..wi-2) to 3
-    for r in range(1, hi - 1):
-        if np.all(I[r, 1:wi - 1] == bgc):
-            ops.append(3)
-            sels.append([r, 1, 0, wi - 3])
+    # ---- rule: inside the trimmed grid (border stripped), every row/column that is
+    # entirely the interior fill colour becomes a line of 3s.
+    inner = I[1:h - 1, 1:w - 1]
+    H, W = inner.shape
+    bgc = Counter(inner.flatten().tolist()).most_common(1)[0][0]
+    rows = [r for r in range(H) if bool(np.all(inner[r, :] == bgc))]
+    cols = [c for c in range(W) if bool(np.all(inner[:, c] == bgc))]
 
-    # Fully-background interior columns -> paint interior span (rows 1..hi-2) to 3
-    for c in range(1, wi - 1):
-        if np.all(I[1:hi - 1, c] == bgc):
-            ops.append(3)
-            sels.append([1, c, hi - 3, 0])
+    if not rows and not cols:
+        ops.append(34); sels.append([0, 0, h - 1, w - 1])
+        return ops, sels
 
-    ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    # 1. TRIM: reframe the canvas onto the interior the rule lives in.
+    #    (full rectangle -> the exact cells of the trimmed region)
+    ops.append(33); sels.append(sel_of(rect(1, 1, H, W)))
+    cur = inner.copy()
+
+    # 2. the uniform rows become identical lines of 3 -> paint one, replicate it.
+    if rows:
+        r0 = rows[0]
+        ops.append(3); sels.append(sel_of(rect(r0, 0, 1, W)))
+        cur[r0, :] = 3
+        if len(rows) > 1:
+            ops.append(29); sels.append(sel_of(rect(r0, 0, 1, W)))   # CopyO the 3-line
+            for r in rows[1:]:
+                ops.append(30); sels.append(sel_of([(r, 0)]))        # Paste at each row
+                cur[r, :] = 3
+
+    # 3. same for the uniform columns (skipped if the rows already covered everything)
+    if cols and len(rows) < H:
+        c0 = cols[0]
+        ops.append(3); sels.append(sel_of(rect(0, c0, H, 1)))
+        cur[:, c0] = 3
+        if len(cols) > 1:
+            ops.append(29); sels.append(sel_of(rect(0, c0, H, 1)))   # CopyO the 3-column
+            for c in cols[1:]:
+                ops.append(30); sels.append(sel_of([(0, c)]))        # Paste at each column
+                cur[:, c] = 3
+
+    # 4. carry the marked interior on the clipboard, restore the untrimmed input,
+    #    and paste the interior back at its (1,1) offset.
+    ops.append(29); sels.append(sel_of(rect(0, 0, H, W)))            # CopyO marked interior
+    ops.append(31); sels.append(sel_of(rect(0, 0, H, W)))            # CopyInput: un-trim
+    ops.append(30); sels.append(sel_of([(1, 1)]))                    # Paste at (1,1)
+
+    ops.append(34); sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 
@@ -148,7 +263,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

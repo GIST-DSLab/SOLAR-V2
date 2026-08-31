@@ -200,8 +200,16 @@ def build_feedback(rec: dict) -> str:
             "",
             "Do not pad the trajectory to satisfy this: an op added for appearance is "
             "worse than the route you had. Re-derive from the rule itself, so that the "
-            "reflection is a Flip of the region it applies to, and what remains after "
-            "it is whatever the rule genuinely leaves to paint.",
+            "operation named above is performed on the region the rule applies to — a "
+            "Flip or a Rotate of that region for a reflection or a turn, a Copy of the "
+            "source and a Paste at each offset for a replication, a ResizeGrid to the "
+            "region the rule keeps for a reframing — and what remains after it is "
+            "whatever the rule genuinely leaves to paint.",
+            "",
+            "One property of the engine to design around: Paste does not write the "
+            "cells of the copied region that hold colour 0 — they leave whatever was "
+            "already there. If the rule needs those cells cleared, clear them before "
+            "the Paste rather than expecting the Paste to do it.",
         ]
     elif any(f["code"] in narrow_rule for f in findings):
         lines += [

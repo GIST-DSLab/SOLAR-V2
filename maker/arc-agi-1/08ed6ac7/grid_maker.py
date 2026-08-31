@@ -40,14 +40,15 @@ from maker.sel_helpers import sel_of
 
 
 def sample_colors(num_examples=None) -> dict:
-    # bgc is the only randomly sampled colour role that must stay fixed:
-    # the generator picks it from the colours that are NOT rank colours 1..4.
-    # Bar colours are irrelevant to the rule (rank by height), so they stay free.
-    bgc = random.choice([0, 5, 6, 7, 8, 9])
+    # bgc is the only randomly sampled colour that matters for learnability:
+    # the rule (rank bars by height -> colours 1..4) is independent of the bar
+    # colours, but the background must be constant across the episode.
+    # The generator forbids bgc in {1,2,3,4}, keep that invariant.
+    bgc = random.choice([c for c in range(10) if c not in (1, 2, 3, 4)])
     return {"bgc": bgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
     colopts = interval(0, 10, 1)
     h = unifint(diff_lb, diff_ub, (4, max_h))
     w = unifint(diff_lb, diff_ub, (4, max_w))
@@ -72,71 +73,84 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -
     return {'input': gi, 'output': go}
 
 
-def _bars_for_bg(I, bgc):
-    """Each bar is a vertical run of ONE colour in a single column, anchored at the
-    bottom row. Above it is background (never the bar's own colour), so the run of
-    equal colour going up from the bottom cell is exactly the bar."""
-    h, w = I.shape
-    bars = []
-    for c in range(w):
-        v = int(I[h - 1, c])
-        if v == bgc:
-            continue
-        r = h - 1
-        while r - 1 >= 0 and int(I[r - 1, c]) == v:
-            r -= 1
-        bars.append((c, r, h - r, v))   # column, top row, height, current colour
-    return bars
-
-
 def derive_operations(I, O):
+    """
+    Rule: every bar is a 1-wide vertical segment that runs down to the last row.
+    There are exactly 4 distinct bar lengths; the longest class becomes 1, then
+    2, 3, and the shortest class becomes 4.
+
+    Route: bars of equal length are IDENTICAL objects (same rows, same width,
+    and in the output the same colour).  So per length-class we recolour ONE
+    representative bar, CopyO it, and Paste that recoloured bar onto every other
+    bar of that class -- the replication the rule is made of, performed rather
+    than re-painted cell by cell.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
-
-    # --- identify background purely from I -------------------------------------
-    # bgc is never one of the rank colours 1..4, and the correct bgc is the one for
-    # which the bar decomposition yields exactly 4 distinct bar heights (the
-    # generator samples 4 distinct top rows and every one of them is used).
-    cnt = Counter(I.flatten().tolist())
-    cands = sorted(cnt, key=lambda c: -cnt[c])
-    bgc = None
-    for c in cands:
-        if c in (1, 2, 3, 4):
-            continue
-        bars = _bars_for_bg(I, c)
-        if len(bars) >= 4 and len({b[2] for b in bars}) == 4:
-            bgc = c
-            break
-    if bgc is None:
-        for c in cands:
-            if c not in (1, 2, 3, 4):
-                bgc = c
-                break
-    if bgc is None:
-        bgc = cands[0]
-
-    # --- measure the rule from I ------------------------------------------------
-    bars = _bars_for_bg(I, bgc)
-    heights = sorted({b[2] for b in bars}, reverse=True)   # tallest first
-    rank_of = {}
-    for i, hh in enumerate(heights):
-        rank_of[hh] = min(i + 1, 4)                        # tallest -> 1 ... shortest -> 4
-
     ops, sels = [], []
-    # Recolour bar by bar, tallest group first, each bar as one whole object.
-    for hh in heights:
-        target = rank_of[hh]
-        group = sorted([b for b in bars if b[2] == hh], key=lambda b: b[0])
-        for (c, r0, bh, col) in group:
-            if col == target:
-                continue                                   # already this colour: op would do nothing
-            cells = [(r, c) for r in range(r0, h)]
+
+    # ---- find the bars in I -------------------------------------------------
+    def bars_for(bg):
+        """Bars assuming background colour `bg`; None if inconsistent."""
+        found = []
+        for c in range(w):
+            col = I[:, c]
+            if int(col[h - 1]) == bg:
+                if np.any(col != bg):
+                    return None          # a bar not touching the bottom row
+                continue
+            x = int(col[h - 1])
+            r = h - 1
+            while r - 1 >= 0 and int(col[r - 1]) == x:
+                r -= 1
+            if np.any(col[:r] != bg):
+                return None              # something above the bar
+            found.append((c, r, h - r))  # (column, top row, length)
+        return found
+
+    bars = None
+    for v, _ in Counter(I.flatten().tolist()).most_common():
+        if v in (1, 2, 3, 4):            # generator never uses these as bgc
+            continue
+        cand = bars_for(v)
+        if cand is not None and len(cand) >= 4 and len({t[2] for t in cand}) == 4:
+            bars = cand
+            break
+
+    if bars is None:                     # defensive fallback
+        bars = []
+        for c in range(w):
+            rows = [r for r in range(h) if int(O[r, c]) in (1, 2, 3, 4)]
+            if rows:
+                bars.append((c, min(rows), len(rows)))
+
+    # ---- rank the length classes: longest -> 1 ... shortest -> 4 ------------
+    lengths = sorted({L for (_, _, L) in bars}, reverse=True)
+    rank = {L: i + 1 for i, L in enumerate(lengths)}
+
+    # ---- recolour one bar per class, then replicate it onto its twins -------
+    for L in lengths:
+        target = rank[L]
+        group = sorted([b for b in bars if b[2] == L], key=lambda t: t[0])
+        c0, r0, _ = group[0]
+        src_cells = [(r, c0) for r in range(r0, r0 + L)]
+
+        # paint the representative bar to its rank colour (skip if already so)
+        if int(I[r0, c0]) != target:
             ops.append(target)
-            sels.append(sel_of(cells))
+            sels.append(sel_of(src_cells))
+
+        twins = [b for b in group[1:] if int(I[b[1], b[0]]) != target]
+        if twins:
+            ops.append(29)               # CopyO: grab the just-recoloured bar
+            sels.append(sel_of(src_cells))
+            for (c2, r2, _) in twins:    # same length => same top row
+                ops.append(30)           # Paste at the twin's top cell
+                sels.append(sel_of([(r2, c2)]))
 
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
+    sels.append([0, 0, h - 1, w - 1])    # full grid = exactly this rectangle
     return ops, sels
 
 
@@ -180,7 +194,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
