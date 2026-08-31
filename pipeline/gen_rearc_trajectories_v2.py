@@ -122,6 +122,7 @@ def _pair_ok(vfn, gin, gout):
 # ── original-re-arc-generate augmentation (only touched when --rearc_generate) ──
 import linecache
 import re
+import time as _time
 import random as _random
 try:
     from arcle.loaders import Loader as _ArcleLoader
@@ -326,8 +327,13 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None):
     # episode drawn in mixed colours beats an episode that never arrives.
     budget = need * (8 if unify else 40)
     retries = 20 if unify else 80
+    # A count is not a bound on time: a generator that builds thirty-by-thirty
+    # grids takes long enough that twelve thousand calls is minutes, and one
+    # task holding the draw for minutes is worse than that task shipping in
+    # mixed colours. 0e206a2e was six of them.
+    deadline = _time.monotonic() + (10.0 if unify else 30.0)
     try:
-        while len(pool) < need and tries < budget:
+        while len(pool) < need and tries < budget and _time.monotonic() < deadline:
             tries += 1
             lb = _random.random() * 0.8
             pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw,
