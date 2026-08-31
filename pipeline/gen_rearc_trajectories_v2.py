@@ -120,6 +120,8 @@ def _pair_ok(vfn, gin, gout):
         return False
 
 # ── original-re-arc-generate augmentation (only touched when --rearc_generate) ──
+import linecache
+import re
 import random as _random
 try:
     from arcle.loaders import Loader as _ArcleLoader
@@ -172,35 +174,35 @@ def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80):
 
 
 
-def _fix_colours(seq):
-    """Hold re-arc's colour draws to one assignment for the length of an episode.
+COLOUR_ARGS = re.compile(r"(?:choice|sample)\(\s*([A-Za-z_]\w*)")
+COLOUR_NAME = re.compile(r"col|^itv$|^remitv$", re.I)
 
-    The generators name the parts of a task and give each one a colour in a
-    fixed order -- `bgc = choice(cols)`, then `ccol = choice(remcols)`, then
-    `dcol` -- and they do it afresh on every call, so an episode's three
-    demonstrations and its test each arrived in their own colours. The original
-    ARC tasks do not: whichever colour marks the thing the rule is about is that
-    colour in every demonstration pair, and reading it off them is how the test
-    is meant to be solvable.
 
-    Ranking the colours of a finished grid by how many cells they cover was the
-    first attempt at this and it guesses wrong exactly where it matters. In
-    2c608aff the box and the noise come out 20 cells to 20, and a guess that
-    swaps them unifies the palette while reversing what the pair is showing.
-    Fixing the draw instead of the result cannot swap anything: the k-th colour
-    the generator asks for is the k-th colour of one permutation, so the part
-    that is `ccol` in one pair is `ccol` in all of them.
+def _asks_for_colour(depth=2):
+    """Is the call the generator is making a colour draw, by the name it passes?
 
-    Only colour draws are held. A pool of five or more integers in 0..9 is one;
-    everything else the generators pick with the same functions -- an
-    orientation, a direction, a count -- has two or four members and passes
-    through.
+    Values alone cannot tell: a colour pool is a subset of 0..9 and so is
+    `interval(0, h, 1)` when the grid is ten cells high, and freezing that would
+    pin every object to one position for the whole episode. The generators name
+    what they pass -- `cols`, `remcols`, `ccols`, `colopts`, `itv` -- so the
+    name is what decides.
     """
+    try:
+        f = sys._getframe(depth)
+        line = linecache.getline(f.f_code.co_filename, f.f_lineno)
+    except Exception:
+        return False
+    m = COLOUR_ARGS.search(line)
+    return bool(m and COLOUR_NAME.search(m.group(1)))
+
+
+def _fix_colours(seq):
+    """The pool as a list, when it is a pool of colours."""
     try:
         items = list(seq)
     except Exception:
         return None
-    if len(items) < 5 or not all(isinstance(x, int) and 0 <= x <= 9 for x in items):
+    if not all(isinstance(x, int) and 0 <= x <= 9 for x in items):
         return None
     return items
 
@@ -224,7 +226,7 @@ class _HeldColours:
         perm = self.perm
 
         def choice(seq):
-            items = _fix_colours(seq)
+            items = _fix_colours(seq) if _asks_for_colour() else None
             if items is not None:
                 pool = set(items)
                 for c in perm:
@@ -233,7 +235,7 @@ class _HeldColours:
             return self._choice(seq)
 
         def sample(seq, k):
-            items = _fix_colours(seq)
+            items = _fix_colours(seq) if _asks_for_colour() else None
             if items is not None:
                 pool = set(items)
                 picked = [c for c in perm if c in pool][:k]
