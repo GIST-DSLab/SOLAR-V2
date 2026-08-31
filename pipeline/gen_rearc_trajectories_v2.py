@@ -156,14 +156,20 @@ def _get_generator(tid):
         return None
     return getattr(_GENERATORS, f"generate_{tid}", None)
 
-def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80):
+def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80, deadline=None):
     """re-arc generate, resampled until the grid fits max_hw (the only size modification)
     and — when vfn is given (re-arc-style gate) — until verify reproduces it, per pair."""
     Hc, Wc = max_hw
     for _ in range(retries):
+        # The clock has to be read here too: one call into a generator that
+        # builds thirty-by-thirty grids is not fast, and eighty of them is
+        # minutes -- checking only in the caller's loop bounds nothing.
+        if deadline is not None and _time.monotonic() > deadline:
+            return None
         held = getattr(genfn, "_held", None)
         if held is not None:
             held.taken = 0             # the roles are re-assigned per instance
+            held.rounds = 0            # and a generator may retry a few times
         try:
             d = genfn(lb, ub)
         except Exception:
@@ -183,6 +189,11 @@ COLOUR_NAME = re.compile(r"col|^itv$|^remitv$", re.I)
 
 
 _COLOUR_SITE = {}
+# How many times a generator may restart its colour draws and still be given
+# the same assignment. Some retry a great deal before they are satisfied and
+# need the roles held throughout; 31aa019c retries forever when it is, because
+# the assignment is what it is failing on. Past this many rounds it is let go.
+_ROUNDS = int(os.environ.get("SOLAR_PALETTE_ROUNDS", "30"))
 
 
 def _asks_for_colour(depth=2):
@@ -233,6 +244,7 @@ class _HeldColours:
         # before that and still reads its names out of the dictionary it was
         # defined in. Patch that dictionary.
         self.taken = 0
+        self.rounds = 0
         self.first_pool = frozenset()
         self._g = self.genfn.__globals__
         self._choice = self._g.get("choice")
@@ -242,8 +254,9 @@ class _HeldColours:
         def choice(seq):
             items = _fix_colours(seq) if _asks_for_colour() else None
             if items is not None and self.taken >= self.roles \
-                    and set(items) == self.first_pool:
+                    and set(items) == self.first_pool and self.rounds < _ROUNDS:
                 self.taken = 0        # the generator is retrying; roles again
+                self.rounds += 1
             if items is not None and self.taken < self.roles:
                 if self.taken == 0:
                     self.first_pool = set(items)
@@ -264,8 +277,9 @@ class _HeldColours:
         def sample(seq, k):
             items = _fix_colours(seq) if _asks_for_colour() else None
             if items is not None and self.taken >= self.roles \
-                    and set(items) == self.first_pool:
+                    and set(items) == self.first_pool and self.rounds < _ROUNDS:
                 self.taken = 0
+                self.rounds += 1
             if items is not None and self.taken < self.roles:
                 pool = set(items)
                 if self.taken == 0:
@@ -346,13 +360,17 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0):
     # task holding the draw for minutes is worse than that task shipping in
     # mixed colours. 0e206a2e was six of them.
     slack = float(os.environ.get("SOLAR_PALETTE_SECONDS", "10"))
-    deadline = _time.monotonic() + (slack if unify else slack * 3)
+    # The same bound either way. Holding makes a generator's own retries
+    # deterministic -- it gets the same colours back and produces the same
+    # rejected instance -- so a long fallback does not rescue the episode, it
+    # only delays the draw. Fifteen episodes are drawn and ten are needed.
+    deadline = _time.monotonic() + slack
     try:
         while len(pool) < need and tries < budget and _time.monotonic() < deadline:
             tries += 1
             lb = _random.random() * 0.8
             pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw,
-                             vfn=vfn, retries=retries)
+                             vfn=vfn, retries=retries, deadline=deadline)
             if pr is not None:
                 pool.append(pr)
     finally:
@@ -387,7 +405,14 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
                               perm=perm, roles=roles)
         if first is None:
             perm = None
+    # A bound on the task as well as on each episode. 31aa019c can spend its ten
+    # seconds an episode and still not fill a pool, and fifteen of those is two
+    # and a half minutes for one task; past a minute the palette is given up and
+    # the rest of the episodes are drawn plainly.
+    task_deadline = _time.monotonic() + 60.0
     for s in range(n_samples):
+        if perm is not None and _time.monotonic() > task_deadline:
+            perm = None
         if first is not None:
             pool, first = first, None
         else:
