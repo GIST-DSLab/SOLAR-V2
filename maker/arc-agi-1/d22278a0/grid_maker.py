@@ -33,109 +33,198 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+import numpy as np
+from collections import Counter
+from maker.sel_helpers import sel_of
+
+
+# ---------------------------------------------------------------- colors / plan
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
-    bgc = random.choice(cols)
-    variants = [{"ncorns": 1}, {"ncorns": 2}, {"ncorns": 3}, {"ncorns": 4}]
+    """Fix background + the colour of each of the 4 grid corners for the whole episode,
+    and pre-plan how many corners are marked in each instance (structural variant)."""
+    bgc = random.choice(range(10))
+    # corner colours are always NON-ZERO: 0 is 'transparent' for Copy/Paste in ARCLE
+    pool = [c for c in range(1, 10) if c != bgc]
+    random.shuffle(pool)
+    ccols = pool[:4]
+
     n_ex = num_examples if num_examples else 3
+    variants = [1, 2, 3, 4]                      # number of marked corners
     if n_ex >= len(variants):
-        examples = [dict(v) for v in variants]
-        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
-        random.shuffle(examples)
+        plan = [{"ncorns": v} for v in variants]
+        plan += [{"ncorns": random.choice(variants)} for _ in range(n_ex - len(variants))]
+        random.shuffle(plan)
     else:
-        examples = [dict(v) for v in random.sample(variants, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "instance_plan": plan}
+        plan = [{"ncorns": v} for v in random.sample(variants, n_ex)]
+    plan = plan + [dict(random.choice(plan))]    # test case is one of the shown variants
+    return {"bgc": bgc, "ccols": ccols, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int,
-             ncorns: int = None) -> dict:
-    cols = interval(0, 10, 1)
+# ---------------------------------------------------------------- generator
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccols,
+             ncorns=None, instance_plan=None, **kwargs) -> dict:
+    def unif(lb, ub, bounds):
+        a, b = bounds
+        if b <= a:
+            return a
+        lo = a + int((b - a) * lb)
+        hi = a + int((b - a) * ub)
+        lo = max(a, min(lo, b))
+        hi = max(lo, min(hi, b))
+        return random.randint(lo, hi)
+
     if ncorns is None:
-        ncorns = random.choice([1, 2, 3, 4])
-    h = unifint(diff_lb, diff_ub, (4, max_h))
-    w = unifint(diff_lb, diff_ub, (4, max_w))
-    remcols = remove(bgc, cols)
-    gi = canvas(bgc, (h, w))
-    go = canvas(bgc, (h, w))
-    inds = asindices(gi)
-    crns = corners(inds)
-    crns = sample(totuple(crns), ncorns)
-    ccols = sample(remcols, ncorns)
-    for col, crn in zip(ccols, crns):
-        gi = fill(gi, col, {crn})
-        go = fill(go, col, {crn})
-        rings = {crn}
-        for k in range(1, max(h, w) // 2 + 2, 1):
-            rings = rings | outbox(outbox(rings))
-        if len(crns) > 1:
-            ff = lambda ij: manhattan({ij}, {crn}) < min(
-                apply(rbind(manhattan, {ij}), apply(initset, remove(crn, crns))))
+        ncorns = random.randint(1, 4)
+    ncorns = max(1, min(4, int(ncorns)))
+
+    gi = go = None
+    for _attempt in range(40):
+        hlo = min(4 + 2 * ncorns, max_h)
+        wlo = min(4 + 2 * ncorns, max_w)
+        h = max(4, unif(diff_lb, diff_ub, (hlo, max_h)))
+        w = max(4, unif(diff_lb, diff_ub, (wlo, max_w)))
+
+        corner_pts = [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]
+        idxs = random.sample(range(4), ncorns)
+        chosen = [(corner_pts[i], ccols[i]) for i in idxs]
+
+        gi = [[bgc] * w for _ in range(h)]
+        go = [[bgc] * w for _ in range(h)]
+        for (p, col) in chosen:
+            gi[p[0]][p[1]] = col
+            go[p[0]][p[1]] = col
+
+        for (p, col) in chosen:
+            pr, pc = p
+            for r in range(h):
+                for c in range(w):
+                    if max(abs(r - pr), abs(c - pc)) % 2:      # even Chebyshev rings only
+                        continue
+                    d1 = abs(r - pr) + abs(c - pc)
+                    others = [abs(r - q[0]) + abs(c - q[1]) for (q, _) in chosen if q != p]
+                    if others and d1 >= min(others):           # strict Manhattan-nearest
+                        continue
+                    go[r][c] = col
+
+        if go != gi:
+            break
+
+    return {"input": tuple(tuple(r) for r in gi),
+            "output": tuple(tuple(r) for r in go)}
+
+
+# ---------------------------------------------------------------- trajectory
+def _split_runs(vals):
+    vals = sorted(set(vals))
+    runs, s, p = [], vals[0], vals[0]
+    for v in vals[1:]:
+        if v == p + 1:
+            p = v
         else:
-            ff = lambda ij: True
-        locs = sfilter(inds, ff) & rings
-        go = fill(go, col, locs)
-    return {'input': gi, 'output': go}
+            runs.append((s, p))
+            s = p = v
+    runs.append((s, p))
+    return runs
 
 
 def derive_operations(I, O):
-    import numpy as np
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
+    bg = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # Input is a plain canvas with only corner cells colored -> an interior cell is bgc.
-    bgc = int(I[1, 1])
+    # --- the marked grid corners (the anchors the rule radiates from)
+    marks, seen = [], set()
+    for p in [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]:
+        if p in seen:
+            continue
+        seen.add(p)
+        if int(I[p]) != bg:
+            marks.append((p, int(I[p])))
 
-    # Seeds: the corner cells that carry a non-background color.
-    seeds = []
-    for (r, c) in [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]:
-        if int(I[r, c]) != bgc:
-            seeds.append((r, c, int(I[r, c])))
+    # --- rule: every cell at EVEN Chebyshev distance from a corner, inside that
+    #     corner's strict Manhattan-Voronoi region, takes the corner's colour.
+    targets = {}
+    for (p, col) in marks:
+        pr, pc = p
+        for r in range(h):
+            for c in range(w):
+                if max(abs(r - pr), abs(c - pc)) % 2:
+                    continue
+                d1 = abs(r - pr) + abs(c - pc)
+                others = [abs(r - q[0]) + abs(c - q[1]) for (q, _) in marks if q != p]
+                if others and d1 >= min(others):
+                    continue
+                targets[(r, c)] = col
+
+    ok = all(targets.get((r, c), bg) == int(O[r, c]) for r in range(h) for c in range(w))
+    if not ok:  # defensive fallback
+        targets = {(r, c): int(O[r, c]) for r in range(h) for c in range(w) if O[r, c] != bg}
 
     ops, sels = [], []
-    maxrad = max(h - 1, w - 1)
+    clip = None   # (colour, orientation, length) currently on the clipboard
 
-    for (r0, c0, col) in seeds:
-        others = [(r, c) for (r, c, _) in seeds if (r, c) != (r0, c0)]
-        dr = 1 if r0 == 0 else -1
-        dc = 1 if c0 == 0 else -1
+    def emit_run(col, orient, fixed, run, drawn):
+        """Draw one straight stripe of this corner's pattern.
+        If a stripe of this corner already drawn fits inside it, REPLICATE it
+        (CopyO + Paste at the new offset) and only paint what the rule leaves over."""
+        nonlocal clip
+        a, b = run
+        best = None
+        for (f2, a2, b2) in drawn:
+            L = b2 - a2 + 1
+            if L >= 2 and a2 >= a and b2 <= b:
+                key = (L, 1 if clip == (col, orient, L) else 0)
+                if best is None or key > best[0]:
+                    best = (key, (f2, a2, b2))
+        if best is not None and col != 0:
+            f2, a2, b2 = best[1]
+            L = b2 - a2 + 1
+            if clip != (col, orient, L):
+                ops.append(29)                                    # CopyO the source stripe
+                sels.append([f2, a2, 0, L - 1] if orient == 'H' else [a2, f2, L - 1, 0])
+                clip = (col, orient, L)
+            ops.append(30)                                        # Paste it at this offset
+            sels.append([fixed, a2, 0, 0] if orient == 'H' else [a2, fixed, 0, 0])
+            rest = [x for x in range(a, b + 1) if not (a2 <= x <= b2)]
+            if rest:
+                cells = [(fixed, x) if orient == 'H' else (x, fixed) for x in rest]
+                ops.append(col)
+                sels.append(sel_of(cells))
+        else:
+            cells = [(fixed, x) if orient == 'H' else (x, fixed) for x in range(a, b + 1)]
+            ops.append(col)
+            sels.append(sel_of(cells))
+        drawn.append((fixed, a, b))
 
-        def owns(r, c):
-            # cell belongs to this seed only if strictly nearest (L1); ties stay background
-            if not (0 <= r < h and 0 <= c < w):
-                return False
-            d = abs(r - r0) + abs(c - c0)
-            for (r1, c1) in others:
-                if d >= abs(r - r1) + abs(c - c1):
-                    return False
-            return True
+    for (p, col) in marks:
+        pr, pc = p
+        cells = [rc for rc, cc in targets.items() if cc == col and rc != (pr, pc)]
+        if not cells:
+            continue
+        Hg, Vg = {}, {}
+        for (r, c) in cells:
+            dr, dc = abs(r - pr), abs(c - pc)
+            d = max(dr, dc)
+            if dr >= dc:
+                Hg.setdefault(d, []).append((r, c))   # horizontal stripes
+            else:
+                Vg.setdefault(d, []).append((r, c))   # vertical stripes
 
-        def emit_runs(cells, vertical):
-            run = []
-            for cell in cells + [None]:
-                if cell is not None and owns(cell[0], cell[1]):
-                    run.append(cell)
-                    continue
-                if run:
-                    rs = [p[0] for p in run]
-                    cs = [p[1] for p in run]
-                    if vertical:
-                        sels.append([min(rs), cs[0], max(rs) - min(rs), 0])
-                    else:
-                        sels.append([rs[0], min(cs), 0, max(cs) - min(cs)])
-                    ops.append(col)
-                    run = []
+        drawn_h = []
+        for d in sorted(Hg):                          # outward from the corner
+            for row in sorted({r for (r, _) in Hg[d]}):
+                cols = [c for (r, c) in Hg[d] if r == row]
+                for run in _split_runs(cols):
+                    emit_run(col, 'H', row, run, drawn_h)
 
-        # concentric square rings around this seed, radius 2, 4, 6, ... outward.
-        # Only the two arms facing into the grid exist (seed sits on a corner).
-        k = 2
-        while k <= maxrad:
-            cc = c0 + k * dc
-            emit_runs([(r0 + i * dr, cc) for i in range(k + 1)], True)
-            rr = r0 + k * dr
-            emit_runs([(rr, c0 + j * dc) for j in range(k)], False)
-            k += 2
+        drawn_v = []
+        for d in sorted(Vg):                          # outward from the corner
+            for cc in sorted({c for (_, c) in Vg[d]}):
+                rows = [r for (r, c) in Vg[d] if c == cc]
+                for run in _split_runs(rows):
+                    emit_run(col, 'V', cc, run, drawn_v)
 
     ops.append(34)
     sels.append([0, 0, h - 1, w - 1])
@@ -182,7 +271,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

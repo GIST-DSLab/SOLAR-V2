@@ -276,7 +276,9 @@ def main() -> None:
     ap.add_argument("--tasks", nargs="+", default=None)
     ap.add_argument("--concepts", nargs="+", default=sorted(CONCEPTS),
                     choices=sorted(CONCEPTS))
-    ap.add_argument("--episodes", type=int, default=5,
+    # A defect here is "no episode carries the concept", so the sample size is
+    # the claim's strength. Read the whole draw.
+    ap.add_argument("--episodes", type=int, default=25,
                     help="episodes read per task")
     ap.add_argument("--rearc_root", default=str(SOLAR_ROOT / "re-arc"))
     ap.add_argument("--out", default="probe_direction.json")
@@ -294,10 +296,17 @@ def main() -> None:
         if not ops:
             continue
         rec = {"task_id": task, "verdict": "PASS", "findings": []}
+        # One is enough. A verifier that calls both dmirror and repeat is not
+        # asking for a flip *and* a paste; it is one rule described in the terms
+        # the DSL had. 8e1813be flips on every instance it solves and was still
+        # being called defective for the repeat, and the round that produced
+        # came back with a maker that flips on none of them.
+        carried = any(concepts[task] & dsl and set(ops) & arcle
+                      for dsl, arcle in CONCEPTS.values())
         for name in args.concepts:
             dsl, arcle = CONCEPTS[name]
             named = concepts[task] & dsl
-            if not named or (set(ops) & arcle):
+            if not named or carried:
                 continue
             top = ", ".join(f"{k} x{v}" for k, v in ops.most_common(6))
             rec["verdict"] = "REVISE"
@@ -310,8 +319,14 @@ def main() -> None:
                     f"use one of {', '.join(sorted(arcle))}; yours uses none of them. "
                     f"What it does use: {top}.\n\n"
                     f"The grid you produce is correct — this is about the route. "
-                    f"Re-derive so the {name} is something the trajectory performs, "
-                    f"not something the final grid merely reflects."),
+                    + (f"If the rule moves something, moving it is the better route "
+                       f"and it is worth trying. But a rule that ends up placing "
+                       f"cells is not wrong for placing them: keep what you have "
+                       f"rather than add a Move to satisfy this line, and say so by "
+                       f"leaving the route as it is."
+                       if name in SOFT else
+                       f"Re-derive so the {name} is something the trajectory "
+                       f"performs, not something the final grid merely reflects.")),
             })
         recs.append(rec)
         flagged += rec["verdict"] != "PASS"

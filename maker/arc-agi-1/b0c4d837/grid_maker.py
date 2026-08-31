@@ -37,158 +37,140 @@ import random
 import numpy as np
 from maker.sel_helpers import sel_of
 
-
-# ---------------------------------------------------------------- variants
-# Structural parameter of this task: ntofill (= how many of the 9 output cells
-# get the fill colour) and the rotation applied to the input canvas.
-# ntofill is restricted to {4, 5}: those are exactly the counts for which the
-# middle output row is non-uniform, i.e. the vmirror of the middle row (the
-# rule the verifier states) is a genuinely visible operation.
-VARIANTS = [
-    {"ntofill": 4, "rot": 0},
-    {"ntofill": 5, "rot": 1},
-    {"ntofill": 4, "rot": 2},
-    {"ntofill": 5, "rot": 3},
-]
+ROTS = ["identity", "rot90", "rot180", "rot270"]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc, boxc, fillc = random.sample(cols, 3)
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+    if n_ex >= len(ROTS):
+        examples = [{"rot": r} for r in ROTS]
+        examples += [{"rot": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+        examples = [{"rot": r} for r in random.sample(ROTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "boxc": boxc, "fillc": fillc, "instance_plan": plan}
 
 
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    lo = a + int((b - a) * diff_lb)
-    hi = a + int((b - a) * diff_ub)
-    if hi < lo:
-        lo, hi = hi, lo
-    lo = max(a, lo)
-    hi = min(b, hi)
-    if hi < lo:
-        hi = lo
-    return random.randint(lo, hi)
-
-
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, boxc, fillc,
-             ntofill=None, rot=None) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, boxc, fillc, rot=None) -> dict:
     if rot is None:
-        rot = random.choice([0, 1, 2, 3])
-    if ntofill is None:
-        ntofill = random.choice([4, 5])
-
-    # after a 90/270 rotation the canvas is transposed -> swap the limits
-    if rot in (0, 2):
-        h_lim, w_lim = max_h, max_w
+        rot = random.choice(ROTS)
+    # a 90 degree turn transposes the canvas, so respect the transposed limits
+    if rot in ("rot90", "rot270"):
+        lim_h, lim_w = max_w, max_h
     else:
-        h_lim, w_lim = max_w, max_h
-    h_lim = max(5, min(30, int(h_lim)))
-    w_lim = max(5, min(30, int(w_lim)))
+        lim_h, lim_w = max_h, max_w
+    lim_h = max(5, lim_h)
+    lim_w = max(5, lim_w)
 
-    # feasibility: box height oh needs oh >= ntofill + 2 and oh <= h - 1
-    ntofill = max(1, min(int(ntofill), 9, h_lim - 3))
-    h_lo = max(5, ntofill + 3)
-    h = _unifint(diff_lb, diff_ub, (h_lo, h_lim))
-    w = _unifint(diff_lb, diff_ub, (5, w_lim))
-
-    oh = _unifint(diff_lb, diff_ub, (ntofill + 2, h - 1))
-    ow = _unifint(diff_lb, diff_ub, (3, w - 1))
+    h = unifint(diff_lb, diff_ub, (5, lim_h))
+    w = unifint(diff_lb, diff_ub, (5, lim_w))
+    oh = unifint(diff_lb, diff_ub, (3, h - 1))
+    ow = unifint(diff_lb, diff_ub, (3, w - 1))
     loci = random.randint(0, h - oh)
     locj = random.randint(0, w - ow)
 
-    g = [[bgc] * w for _ in range(h)]
-    # solid box of boxc
-    for r in range(oh):
-        for c in range(ow):
-            g[loci + r][locj + c] = boxc
-    # interior stripes: first `ntofill` rows bgc, the rest fillc
-    for r in range(oh - 1):
-        v = bgc if r < ntofill else fillc
-        for c in range(1, ow - 1):
-            g[loci + r][locj + c] = v
+    subg = canvas(boxc, (oh, ow))
+    subg2 = canvas(fillc, (oh - 1, ow - 2))
+    ntofill = unifint(diff_lb, diff_ub, (1, min(9, oh - 2)))
+    for j in range(ntofill):
+        subg2 = fill(subg2, bgc, connect((j, 0), (j, ow - 2)))
+    subg = paint(subg, shift(asobject(subg2), (0, 1)))
+    gi = canvas(bgc, (h, w))
+    gi = paint(gi, shift(asobject(subg), (loci, locj)))
 
-    gi = np.array(g, dtype=int)
-    if rot:
-        gi = np.rot90(gi, k=rot)
+    go = repeat(fillc, ntofill) + repeat(bgc, 9 - ntofill)
+    go = (go[:3], go[3:6][::-1], go[6:])
 
-    seq = [fillc] * ntofill + [bgc] * (9 - ntofill)
-    go = [list(seq[0:3]), list(seq[3:6][::-1]), list(seq[6:9])]
-
-    return {"input": gi.tolist(), "output": go}
+    rotf = {"identity": identity, "rot90": rot90, "rot180": rot180, "rot270": rot270}[rot]
+    gi = rotf(gi)
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
+    """
+    Rule: the grid holds a 3-sided box.  Its interior is a solid block of `fillc`
+    plus `n` empty (background) rows/columns on the open side.  The answer is a
+    3x3 tally: the colour `fillc` REPEATED n times along a boustrophedon path
+    (row0 left->right, row1 right->left, row2 left->right), the remaining cells
+    background.
+
+    Route: copy one cell of the replicated colour out of the input, reframe the
+    canvas to the 3x3 answer, lay the base colour, then paste the replicated
+    colour once per unit of the count, walking the snake path.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
+    hi, wi = I.shape
 
-    # ---- identify the three colour roles the way the task builds them -------
-    cells = {}
-    for c in np.unique(I):
-        rs, cs = np.where(I == c)
-        cells[int(c)] = (rs, cs)
+    # --- identify the three colour roles by bounding-box area -----------------
+    # background spans the whole grid, the frame spans the box, the fill is inside
+    info = []
+    for col in np.unique(I):
+        cells = np.argwhere(I == col)
+        r0, c0 = cells.min(0)
+        r1, c1 = cells.max(0)
+        info.append((int((r1 - r0 + 1) * (c1 - c0 + 1)), int(col),
+                     (int(r0), int(c0), int(r1), int(c1))))
+    info.sort(key=lambda t: -t[0])
+    bgc = info[0][1]
+    boxc, bbox = info[1][1], info[1][2]
+    fillc, fbox = info[2][1], info[2][2]
 
-    def bbox_area(c):
-        rs, cs = cells[c]
-        return (rs.max() - rs.min() + 1) * (cs.max() - cs.min() + 1)
-
-    ordered = sorted(cells.keys(), key=lambda c: (-bbox_area(c), -len(cells[c][0])))
-    bgc = ordered[0]                      # background spans the whole canvas
-    boxc = ordered[1]                     # the box frame (bigger bbox)
-    fillc = ordered[2]                    # the filled block inside the box
-
-    # ---- how many stripes of background sit inside the box -----------------
-    rs, cs = cells[boxc]
-    r0, r1, c0, c1 = int(rs.min()), int(rs.max()), int(cs.min()), int(cs.max())
-    boxset = set(zip(rs.tolist(), cs.tolist()))
-    left_full = all((r, c0) in boxset for r in range(r0, r1 + 1))
-    right_full = all((r, c1) in boxset for r in range(r0, r1 + 1))
-    frs, fcs = cells[fillc]
-    if left_full and right_full:          # box stands upright -> measure heights
+    # --- which axis is the box closed along? (both side columns solid frame?) --
+    r0, c0, r1, c1 = bbox
+    left_full = all(I[r, c0] == boxc for r in range(r0, r1 + 1))
+    right_full = all(I[r, c1] == boxc for r in range(r0, r1 + 1))
+    if left_full and right_full:
         box_dim = r1 - r0 + 1
-        fill_dim = int(frs.max() - frs.min() + 1)
-    else:                                 # box is on its side -> measure widths
+        fill_dim = fbox[2] - fbox[0] + 1
+    else:
         box_dim = c1 - c0 + 1
-        fill_dim = int(fcs.max() - fcs.min() + 1)
-    k = int(box_dim - fill_dim - 1)
-    k = max(0, min(9, k))
+        fill_dim = fbox[3] - fbox[1] + 1
+    n = box_dim - fill_dim - 1
+    n = max(0, min(9, n))
+
+    # --- boustrophedon path of the 3x3 answer --------------------------------
+    path = []
+    for k in range(9):
+        r, m = divmod(k, 3)
+        c = m if r != 1 else 2 - m
+        path.append((r, c))
+
+    # Paste cannot carry colour 0, so the colour that is 0 (if any) becomes the
+    # painted base and the other colour is the one that gets replicated.
+    if fillc != 0:
+        base_col, rep_col = bgc, fillc
+        rep_cells = path[:n]
+        src_r, src_c = fbox[0], fbox[1]          # solid fill rectangle
+    else:
+        base_col, rep_col = fillc, bgc
+        rep_cells = path[n:]
+        bg_cells = np.argwhere(I == bgc)
+        src_r, src_c = int(bg_cells[0][0]), int(bg_cells[0][1])
 
     ops, sels = [], []
 
-    # 1. the answer lives on a 3x3 canvas -> shrink the canvas to 3x3.
-    #    bbox is exactly the full 3x3 rectangle we keep.
-    ops.append(33); sels.append([0, 0, 2, 2])
+    # 1. take the replicated colour from the object it comes from in the input
+    if rep_cells:
+        ops.append(28); sels.append(sel_of([(src_r, src_c)]))
 
-    # 2. lay the background base over the whole little canvas
-    #    (skip only when the canvas already holds nothing but bgc)
-    if not np.all(I[:3, :3] == bgc):
-        ops.append(int(bgc))
-        sels.append(sel_of([(r, c) for r in range(3) for c in range(3)]))
+    # 2. reframe the canvas to the 3x3 answer grid (full rectangle -> bbox ok)
+    out_cells = [(r, c) for r in range(3) for c in range(3)]
+    ops.append(33); sels.append(sel_of(out_cells))
 
-    # 3. write k fill-coloured cells in reading order, row by row
-    seq = [fillc] * k + [bgc] * (9 - k)
-    for row in range(3):
-        seg = [(row, c) for c in range(3) if seq[row * 3 + c] == fillc]
-        if seg:
-            ops.append(int(fillc)); sels.append(sel_of(seg))
+    # 3. lay the base colour over the whole answer grid (skip if already so)
+    cur = I[0:3, 0:3]
+    if not np.all(cur == base_col):
+        ops.append(int(base_col)); sels.append(sel_of(out_cells))
 
-    # 4. the rule's reflection: mirror the middle row left<->right.
-    #    bbox = exactly the whole middle row, background included.
-    mid = seq[3:6]
-    if mid != mid[::-1]:
-        ops.append(26); sels.append([1, 0, 0, 2])
+    # 4. repeat the other colour once per counted unit, along the snake path
+    for (r, c) in rep_cells:
+        ops.append(30); sels.append(sel_of([(r, c)]))
 
-    ops.append(34); sels.append([0, 0, 2, 2])
+    ops.append(34); sels.append(sel_of(out_cells))
     return ops, sels
 
 

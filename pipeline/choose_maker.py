@@ -172,12 +172,19 @@ def replay(derive, I, O_shown):
 
 
 def concept_ops(task: str, vconcepts: dict) -> tuple[str | None, set[int]]:
-    """The concept the verifier names, and the ARCLE ops that would carry it."""
+    """The concepts the verifier names, and the ARCLE ops that would carry one.
+
+    All of them, not the first: a verifier that calls both dmirror and repeat
+    describes one rule in the terms the DSL had, and a route that flips is
+    carrying it whichever of the two the table happens to list first.
+    """
     called = vconcepts.get(task, set())
-    for name, (dsl, ops) in CONCEPTS.items():
+    names, ops = [], set()
+    for name, (dsl, arcle) in CONCEPTS.items():
         if called & dsl:
-            return name, {OP_ID[o] for o in ops if o in OP_ID}
-    return None, set()
+            names.append(name)
+            ops |= {OP_ID[o] for o in arcle if o in OP_ID}
+    return ("/".join(names) if names else None), ops
 
 
 def copy_pairs(pairs):
