@@ -298,11 +298,6 @@ def regenerate_finding(task: str, concept: str | None, cur: dict,
     ev = [f"Of {cur['n']} instances drawn from this task's own generator and "
           f"vouched for by its verifier, your derive_operations solves "
           f"{cur['solved']}."]
-    if concept and cur["route"] < 1.0:
-        ev.append(
-            f"The verifier calls this a {concept}, and only {cur['routed']} of "
-            f"those {cur['solved']} solutions perform one — the rest reach the "
-            f"right grid by colouring cells.")
     if cur["copy"] > 0:
         ev.append(
             f"On {cur['copied']} of {cur['trials']} pairs where you were handed "

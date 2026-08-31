@@ -66,6 +66,15 @@ CODE_FORBIDS = {
     "ANSWER_RECONSTRUCTION": {"label": "ResetGrid (blind repaint)", "ops": [32]},
 }
 
+# Measured, reported, and never asked for. Telling a maker to put the operation
+# the verifier names into its route produced routes that contain it and perform
+# nothing -- a mirror and its undo, or a turn dropped into a task whose verifier
+# only ever mirrors in order to compare. Four rounds of pruning such devices out
+# of the concept table did not stop it, because the demand is what turns any
+# remaining misreading into a worse trajectory.
+DIAGNOSTIC_ONLY = {"CONCEPT_DIRECTION_MISSING"}
+
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--critique", type=str, required=True,
                     help="critique_makers_llm.py --out JSON")
@@ -87,7 +96,8 @@ RANK = {"low": 0, "medium": 1, "high": 2}
 
 def build_feedback(rec: dict) -> str:
     findings = [f for f in rec.get("findings", [])
-                if RANK[f["severity"]] >= RANK[args.min_severity]]
+                if RANK[f["severity"]] >= RANK[args.min_severity]
+                and f["code"] not in DIAGNOSTIC_ONLY]
     if not findings:
         return ""
 
@@ -100,7 +110,16 @@ def build_feedback(rec: dict) -> str:
     narrow_rule = {"FAILS_REARC_INSTANCE"}
     copied = {"ANSWER_COPIED_FROM_O"}
     both = {"CONCEPT_ROUTE_READS_ANSWER"}
-    no_direction = {"CONCEPT_DIRECTION_MISSING"}
+    # CONCEPT_DIRECTION_MISSING no longer reaches the generator. Asking a maker
+    # to put the verifier's named operation into the route produced routes that
+    # contain it and perform nothing: a mirror and its undo, or a turn dropped
+    # into a task whose verifier only ever mirrors in order to *compare*
+    # (662c240a splits a grid and picks the piece that is not its own transpose;
+    # 1b60fb0c fills cells, and every rot90 in it feeds an equality). Four
+    # rounds of excluding such devices from the concept table still left those
+    # two, and the demand is what turns a misreading into a worse trajectory.
+    # The measure stays as a diagnostic; it is not a thing to ask for.
+    no_direction: set[str] = set()
     if any(f["code"] in both for f in findings):
         lines = [
             "Several versions of this maker have been written and measured, and none "
@@ -275,7 +294,8 @@ def main():
     codes = Counter(f["code"] for r in recs if "error" not in r
                     and r.get("verdict") in wanted
                     for f in r.get("findings", [])
-                    if RANK[f["severity"]] >= RANK[args.min_severity])
+                    if RANK[f["severity"]] >= RANK[args.min_severity]
+                    and f["code"] not in DIAGNOSTIC_ONLY)
 
     print(f"critique     : {args.critique}")
     print(f"verdicts     : {' '.join(sorted(wanted))}")

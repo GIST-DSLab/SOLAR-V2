@@ -14,9 +14,14 @@ the object down. A transform that appears together with its own inverse is that
 kind of scaffolding and is ignored here. What is left is the direction, and the
 question is only whether the trajectory travels in it at all.
 
+This is a diagnostic and no longer a demand. `critique_to_feedback.py` drops
+the finding rather than passing it on: asking for the operation got routes that
+contain it and perform nothing, and a route that carries the concept on some
+fraction of its instances turned out to be the surest sign of that -- every
+maker in the release scoring between 0 and 0.5 has a group of operations that
+composes back to where it started. Use it to decide what to look at.
+
 No LLM calls. Reads recorded episodes, so it costs a rollout and nothing else.
-Output is critique_makers_llm.py's record schema, so critique_to_feedback.py
-carries a failure into the next generation unchanged.
 
     python pipeline/probe_direction.py --root $SOLAR_DATA_ROOT/draw/whole \\
         --concepts reflection --out probe_direction.json
