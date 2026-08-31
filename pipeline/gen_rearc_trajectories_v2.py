@@ -397,27 +397,35 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     # pool takes minutes -- paying that fifteen times over, and then paying the
     # fallback fifteen times too, is what made the draw crawl. One probe says
     # whether this task can be drawn on a held palette at all.
+    # One assignment per episode, not per task. sample_colors() is written to be
+    # called once an episode -- that is how the maker path used it -- so calling
+    # it once and reusing the answer gave all fifteen episodes of a task the
+    # same colours. Within an episode the roles hold; between episodes they are
+    # drawn again.
     got = _maker_palette(gm_mod)
     perm, roles = got if got else (None, 0)
+    holds = perm is not None
     first = None
-    if perm is not None:
+    if holds:
         first = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=True,
                               perm=perm, roles=roles)
         if first is None:
-            perm = None
+            holds = False
     # A bound on the task as well as on each episode. 31aa019c can spend its ten
     # seconds an episode and still not fill a pool, and fifteen of those is two
     # and a half minutes for one task; past a minute the palette is given up and
     # the rest of the episodes are drawn plainly.
     task_deadline = _time.monotonic() + 60.0
     for s in range(n_samples):
-        if perm is not None and _time.monotonic() > task_deadline:
-            perm = None
+        if holds and _time.monotonic() > task_deadline:
+            holds = False
         if first is not None:
             pool, first = first, None
         else:
-            pool = _episode_pool(genfn, need, max_hw, vfn, ufn,
-                                 unify=perm is not None, perm=perm, roles=roles)
+            fresh = _maker_palette(gm_mod) if holds else None
+            pool = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=holds,
+                                 perm=fresh[0] if fresh else None,
+                                 roles=fresh[1] if fresh else 0)
         if pool is None:
             continue
         ex, (I, O) = pool[:n_examples], pool[n_examples]
