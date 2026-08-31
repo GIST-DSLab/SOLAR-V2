@@ -68,7 +68,7 @@ SUBSETS = {
         # see --rearc_generate in gen_rearc_trajectories_v2.py. Named for how it
         # was made rather than continuing the ARC_best10_r* numbering, which was
         # the maker-generate() line.
-        root=DATA_ROOT / "ARC_rearc_draw5" / "whole",
+        root=DATA_ROOT / "ARC_rearc_draw8" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its
