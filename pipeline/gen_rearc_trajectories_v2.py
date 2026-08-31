@@ -163,7 +163,7 @@ def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80):
     for _ in range(retries):
         held = getattr(genfn, "_held", None)
         if held is not None:
-            held.seen.clear()          # roles are per instance, not per episode
+            held.taken = 0             # the roles are re-assigned per instance
         try:
             d = genfn(lb, ub)
         except Exception:
@@ -221,9 +221,10 @@ def _fix_colours(seq):
 class _HeldColours:
     """Patch generators.choice/sample for one episode, restore after."""
 
-    def __init__(self, perm, genfn=None):
+    def __init__(self, perm, genfn=None, roles=0):
         self.perm = perm
         self.genfn = genfn
+        self.roles = roles
 
     def __enter__(self):
         # Every maker begins by deleting utils, dsl and generators from
@@ -231,7 +232,8 @@ class _HeldColours:
         # object is not a reliable handle -- the generator we hold was captured
         # before that and still reads its names out of the dictionary it was
         # defined in. Patch that dictionary.
-        self.seen = set()
+        self.taken = 0
+        self.first_pool = frozenset()
         self._g = self.genfn.__globals__
         self._choice = self._g.get("choice")
         self._sample = self._g.get("sample")
@@ -239,29 +241,39 @@ class _HeldColours:
 
         def choice(seq):
             items = _fix_colours(seq) if _asks_for_colour() else None
-            if items is not None:
-                pool = frozenset(items)
-                # Only the first draw from a given pool is a role. The
-                # generators also call choice on a colour list inside a loop --
-                # 0dfd9992 picks a colour per cell of its pattern that way --
-                # and holding those makes the pattern one flat colour, which the
-                # verifier then refuses over and over.
-                if pool not in self.seen:
-                    self.seen.add(pool)
-                    for c in perm:
-                        if c in pool:
-                            return c
+            if items is not None and self.taken >= self.roles \
+                    and set(items) == self.first_pool:
+                self.taken = 0        # the generator is retrying; roles again
+            if items is not None and self.taken < self.roles:
+                if self.taken == 0:
+                    self.first_pool = set(items)
+                # The role assignments come first, one per colour the maker
+                # names, and everything after them is painting -- 0dfd9992 picks
+                # a colour per cell of its pattern with the same call, and
+                # holding those makes the pattern one flat colour, which the
+                # verifier then refuses over and over. Counting the draws
+                # separates them; the pool cannot, because 7b6016b9 takes both
+                # of its colours out of the same one.
+                pool = set(items)
+                for c in perm[self.taken:]:
+                    if c in pool:
+                        self.taken += 1
+                        return c
             return self._choice(seq)
 
         def sample(seq, k):
             items = _fix_colours(seq) if _asks_for_colour() else None
-            if items is not None:
-                pool = frozenset(items)
-                if pool not in self.seen:
-                    self.seen.add(pool)
-                    picked = [c for c in perm if c in pool][:k]
-                    if len(picked) == k:
-                        return picked
+            if items is not None and self.taken >= self.roles \
+                    and set(items) == self.first_pool:
+                self.taken = 0
+            if items is not None and self.taken < self.roles:
+                pool = set(items)
+                if self.taken == 0:
+                    self.first_pool = pool
+                picked = [c for c in perm[self.taken:] if c in pool][:k]
+                if len(picked) == k:
+                    self.taken += k
+                    return picked
             return self._sample(seq, k)
 
         self._g["choice"], self._g["sample"] = choice, sample
@@ -310,15 +322,17 @@ def _maker_palette(gm_mod):
                 order.append(c)
     if not order:
         return None
-    return order + [c for c in range(10) if c not in order]
+    # The count matters as much as the colours: it is how many draws at the top
+    # of a generator are role assignments rather than painting.
+    return order + [c for c in range(10) if c not in order], len(order)
 
 
-def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None):
+def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0):
     """One episode's pairs, all drawn under the same colour assignment."""
     pool, tries = [], 0
     if perm is None:
         perm = _random.sample(range(10), 10)
-    ctx = _HeldColours(perm, genfn) if unify else None
+    ctx = _HeldColours(perm, genfn, roles) if unify else None
     if ctx is not None:
         ctx.__enter__()
     # A held palette narrows what the generator can land on, and for a few tasks
@@ -331,7 +345,8 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None):
     # grids takes long enough that twelve thousand calls is minutes, and one
     # task holding the draw for minutes is worse than that task shipping in
     # mixed colours. 0e206a2e was six of them.
-    deadline = _time.monotonic() + (10.0 if unify else 30.0)
+    slack = float(os.environ.get("SOLAR_PALETTE_SECONDS", "10"))
+    deadline = _time.monotonic() + (slack if unify else slack * 3)
     try:
         while len(pool) < need and tries < budget and _time.monotonic() < deadline:
             tries += 1
@@ -364,10 +379,12 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     # pool takes minutes -- paying that fifteen times over, and then paying the
     # fallback fifteen times too, is what made the draw crawl. One probe says
     # whether this task can be drawn on a held palette at all.
-    perm = _maker_palette(gm_mod)
+    got = _maker_palette(gm_mod)
+    perm, roles = got if got else (None, 0)
     first = None
     if perm is not None:
-        first = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=True, perm=perm)
+        first = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=True,
+                              perm=perm, roles=roles)
         if first is None:
             perm = None
     for s in range(n_samples):
@@ -375,7 +392,7 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
             pool, first = first, None
         else:
             pool = _episode_pool(genfn, need, max_hw, vfn, ufn,
-                                 unify=perm is not None, perm=perm)
+                                 unify=perm is not None, perm=perm, roles=roles)
         if pool is None:
             continue
         ex, (I, O) = pool[:n_examples], pool[n_examples]
