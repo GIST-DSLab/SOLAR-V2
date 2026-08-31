@@ -844,7 +844,9 @@ function stop(){ clearInterval(TIMER); TIMER = null; document.getElementById("pl
 document.getElementById("play").onclick = () => {
   if(TIMER) return stop();
   document.getElementById("play").textContent = "Pause";
-  TIMER = setInterval(() => { if(FRAME === EP.ops.length*2 - 1){ stop(); return; } go(1); }, 750);
+  // Every action is two frames, its selection and its result, so this is half
+  // the time a viewer spends per action.
+  TIMER = setInterval(() => { if(FRAME === EP.ops.length*2 - 1){ stop(); return; } go(1); }, 375);
 };
 document.getElementById("prev").onclick = () => { stop(); go(-1); };
 document.getElementById("next").onclick = () => { stop(); go(1); };
