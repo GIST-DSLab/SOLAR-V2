@@ -68,7 +68,7 @@ SUBSETS = {
         # see --rearc_generate in gen_rearc_trajectories_v2.py. Named for how it
         # was made rather than continuing the ARC_best10_r* numbering, which was
         # the maker-generate() line.
-        root=DATA_ROOT / "ARC_rearc_draw1" / "whole",
+        root=DATA_ROOT / "ARC_rearc_draw4" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its
@@ -77,8 +77,8 @@ SUBSETS = {
         manifest=DATA_ROOT / "best_manifest.json",
         note="400 ARC-AGI-1 training tasks, one maker per task",
         rollout="python gen_rearc_trajectories_v2.py --subfolder arc-agi-1 "
-                "--num_samples 25 --rand_seed 0 --max_grid_dim 30 30 "
-                "--data_folder <out>",
+                "--num_samples 15 --rand_seed 0 --max_grid_dim 30 30 "
+                "--rearc_generate --verify_filter --data_folder <out>",
     ),
     "handcraft": dict(
         # A control, not new coverage: all 9 base task ids are already in
