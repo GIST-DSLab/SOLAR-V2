@@ -160,6 +160,9 @@ def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80):
     and — when vfn is given (re-arc-style gate) — until verify reproduces it, per pair."""
     Hc, Wc = max_hw
     for _ in range(retries):
+        held = getattr(genfn, "_held", None)
+        if held is not None:
+            held.seen.clear()          # roles are per instance, not per episode
         try:
             d = genfn(lb, ub)
         except Exception:
@@ -178,6 +181,9 @@ COLOUR_ARGS = re.compile(r"(?:choice|sample)\(\s*([A-Za-z_]\w*)")
 COLOUR_NAME = re.compile(r"col|^itv$|^remitv$", re.I)
 
 
+_COLOUR_SITE = {}
+
+
 def _asks_for_colour(depth=2):
     """Is the call the generator is making a colour draw, by the name it passes?
 
@@ -189,11 +195,15 @@ def _asks_for_colour(depth=2):
     """
     try:
         f = sys._getframe(depth)
-        line = linecache.getline(f.f_code.co_filename, f.f_lineno)
+        key = (f.f_code.co_filename, f.f_lineno)
     except Exception:
         return False
-    m = COLOUR_ARGS.search(line)
-    return bool(m and COLOUR_NAME.search(m.group(1)))
+    hit = _COLOUR_SITE.get(key)
+    if hit is None:                      # one call site, one answer, decided once
+        line = linecache.getline(*key)
+        m = COLOUR_ARGS.search(line)
+        hit = _COLOUR_SITE[key] = bool(m and COLOUR_NAME.search(m.group(1)))
+    return hit
 
 
 def _fix_colours(seq):
@@ -220,6 +230,7 @@ class _HeldColours:
         # object is not a reliable handle -- the generator we hold was captured
         # before that and still reads its names out of the dictionary it was
         # defined in. Patch that dictionary.
+        self.seen = set()
         self._g = self.genfn.__globals__
         self._choice = self._g.get("choice")
         self._sample = self._g.get("sample")
@@ -228,22 +239,35 @@ class _HeldColours:
         def choice(seq):
             items = _fix_colours(seq) if _asks_for_colour() else None
             if items is not None:
-                pool = set(items)
-                for c in perm:
-                    if c in pool:
-                        return c
+                pool = frozenset(items)
+                # Only the first draw from a given pool is a role. The
+                # generators also call choice on a colour list inside a loop --
+                # 0dfd9992 picks a colour per cell of its pattern that way --
+                # and holding those makes the pattern one flat colour, which the
+                # verifier then refuses over and over.
+                if pool not in self.seen:
+                    self.seen.add(pool)
+                    for c in perm:
+                        if c in pool:
+                            return c
             return self._choice(seq)
 
         def sample(seq, k):
             items = _fix_colours(seq) if _asks_for_colour() else None
             if items is not None:
-                pool = set(items)
-                picked = [c for c in perm if c in pool][:k]
-                if len(picked) == k:
-                    return picked
+                pool = frozenset(items)
+                if pool not in self.seen:
+                    self.seen.add(pool)
+                    picked = [c for c in perm if c in pool][:k]
+                    if len(picked) == k:
+                        return picked
             return self._sample(seq, k)
 
         self._g["choice"], self._g["sample"] = choice, sample
+        try:
+            self.genfn._held = self
+        except Exception:
+            pass
         return self
 
     def __exit__(self, *exc):
@@ -296,11 +320,18 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None):
     ctx = _HeldColours(perm, genfn) if unify else None
     if ctx is not None:
         ctx.__enter__()
+    # A held palette narrows what the generator can land on, and for a few tasks
+    # it narrows it a long way -- 29ec7d0e spent minutes not finding a fourth
+    # pair. Give holding a short budget and let the fallback take over: an
+    # episode drawn in mixed colours beats an episode that never arrives.
+    budget = need * (8 if unify else 40)
+    retries = 20 if unify else 80
     try:
-        while len(pool) < need and tries < need * 40:
+        while len(pool) < need and tries < budget:
             tries += 1
             lb = _random.random() * 0.8
-            pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw, vfn=vfn)
+            pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw,
+                             vfn=vfn, retries=retries)
             if pr is not None:
                 pool.append(pr)
     finally:
@@ -322,12 +353,23 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     # Unification needs the verifier whether or not --verify_filter asked for
     # one: it is what decides that a recolouring left the task alone.
     ufn = vfn if vfn is not None else _get_verifier(tid)
+    # Decide once, not per episode. Holding narrows what the generator can land
+    # on, and for a handful of tasks it narrows it far enough that filling a
+    # pool takes minutes -- paying that fifteen times over, and then paying the
+    # fallback fifteen times too, is what made the draw crawl. One probe says
+    # whether this task can be drawn on a held palette at all.
+    perm = _maker_palette(gm_mod)
+    first = None
+    if perm is not None:
+        first = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=True, perm=perm)
+        if first is None:
+            perm = None
     for s in range(n_samples):
-        perm = _maker_palette(gm_mod)
-        pool = _episode_pool(genfn, need, max_hw, vfn, ufn,
-                             unify=perm is not None, perm=perm)
-        if pool is None:
-            pool = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=False)
+        if first is not None:
+            pool, first = first, None
+        else:
+            pool = _episode_pool(genfn, need, max_hw, vfn, ufn,
+                                 unify=perm is not None, perm=perm)
         if pool is None:
             continue
         ex, (I, O) = pool[:n_examples], pool[n_examples]
