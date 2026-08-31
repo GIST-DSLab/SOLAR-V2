@@ -170,6 +170,60 @@ def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80):
         return I, O
     return None
 
+
+def _palette_rank(g):
+    """Colours of a grid, most cells first — a stand-in for which role each plays."""
+    import collections as _c
+    cnt = _c.Counter(int(v) for row in g for v in row)
+    return [c for c, _ in sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+
+def _recolour_map(src_grid, dst_ranks):
+    """A permutation of 0..9 sending src's colours onto dst's, rank for rank.
+
+    re-arc's generators pick their colours afresh on every call, so the three
+    examples of an episode and its test each arrive in a different palette. The
+    original ARC tasks do not look like that: a colour that means something —
+    the marker over a hole, the frame, the fill — is the same colour in every
+    demonstration pair, and a solver is meant to read it off them. Ranking by
+    cell count is a guess at which colour plays which part; the verifier below
+    is what says whether the guess was right.
+    """
+    src = _palette_rank(src_grid)
+    if len(src) != len(dst_ranks):
+        return None
+    m = {a: b for a, b in zip(src, dst_ranks)}
+    used = set(m.values())
+    spare = [c for c in range(10) if c not in used]
+    for c in range(10):                      # complete it to a permutation
+        if c not in m:
+            m[c] = spare.pop(0) if spare else c
+    return m if len(set(m.values())) == 10 else None
+
+
+def _apply_map(a, m):
+    out = np.array(a, int)
+    return np.vectorize(lambda v: m[int(v)])(out).astype(int) if out.size else out
+
+
+def _unify(pair, dst_ranks, vfn):
+    """Recolour a pair onto the episode's palette, keeping it only if it still obeys.
+
+    A colour permutation preserves the rule of most tasks and not of the ones
+    where a particular colour *is* the rule. Rather than guess which is which,
+    the recoloured pair is handed back to the task's own verifier: if it no
+    longer reproduces the output, the recolouring changed the task and the pair
+    is thrown away instead.
+    """
+    I, O = pair
+    m = _recolour_map(I, dst_ranks)
+    if m is None:
+        return None
+    I2, O2 = _apply_map(I, m), _apply_map(O, m)
+    if vfn is not None and not _pair_ok(vfn, I2, O2):
+        return None
+    return I2, O2
+
 def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     """Instances from re-arc generate_<task> (size-capped) + maker's derive_operations.
     With --verify_filter, every pair is resampled until verify reproduces it (re-arc style)."""
@@ -181,14 +235,24 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     _random.seed(args.rand_seed)
     need = n_examples + 1
     samples = []
+    # Unification needs the verifier whether or not --verify_filter asked for
+    # one: it is what decides that a recolouring left the task alone.
+    ufn = vfn if vfn is not None else _get_verifier(tid)
     for s in range(n_samples):
-        pool, tries = [], 0
-        while len(pool) < need and tries < need * 40:
+        pool, tries, ranks = [], 0, None
+        while len(pool) < need and tries < need * 60:
             tries += 1
             lb = _random.random() * 0.8
             pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw, vfn=vfn)
-            if pr is not None:
+            if pr is None:
+                continue
+            if ranks is None:                 # the first pair sets the palette
                 pool.append(pr)
+                ranks = _palette_rank(pr[0])
+                continue
+            got = _unify(pr, ranks, ufn)
+            if got is not None:
+                pool.append(got)
         if len(pool) < need:
             continue
         ex, (I, O) = pool[:n_examples], pool[n_examples]
