@@ -39,15 +39,15 @@ from collections import Counter
 from maker.sel_helpers import sel_of
 
 
+# The only discrete structural choice the generator makes: whether the centre
+# cell of the figure carries its own extra-coloured dot.
 VARIANTS = [{"has_center": True}, {"has_center": False}]
 
 
 def sample_colors(num_examples=None) -> dict:
+    # Only the background is a fixed role: the rule is about the SIZE of each
+    # scattered frame, never about which colour it happens to be.
     bgc = random.choice(list(range(10)))
-    # foreground colors never use 0: the trajectory relies on Rotate/Crop, and
-    # ARCLE treats 0 as "nothing" for those ops.
-    fgpool = [c for c in range(1, 10) if c != bgc]
-    random.shuffle(fgpool)
 
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
@@ -57,24 +57,25 @@ def sample_colors(num_examples=None) -> dict:
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "fgpool": fgpool, "instance_plan": plan}
+    return {"bgc": bgc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgpool, has_center=None) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, has_center=None) -> dict:
     if has_center is None:
         has_center = choice((True, False))
-    dmax = min(7, len(fgpool) - 1, max(max_h, 8) // 4, max(max_w, 8) // 4)
+    cols = interval(0, 10, 1)
+    dmax = min(7, max(2, max_h // 4), max(2, max_w // 4))
     if dmax < 2:
         dmax = 2
     while True:
         d = unifint(diff_lb, diff_ub, (2, dmax))
         h, w = d, d
-        lo_h = min(max(4 * d, 2 * d + 1), max_h)
-        lo_w = min(max(4 * d, 2 * d + 1), max_w)
+        lo_h = min(max(4 * d, 2 * d + 2), max_h)
+        lo_w = min(max(4 * d, 2 * d + 2), max_w)
         fullh = unifint(diff_lb, diff_ub, (lo_h, max_h))
         fullw = unifint(diff_lb, diff_ub, (lo_w, max_w))
-        ccols = list(fgpool[:d])
-        centercol = fgpool[d]
+        remcols = remove(bgc, cols)
+        ccols = sample(remcols, d)
         quad = canvas(bgc, (d + 1, d + 1))
         for idx, c in enumerate(ccols):
             linlen = randint(2, w - idx + 1)
@@ -87,7 +88,7 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgpool, has_center=None) -> di
         go = paint(go, qobj2)
         go = vconcat(go, hmirror(go)[1:])
         if has_center:
-            go = fill(go, centercol, {center(asindices(go))})
+            go = fill(go, choice(difference(remcols, ccols)), {center(asindices(go))})
         objs = partition(go)
         objs = sfilter(objs, lambda o: color(o) != bgc)
         gi = canvas(bgc, (fullh, fullw))
@@ -126,51 +127,109 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgpool, has_center=None) -> di
 
 def derive_operations(I, O):
     """
-    Rule: the scattered colored pieces are the concentric corner-rings of one
-    figure that has 4-fold rotational symmetry.  Build ONE quadrant of nested
-    corners in the top-left, then rotate the canvas by 90 deg and re-draw that
-    quadrant, three times over -- exactly the rot90/paint cycle the rule is.
-    """
-    I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    m = O.shape[0]                 # output is m x m, m = 2n-1
-    n = (m + 1) // 2               # quadrant side (includes centre row/col)
+    Rule, read off the INPUT alone:
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+      Each non-background colour in I is one scattered piece, and each piece is a
+      square RING: the four corner-brackets of one square frame, so it is mirror
+      symmetric about both of its own axes.  The pieces are the concentric rings
+      of a single figure and nest by frame size -- widest frame outermost, each
+      next-widest one cell further in, a lone pixel dead centre.
+
+      A piece may have been dropped over the canvas edge, in which case part of it
+      is missing; the surviving dimension of its bounding box still spans the whole
+      frame, and its own mirror symmetry restores the cells the edge cut off.
+
+    Route: take the widest ring's frame as the working frame, lay the background
+    over it, redraw every ring inside it at the depth its own width dictates
+    ((S - m) // 2 cells in from the border), then crop the canvas to that frame.
+
+    Everything below -- the frame side S, where it sits, each ring's cells, each
+    ring's depth -- is measured in I.  O is never read.
+    """
+    I = np.asarray(I, dtype=int)          # O is deliberately never read below
+    hi, wi = I.shape
+
+    # background: the canvas colour the pieces were scattered onto
+    bgc = int(Counter(I.flatten().tolist()).most_common(1)[0][0])
+
+    pieces = []
+    for col in sorted(set(int(v) for v in I.flatten()) - {bgc}):
+        cells = [(r, c) for r in range(hi) for c in range(wi) if int(I[r, c]) == col]
+        obs = set(cells)
+        rs = [r for r, _ in cells]
+        cs = [c for _, c in cells]
+        r0, r1 = min(rs), max(rs)
+        c0, c1 = min(cs), max(cs)
+        bh, bw = r1 - r0 + 1, c1 - c0 + 1
+        m = max(bh, bw)                     # the ring's frame side
+
+        def ring_from(fr, fc):
+            """The whole ring implied by these cells sitting in a frame at (fr,fc):
+            mirror them about both axes of that frame."""
+            out = set()
+            for r, c in cells:
+                rr, cc = r - fr, c - fc
+                if not (0 <= rr < m and 0 <= cc < m):
+                    return None
+                for a in (rr, m - 1 - rr):
+                    for b in (cc, m - 1 - cc):
+                        out.add((a, b))
+            return out
+
+        # A ring dropped over the canvas edge is short in one dimension, and what
+        # is missing is off-grid: so its frame starts either at the near edge of
+        # what survived or one frame-width back from the far edge.  Only one of
+        # those stories has the whole ring meeting the canvas in exactly the cells
+        # that are actually there.
+        cand_r = [r0] if bh == m else [r0, r1 - m + 1]
+        cand_c = [c0] if bw == m else [c0, c1 - m + 1]
+        fr, fc, ring = r0, c0, None
+        for cr in cand_r:
+            for cc0 in cand_c:
+                cand = ring_from(cr, cc0)
+                if cand is None:
+                    continue
+                seen = {(cr + a, cc0 + b) for a, b in cand
+                        if 0 <= cr + a < hi and 0 <= cc0 + b < wi}
+                if seen == obs:
+                    fr, fc, ring = cr, cc0, cand
+                    break
+            if ring is not None:
+                break
+        if ring is None:
+            ring = ring_from(r0, c0) or {(r - r0, c - c0) for r, c in cells}
+
+        pieces.append({"col": col, "m": m, "ring": sorted(ring), "fr": fr, "fc": fc})
+
+    # widest frame first: that ring is the outermost one of the figure
+    pieces.sort(key=lambda p: -p["m"])
+    S = pieces[0]["m"]                       # the figure is S x S
+
+    # the outer ring's own frame is the working frame (pulled inside the canvas
+    # if that ring was the one hanging over the edge)
+    R0 = max(0, min(pieces[0]["fr"], hi - S))
+    C0 = max(0, min(pieces[0]["fc"], wi - S))
 
     ops, sels = [], []
 
-    # 1. Shrink the working canvas to the figure's size.  Full rectangle -> bbox ok.
-    ops.append(33); sels.append([0, 0, m - 1, m - 1])
+    # 1. lay the background base over the whole frame square
+    #    (bbox form: the selection really is that full rectangle)
+    ops.append(bgc)
+    sels.append([R0, C0, S - 1, S - 1])
 
-    # 2. Lay the background base over the whole canvas (skip if it already is bgc).
-    base = I[0:m, 0:m]
-    if not np.all(base == bgc):
-        ops.append(int(bgc)); sels.append([0, 0, m - 1, m - 1])   # whole canvas rectangle
+    # 2. draw the rings into it, outermost first, each at its own depth
+    for p in pieces:
+        depth = (S - p["m"]) // 2
+        cells = [(R0 + depth + r, C0 + depth + c) for r, c in p["ring"]]
+        ops.append(int(p["col"]))
+        sels.append(sel_of(cells))
 
-    # 3. The nested corner rings of the top-left quadrant, outermost first.
-    quad = O[0:n, 0:n]
-    groups = {}
-    for r in range(n):
-        for c in range(n):
-            v = int(quad[r, c])
-            if v != bgc:
-                groups.setdefault(v, []).append((r, c))
-    rings = sorted(groups.items(), key=lambda kv: min(min(r, c) for r, c in kv[1]))
+    # 3. crop the canvas down to the assembled figure
+    ops.append(33)
+    sels.append([R0, C0, S - 1, S - 1])
 
-    # the single centre pixel sits on the rotation axis: draw it once only
-    centre_colors = {col for col, cells in rings if len(cells) == 1}
-
-    for turn in range(4):
-        for col, cells in rings:
-            if turn > 0 and col in centre_colors:
-                continue                      # rotation already carried it along
-            ops.append(int(col)); sels.append(sel_of(cells))
-        if turn < 3:
-            # rot90 (CCW) of the whole square canvas: the rule itself
-            ops.append(24); sels.append([0, 0, m - 1, m - 1])
-
-    ops.append(34); sels.append([0, 0, m - 1, m - 1])
+    ops.append(34)
+    sels.append([0, 0, S - 1, S - 1])
     return ops, sels
 
 

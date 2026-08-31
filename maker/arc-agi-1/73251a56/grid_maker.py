@@ -33,244 +33,285 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
 import random
-
-VARIANTS = [{"axis": "main"}, {"axis": "anti"}]
+import numpy as np
 
 
 def sample_colors(num_examples=None) -> dict:
-    """Episode-level color roles + the mirror-axis plan (discrete structural variant)."""
+    """Episode-level colour roles: the noise colour and the palette used for the bands.
+
+    `rot` is a discrete structural variant: rot 0/2 leave the grid mirror-symmetric about
+    the MAIN diagonal, rot 1/3 about the ANTI diagonal.  Both classes must be visible in
+    the examples for the episode to be learnable, so they are planned per instance.
+    """
     cols = list(range(10))
     noisec = random.choice(cols)
     pool = [c for c in cols if c != noisec]
     random.shuffle(pool)
 
+    variants = [{"rot": 0}, {"rot": 1}, {"rot": 2}, {"rot": 3}]
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+    if n_ex >= 4:
+        examples = [dict(v) for v in variants]
+        examples += [dict(random.choice(variants)) for _ in range(n_ex - 4)]
+        random.shuffle(examples)
+    elif n_ex >= 2:
+        examples = [{"rot": random.choice([0, 2])}, {"rot": random.choice([1, 3])}]
+        examples += [dict(random.choice(variants)) for _ in range(n_ex - 2)]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+        examples = [dict(random.choice(variants))]
     plan = examples + [dict(random.choice(examples))]
     return {"noisec": noisec, "ccols_pool": pool, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, noisec=None, ccols_pool=None, axis=None) -> dict:
-    import random as _r
-    cols = list(range(10))
-    if noisec is None:
-        noisec = _r.choice(cols)
-    if ccols_pool is None:
-        ccols_pool = [c for c in cols if c != noisec]
-        _r.shuffle(ccols_pool)
-    if axis is None:
-        axis = _r.choice(["main", "anti"])
+def generate(diff_lb, diff_ub, max_h, max_w, noisec, ccols_pool, rot=None) -> dict:
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        if b < a:
+            b = a
+        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
 
-    dub = min(30, int(max_h), int(max_w))
-    dlb = min(10, dub)
+    def rot_k(g, k):
+        out = [row[:] for row in g]
+        for _ in range(k % 4):
+            out = [list(r) for r in zip(*out[::-1])]
+        return out
+
+    # ---- the same detector derive_operations uses; only reads the (noisy) grid ----
+    def solve(A):
+        n = len(A)
+        m = len(A[0])
+        best = None
+        for kind in ("d", "c"):
+            if kind == "d":
+                mir = lambda i, j: (j, i)
+                axis = [(k, k) for k in range(min(n, m))]
+                acol = A[0][0]
+            else:
+                mir = lambda i, j: (m - 1 - j, n - 1 - i)
+                axis = [(k, m - 1 - k) for k in range(min(n, m))]
+                acol = A[0][m - 1]
+            for c in sorted({v for row in A for v in row}):
+                G = [row[:] for row in A]
+                for i in range(n):
+                    for j in range(m):
+                        if A[i][j] != c:
+                            mi, mj = mir(i, j)
+                            G[mi][mj] = A[i][j]
+                for (i, j) in axis:
+                    G[i][j] = acol
+                ok = True
+                for i in range(n):
+                    for j in range(m):
+                        mi, mj = mir(i, j)
+                        if G[i][j] != G[mi][mj]:
+                            ok = False
+                            break
+                    if not ok:
+                        break
+                if not ok:
+                    continue
+                rem = [(i, j) for i in range(n) for j in range(m) if G[i][j] == c]
+                if rem:
+                    remset = set(rem)
+                    nb = []
+                    for (i, j) in rem:
+                        for p in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
+                            if 0 <= p[0] < n and 0 <= p[1] < m and p not in remset:
+                                nb.append(G[p[0]][p[1]])
+                    if nb:
+                        fv = max(set(nb), key=nb.count)
+                        for (i, j) in rem:
+                            G[i][j] = fv
+                if all(G[i][j] == A[i][j] for i in range(n) for j in range(m)):
+                    continue
+                cnt = sum(row.count(c) for row in A)
+                key = (cnt, 0 if kind == "d" else 1, c)
+                if best is None or key < best[0]:
+                    best = (key, G, c, kind, acol)
+        if best is None:
+            return None
+        return best[1], best[2], best[3], best[4]
+
+    if rot is None:
+        rot = random.choice([0, 1, 2, 3])
+    dmax = min(30, int(max_h), int(max_w))
+    dmin = min(10, dmax)
+    pool = [c for c in ccols_pool if c != noisec]
 
     while True:
-        d = unifint(diff_lb, diff_ub, (dlb, dub))
-        h, w = d, d
+        d = unifint(diff_lb, diff_ub, (dmin, dmax))
+        h = w = d
         nsl = unifint(diff_lb, diff_ub, (2, max(2, min(9, h // 2))))
-        nsl = max(2, min(nsl, len(ccols_pool), h - 1))
-        slopes = [0] + sorted(_r.sample(list(range(1, h - 1)), nsl - 1))
-        ccols = list(ccols_pool[:nsl])
+        nsl = max(2, min(nsl, len(pool)))
+        if nsl - 1 > h - 1:
+            continue
+        slopes = [0] + sorted(random.sample(range(1, h), nsl - 1))
+        ccols = list(pool[:nsl])
 
-        gi = canvas(-1, (h, w))
-        inds = asindices(gi)
+        g = [[ccols[0]] * w for _ in range(h)]
         for col, hdelt in zip(ccols, slopes):
             slope = hdelt / w
-            locs = sfilter(inds, lambda ij: slope * ij[1] <= ij[0])
-            gi = fill(gi, col, locs)
-        ln = connect((0, 0), (d - 1, d - 1))
-        gi = fill(gi, ccols[-2], ln)
-        obj = asobject(gi)
-        obj = sfilter(obj, lambda cij: cij[1][1] >= cij[1][0])
-        gi = paint(gi, dmirror(obj))
-
-        cf1 = lambda g: ccols[-2] in palette(toobject(ln, g))
-        cf2 = lambda g: len((ofcolor(g, noisec) & frozenset({ij[::-1] for ij in ofcolor(g, noisec)})) - ln) == 0
+            for i in range(h):
+                for j in range(w):
+                    if slope * j <= i:
+                        g[i][j] = col
+        for k in range(d):
+            g[k][k] = ccols[-2]
+        for i in range(h):
+            for j in range(i, w):
+                g[j][i] = g[i][j]
+        go = [row[:] for row in g]
 
         ndist = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 15)))
+        noise = set()
+        dnoise = set()
         tr = 0
         succ = 0
         maxtr = 10 * ndist
-        go = tuple(e for e in gi)
         while tr < maxtr and succ < ndist:
             tr += 1
-            oh = _r.randint(1, max(1, min(5, h - 2)))
-            ow = _r.randint(1, max(1, min(5, w - 2)))
-            loci = _r.randint(1, h - oh - 1)
-            locj = _r.randint(1, w - ow - 1)
-            bd = backdrop(frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)}))
-            gi2 = fill(gi, noisec, bd)
-            if cf1(gi2) and cf2(gi2):
-                succ += 1
-                gi = gi2
-        if gi != go:
-            break
+            oh = random.randint(1, 5)
+            ow = random.randint(1, 5)
+            if h - oh - 1 < 1 or w - ow - 1 < 1:
+                continue
+            loci = random.randint(1, h - oh - 1)
+            locj = random.randint(1, w - ow - 1)
+            cells = [(i, j) for i in range(loci, loci + oh) for j in range(locj, locj + ow)]
+            nn = noise | set(cells)
+            newdiag = {p for p in cells if p[0] == p[1]}
+            if len(dnoise | newdiag) >= d:          # cf1: keep some of the diagonal line
+                continue
+            if any(p[0] != p[1] and (p[1], p[0]) in nn for p in cells):   # cf2
+                continue
+            noise = nn
+            dnoise |= newdiag
+            succ += 1
+        if not noise:
+            continue
 
-    if axis == "main":
-        rotf = _r.choice((identity, rot180))
-    else:
-        rotf = _r.choice((rot90, rot270))
-    gi = rotf(gi)
-    go = rotf(go)
-    return {'input': gi, 'output': go}
+        gi = [row[:] for row in g]
+        for (i, j) in noise:
+            gi[i][j] = noisec
+        gi = rot_k(gi, rot)
+        go2 = rot_k(go, rot)
+
+        sol = solve(gi)
+        if sol is None or sol[0] != go2:
+            continue
+        return {"input": gi, "output": go2}
 
 
 def derive_operations(I, O):
+    """Everything below is measured from I only.
+
+    Rule (from the generator): the clean picture is mirror-symmetric about one of the two
+    diagonals; rectangular blobs of a single 'noise' colour were stamped on top of it.
+    From I we (1) find which diagonal is the symmetry axis and which colour is the noise,
+    (2) read every noise cell's replacement from its MIRROR CELL in I (cells lying on the
+    axis take the axis-line colour, read from the grid corner on that axis), and
+    (3) repaint blob by blob, one Color op per colour band inside each blob.
+    O is never inspected.
     """
-    Rule: the grid is symmetric about one of its diagonals, except for blobs of a single
-    'noise' colour.  Route:
-      1) actually PERFORM the reflection on the whole grid
-         (transpose = Rotate90(CCW) + FlipV ; anti-transpose = Rotate270(CW) + FlipV).
-         This carries every clean half onto the half the noise covered.
-      2) the reflection drags the noise onto the mirror side, so repaint those mirrored
-         cells back to the values the input still shows there (one op per region/colour).
-      3) restore the symmetry axis itself where noise sat on it (it is one uniform colour,
-         the colour of its clean corner).
-    """
-    import numpy as np
     try:
         from maker.sel_helpers import sel_of
     except Exception:
         def sel_of(cells):
             return {"cells": [[int(r), int(c)] for r, c in cells]}
 
-    I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    n, m = I.shape
+    A = np.asarray(I, dtype=int).tolist()
+    n = len(A)
+    m = len(A[0])
+
+    def solve(A):
+        best = None
+        for kind in ("d", "c"):
+            if kind == "d":
+                mir = lambda i, j: (j, i)
+                axis = [(k, k) for k in range(min(n, m))]
+                acol = A[0][0]
+            else:
+                mir = lambda i, j: (m - 1 - j, n - 1 - i)
+                axis = [(k, m - 1 - k) for k in range(min(n, m))]
+                acol = A[0][m - 1]
+            for c in sorted({v for row in A for v in row}):
+                G = [row[:] for row in A]
+                # every cell that is NOT the candidate noise colour paints its mirror
+                for i in range(n):
+                    for j in range(m):
+                        if A[i][j] != c:
+                            mi, mj = mir(i, j)
+                            G[mi][mj] = A[i][j]
+                # the axis line itself carries the corner colour
+                for (i, j) in axis:
+                    G[i][j] = acol
+                ok = True
+                for i in range(n):
+                    for j in range(m):
+                        mi, mj = mir(i, j)
+                        if G[i][j] != G[mi][mj]:
+                            ok = False
+                            break
+                    if not ok:
+                        break
+                if not ok:
+                    continue
+                rem = [(i, j) for i in range(n) for j in range(m) if G[i][j] == c]
+                if rem:
+                    remset = set(rem)
+                    nb = []
+                    for (i, j) in rem:
+                        for p in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
+                            if 0 <= p[0] < n and 0 <= p[1] < m and p not in remset:
+                                nb.append(G[p[0]][p[1]])
+                    if nb:
+                        fv = max(set(nb), key=nb.count)
+                        for (i, j) in rem:
+                            G[i][j] = fv
+                if all(G[i][j] == A[i][j] for i in range(n) for j in range(m)):
+                    continue
+                cnt = sum(row.count(c) for row in A)
+                key = (cnt, 0 if kind == "d" else 1, c)
+                if best is None or key < best[0]:
+                    best = (key, G, c, kind, acol)
+        if best is None:
+            return None
+        return best[1], best[2], best[3], best[4]
+
     ops, sels = [], []
-    full = [0, 0, n - 1, m - 1]          # bbox == exactly the whole grid (background included)
+    sol = solve(A)
+    if sol is not None:
+        G = sol[0]
+        target = [(i, j) for i in range(n) for j in range(m) if G[i][j] != A[i][j]]
+        tset = set(target)
+        seen = set()
+        comps = []
+        for cell in sorted(target):
+            if cell in seen:
+                continue
+            stack = [cell]
+            seen.add(cell)
+            comp = []
+            while stack:
+                (i, j) = stack.pop()
+                comp.append((i, j))
+                for p in ((i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1)):
+                    if p in tset and p not in seen:
+                        seen.add(p)
+                        stack.append(p)
+            comps.append(sorted(comp))
+        # one blob at a time; inside a blob, one Color op per restored colour band
+        for comp in comps:
+            groups = {}
+            for (i, j) in comp:
+                groups.setdefault(int(G[i][j]), []).append((i, j))
+            for col in sorted(groups, key=lambda c: min(groups[c])):
+                ops.append(int(col))
+                sels.append(sel_of(groups[col]))
 
-    def anti(a):
-        return a[::-1, ::-1].T
-
-    # ---- which diagonal is the mirror axis (measured, not assumed) ----
-    axis = None
-    if n == m:
-        cands = []
-        if np.array_equal(O, O.T):
-            cands.append('main')
-        if np.array_equal(O, anti(O)):
-            cands.append('anti')
-        if not cands:
-            cands = ['main', 'anti']
-        if len(cands) > 1:
-            bad_main = sum(1 for i in range(n) if I[i, i] != I[0, 0])
-            bad_anti = sum(1 for i in range(n) if I[i, n - 1 - i] != I[0, n - 1])
-            axis = 'main' if bad_main <= bad_anti else 'anti'
-        else:
-            axis = cands[0]
-
-    cur = I.copy()
-
-    if axis is not None:
-        if axis == 'main':
-            mir = lambda p: (p[1], p[0])
-            mirror_arr = lambda a: a.T.copy()
-            rot_op = 24                                  # Rotate90 (CCW) then FlipV -> transpose
-            axis_cells = [(i, i) for i in range(n)]
-            corner = int(I[0, 0])
-        else:
-            mir = lambda p: (n - 1 - p[1], n - 1 - p[0])
-            mirror_arr = lambda a: anti(a).copy()
-            rot_op = 25                                  # Rotate270 (CW) then FlipV -> anti-transpose
-            axis_cells = [(i, n - 1 - i) for i in range(n)]
-            corner = int(I[0, n - 1])
-
-        # ---- noise colour: the colour the input carries where input and output disagree ----
-        cnt = {}
-        for r in range(n):
-            for c in range(m):
-                if I[r, c] != O[r, c]:
-                    v = int(I[r, c])
-                    cnt[v] = cnt.get(v, 0) + 1
-        noisec = max(cnt, key=lambda k: cnt[k]) if cnt else None
-
-        FIX = set()
-        if noisec is not None:
-            for r in range(n):
-                for c in range(m):
-                    p = (r, c)
-                    q = mir(p)
-                    if p == q:
-                        continue
-                    if I[r, c] == noisec and I[q] != noisec:
-                        FIX.add(p)
-
-        # ---- 1) the reflection itself ----
-        if FIX:
-            ops.append(rot_op); sels.append(full)
-            ops.append(27);     sels.append(full)
-            cur = mirror_arr(cur)
-
-            # ---- 2) repaint the half the reflection carried noise onto ----
-            REP = sorted({mir(p) for p in FIX})
-            repset = set(REP)
-            seen = set()
-            comps = []
-            for p in REP:
-                if p in seen:
-                    continue
-                stack = [p]; seen.add(p); comp = []
-                while stack:
-                    q = stack.pop(); comp.append(q)
-                    for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        t = (q[0] + dr, q[1] + dc)
-                        if t in repset and t not in seen:
-                            seen.add(t); stack.append(t)
-                comps.append(sorted(comp))
-            comps.sort(key=lambda cp: (min(x for x, _ in cp), min(y for _, y in cp)))
-
-            planned = []
-            for comp in comps:
-                bycol = {}
-                for p in comp:
-                    v = int(I[p])
-                    if int(cur[p]) != v:
-                        bycol.setdefault(v, []).append(p)
-                for v in sorted(bycol):
-                    planned.append((v, bycol[v]))
-
-            if len(planned) > 40:                      # keep the trajectory tractable
-                bycol = {}
-                for p in REP:
-                    v = int(I[p])
-                    if int(cur[p]) != v:
-                        bycol.setdefault(v, []).append(p)
-                planned = [(v, bycol[v]) for v in sorted(bycol)]
-
-            for v, cells in planned:
-                if not cells:
-                    continue
-                ops.append(int(v)); sels.append(sel_of(cells))
-                for p in cells:
-                    cur[p] = v
-
-        # ---- 3) the axis line is one uniform colour; restore where noise covered it ----
-        axfix = [p for p in axis_cells if int(cur[p]) != corner]
-        if axfix:
-            ops.append(int(corner)); sels.append(sel_of(axfix))
-            for p in axfix:
-                cur[p] = corner
-
-    # ---- safety net (should be empty) ----
-    rem = {}
-    for r in range(n):
-        for c in range(m):
-            if int(cur[r, c]) != int(O[r, c]):
-                rem.setdefault(int(O[r, c]), []).append((r, c))
-    for v in sorted(rem):
-        ops.append(int(v)); sels.append(sel_of(rem[v]))
-        for p in rem[v]:
-            cur[p] = v
-
-    ops.append(34); sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
+    ops.append(34)
+    sels.append([0, 0, n - 1, m - 1])
     return ops, sels
 
 
