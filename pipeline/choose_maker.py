@@ -164,11 +164,55 @@ def replay(derive, I, O_shown):
                 {"selection": solar_utils.to_sel_mask(sel, MAX_GRID_DIM).astype(bool),
                  "operation": int(op)})
         h, w = int(obs["grid_dim"][0]), int(obs["grid_dim"][1])
-        return np.asarray(obs["grid"])[:h, :w].astype(int), list(ops)
+        return np.asarray(obs["grid"])[:h, :w].astype(int), list(ops), list(sels)
     except Exception:
-        return None, None
+        return None, None, None
     finally:
         env.close()
+
+
+TURN = {"FlipH": ((1, 0), (0, -1)), "FlipV": ((-1, 0), (0, 1)),
+        "Rotate90": ((0, -1), (1, 0)), "Rotate270": ((0, 1), (-1, 0))}
+MOVE = {"MoveU": (-1, 0), "MoveD": (1, 0), "MoveL": (0, -1), "MoveR": (0, 1)}
+I2 = ((1, 0), (0, 1))
+NAME = {i: nm for nm, i in OP_ID.items()}
+
+
+def _mul(a, b):
+    return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(2)) for j in range(2))
+                 for i in range(2))
+
+
+def cancels(ops, sels) -> bool:
+    """Does some group of geometric ops on one region compose to nothing?
+
+    Deleting one of a mirror pair breaks the route, and deleting both breaks it
+    too -- what sits between them is addressed in the mirrored frame -- so
+    neither deletion test can see it, and counting which cells survive cannot
+    either, because a mirror swaps cells in pairs and half of them coincide with
+    the target whether the mirror is real or undone. The algebra can: turns on a
+    region are elements of D4, moves are displacements, and a group that
+    composes to the identity performs no reflection, rotation or translation at
+    all. The same edits could have been made in the original frame.
+    """
+    turns, moves = collections.defaultdict(list), collections.defaultdict(list)
+    for op, sel in zip(ops, sels):
+        nm = NAME.get(int(op))
+        key = tuple(sel) if isinstance(sel, (list, tuple)) else str(sel)
+        if nm in TURN:
+            turns[key].append(nm)
+        elif nm in MOVE:
+            moves[key].append(nm)
+    for seq in turns.values():
+        m = I2
+        for nm in seq:
+            m = _mul(TURN[nm], m)
+        if m == I2:
+            return True
+    for seq in moves.values():
+        if sum(MOVE[nm][0] for nm in seq) == 0 and sum(MOVE[nm][1] for nm in seq) == 0:
+            return True
+    return False
 
 
 def concept_ops(task: str, vconcepts: dict) -> tuple[str | None, set[int]]:
@@ -211,26 +255,29 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int]) -> dict:
     if derive is None:
         return {"loaded": False}
     n = len(pairs)
-    solved = routed = 0
+    solved = routed = idle = 0
     missed = []
     for i, (I, O) in enumerate(pairs):
-        g, ops = replay(derive, I, O)
+        g, ops, sels = replay(derive, I, O)
         if g is not None and g.shape == O.shape and bool((g == O).all()):
             solved += 1
             if want and set(ops) & want:
                 routed += 1
+            if cancels(ops, sels):
+                idle += 1
         else:
             missed.append(i)
     copied = 0
     for I, P in cpairs:
-        g, _ = replay(derive, I, P)
+        g, _, _ = replay(derive, I, P)
         if g is not None and g.shape == P.shape and bool((g == P).all()):
             copied += 1
     return {"loaded": True, "n": n, "_derive": derive,
             "solve": solved / n if n else 0.0,
             "route": routed / solved if solved else 0.0,
             "copy": copied / len(cpairs) if cpairs else 0.0,
-            "solved": solved, "routed": routed, "missed": missed,
+            "idle": idle / solved if solved else 0.0,
+            "solved": solved, "routed": routed, "idled": idle, "missed": missed,
             "copied": copied, "trials": len(cpairs),
             "measured_route": bool(want)}
 
@@ -287,7 +334,7 @@ def _honest_attempt_evidence(scores, pairs) -> list:
     derive = best.get("_derive")
     got = None
     if derive is not None:
-        got, _ = replay(derive, I, O)
+        got, _, _ = replay(derive, I, O)
     out = ["A version of this maker that does not read O has already been "
            "written, and it fails on instances like the one below — which is "
            "the part still to be solved, not the copying.",
@@ -331,21 +378,47 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
         if clean:
             s0 = max(clean)
     ok = {k: v for k, v in live.items() if v["solve"] >= s0 - 1e-9}
+    # `route` is not a bar to clear. A mirror and its undo scores 1.00 on it
+    # while performing nothing, and this rule used to require route to go up:
+    # four of the six routes that cancel out came from the two rounds that
+    # asked for it. Counting whether the operation appears is satisfiable
+    # without doing anything, so route is a preference among candidates that
+    # have already passed, never a condition on its own.
+    idle0 = base["idle"] if base else 0.0
     good = {k: v for k, v in ok.items()
-            if v["copy"] <= 1e-9 and v["route"] >= r0 - 1e-9}
+            if v["copy"] <= 1e-9 and v["idle"] <= idle0 + 1e-9 and v["idle"] <= 1e-9}
     if not good:
-        return None, ("no candidate both travels the direction and keeps its "
-                      "parameters off O")
+        # A candidate whose geometry cancels is not an improvement even when
+        # the incumbent's does too; if nothing is clean, say so.
+        good = {k: v for k, v in ok.items()
+                if v["copy"] <= 1e-9 and v["idle"] <= idle0 - 1e-9}
+    if not good:
+        return None, ("no candidate keeps its parameters off O and performs the "
+                      "geometry it contains")
     hi = max(v["route"] for v in good.values())
     top = {k: v for k, v in good.items() if v["route"] >= hi - 1e-9}
     if incumbent in top:
         return incumbent, "already the best of the candidates; kept"
-    # Several candidates can be indistinguishable on all three. Break it by the
+    # Several candidates can be indistinguishable on all of it. Break it by the
     # order they were named on the command line rather than by their names,
     # so which lineage wins a tie is something the caller states.
     k = next(c for c in order if c in top)
-    return k, (f"solves, never draws another instance's output, and carries the "
-               f"concept on {hi:.0%} of its solutions (the incumbent: {r0:.0%})")
+    why = []
+    if base is None:
+        why.append("nothing was in place")
+    else:
+        if base["copy"] > 1e-9:
+            why.append(f"the incumbent draws another instance's output on "
+                       f"{base['copy']:.0%} of the pairs it was handed")
+        if base["idle"] > 1e-9:
+            why.append(f"the incumbent's geometry cancels out on "
+                       f"{base['idle']:.0%} of its solutions")
+        if base["solve"] < s0 - 1e-9:
+            why.append(f"the incumbent solves {base['solve']:.0%} against {s0:.0%}")
+    lead = "; ".join(why) or "it is preferred on the concept"
+    return k, (f"{lead}. This one solves, keeps its parameters off O, performs "
+               f"the geometry it contains, and carries the concept on {hi:.0%} "
+               f"of its solutions")
 
 
 def main() -> None:
@@ -398,7 +471,8 @@ def main() -> None:
                 regenerate_finding(t, cname, scores[incumbent], scores, pairs))
         recs.append(rec)
         s = "  ".join(
-            f"{c}:{scores[c]['solve']:.2f}/{scores[c]['route']:.2f}/{scores[c]['copy']:.2f}"
+            f"{c}:{scores[c]['solve']:.2f}/{scores[c]['route']:.2f}/"
+            f"{scores[c]['copy']:.2f}/{scores[c]['idle']:.2f}"
             if scores[c].get("loaded") else f"{c}:-" for c in args.candidates)
         print(f"{t}  {s}   -> {win or 'none of them'}", flush=True)
         if args.apply and win != incumbent:
