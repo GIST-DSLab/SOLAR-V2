@@ -35,170 +35,154 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from collections import Counter
-from maker.sel_helpers import sel_of
+from collections import deque
 
-
-# ---------------------------------------------------------------------------
-# The generator draws a 1-cell "key line" (one colour per line) plus a set of
-# solid squares of a single colour `sqc`, then rotates the whole thing.  So the
-# key line ends up on one of the four edges:
-#   identity -> left column,  rot90 -> top row,  rot180 -> right column,
-#   rot270   -> bottom row.
-# Rule: every square cell takes the colour of the key cell on its own
-#       row (vertical key line) / column (horizontal key line).
-# ---------------------------------------------------------------------------
-
-_ROTS = ["identity", "rot90", "rot180", "rot270"]
-# rot180 puts the key line on the right edge, rot270 on the bottom edge:
-# those are the instances whose key line has to be reflected into the leading
-# edge before the rule can be carried out.
-_REFLECTED = ["rot180", "rot270"]
+ROTS = ["identity", "rot90", "rot180", "rot270"]
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(1, 10))
-    sqc = random.choice(cols)                      # colour of the squares
-    rem = [c for c in cols if c != sqc]
-    k = random.randint(3, min(7, len(rem)))
-    palette = random.sample(rem, k)                # colours the key line uses
+    # bgc is hardcoded 0 in the generator -> not a color role.
+    # sqc (the block color that gets recolored) IS sampled -> fix it per episode.
+    # gil key-strip colors are arbitrary per row; the rule only uses their
+    # positions/presence, so they stay free.
+    sqc = random.choice(list(range(1, 10)))
 
+    variants = [{"rotname": r} for r in ROTS]
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(_ROTS):
-        examples = [{"rotf": r} for r in _ROTS]                       # cover all 4 edges
-        examples += [{"rotf": random.choice(_REFLECTED)}
-                     for _ in range(n_ex - len(_ROTS))]
+    if n_ex >= len(variants):
+        examples = [dict(v) for v in variants]
+        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
         random.shuffle(examples)
     else:
-        examples = [{"rotf": r} for r in random.sample(_ROTS, n_ex)]
-
-    pool = [e for e in examples if e["rotf"] in _REFLECTED] or examples
-    plan = examples + [dict(random.choice(pool))]  # test case is one of the shown ones
-    return {"sqc": sqc, "palette": palette, "instance_plan": plan}
+        examples = [dict(v) for v in random.sample(variants, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
+    return {"sqc": sqc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, sqc, palette, rotf=None) -> dict:
-    if rotf is None:
-        rotf = random.choice(_ROTS)
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             sqc: int, rotname: str = None) -> dict:
+    if rotname is None:
+        rotname = random.choice(ROTS)
+    rotf = {"identity": identity, "rot90": rot90,
+            "rot180": rot180, "rot270": rot270}[rotname]
+    swap = rotname in ("rot90", "rot270")
 
-    def unifint(lb, ub, bounds):
-        a, b = bounds
-        if b < a:
-            b = a
-        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
+    hub = min(30, max_w if swap else max_h)
+    wub = min(30, max_h if swap else max_w)
+    hub = max(5, hub)
+    wub = max(5, wub)
 
+    cols = interval(1, 10, 1)
+    h = unifint(diff_lb, diff_ub, (5, hub))
+    w = unifint(diff_lb, diff_ub, (5, wub))
     bgc = 0
-    swap = rotf in ("rot90", "rot270")             # rotation swaps the dimensions
-    hcap = max(5, min(30, max_w if swap else max_h))
-    wcap = max(5, min(30, max_h if swap else max_w))
-
-    while True:
-        h = unifint(diff_lb, diff_ub, (5, hcap))
-        w = unifint(diff_lb, diff_ub, (5, wcap))
-        gir = [[bgc] * (w - 1) for _ in range(h)]
-        gil = [random.choice(palette) for _ in range(h)]
-        nsq = unifint(diff_lb, diff_ub, (1, 8))
-        succ, fails, maxfails = 0, 0, nsq * 5
-        while succ < nsq and fails < maxfails:
-            loci = random.randint(0, h - 3)
-            locj = random.randint(0, w - 3)
-            lock = random.randint(loci + 1, min(loci + max(1, 2 * h // 3), h - 1))
-            locl = random.randint(locj + 1, min(locj + max(1, 2 * w // 3), w - 1))
-            if locl <= w - 2:                       # backdrop must fit inside gir
-                for r in range(loci, lock + 1):
-                    for c in range(locj, locl + 1):
-                        gir[r][c] = sqc
-                succ += 1
-            else:
-                fails += 1
-        if succ >= 1:
-            break
-
-    covered = {r for r in range(h) if any(v == sqc for v in gir[r])}
-    gil = [gil[r] if r in covered else bgc for r in range(h)]
-    gi = [[gil[r]] + list(gir[r]) for r in range(h)]
-    go = [[gil[r]] + [gil[r] if v == sqc else bgc for v in gir[r]] for r in range(h)]
-
-    def rot(g, kind):
-        if kind == "identity":
-            return [list(row) for row in g]
-        if kind == "rot90":                          # clockwise
-            return [list(row) for row in zip(*g[::-1])]
-        if kind == "rot180":
-            return [list(row)[::-1] for row in g[::-1]]
-        return [list(row) for row in zip(*g)][::-1]  # rot270, counter-clockwise
-
-    return {"input": rot(gi, rotf), "output": rot(go, rotf)}
+    remcols = remove(bgc, cols)
+    remcols = remove(sqc, remcols)
+    nsq = unifint(diff_lb, diff_ub, (1, 8))
+    gir = canvas(bgc, (h, w - 1))
+    gil = tuple((choice(remcols),) for j in range(h))
+    inds = asindices(gir)
+    succ = 0
+    fails = 0
+    maxfails = nsq * 5
+    while succ < nsq and fails < maxfails:
+        loci = randint(0, h - 3)
+        locj = randint(0, w - 3)
+        lock = randint(loci + 1, min(loci + max(1, 2 * h // 3), h - 1))
+        locl = randint(locj + 1, min(locj + max(1, 2 * w // 3), w - 1))
+        bd = backdrop(frozenset({(loci, locj), (lock, locl)}))
+        if bd.issubset(inds):
+            gir = fill(gir, sqc, bd)
+            succ += 1
+        else:
+            fails += 1
+    locs = ofcolor(gir, sqc)
+    gil = tuple(e if idx in apply(first, locs) else (bgc,) for idx, e in enumerate(gil))
+    fullobj = toobject(locs, hupscale(gil, w))
+    gi = hconcat(gil, gir)
+    giro = paint(gir, fullobj)
+    go = hconcat(gil, giro)
+    gi = rotf(gi)
+    go = rotf(go)
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
-
-    # background is a hard 0 in this task; the squares are the dominant colour
-    cnt = Counter(int(v) for v in I.flatten().tolist() if v != 0)
-    sqc = cnt.most_common(1)[0][0]
-
-    # the key line: the non-background cells that are not square cells
-    strip = [(r, c) for r in range(h) for c in range(w)
-             if I[r, c] != 0 and int(I[r, c]) != sqc]
-    rows = {r for r, _ in strip}
-    cols = {c for _, c in strip}
-
+    hi, wi = I.shape
     ops, sels = [], []
-    # whole-canvas rectangle: the reflection acts on the entire grid,
-    # background included, so a bbox is exactly the intended cell set here.
-    full = [0, 0, h - 1, w - 1]
 
-    if len(cols) == 1:                      # key line is a column
-        vertical = True
-        far = (next(iter(cols)) != 0)       # sitting on the right edge?
-    else:                                   # key line is a row
-        vertical = False
-        far = (next(iter(rows)) != 0)       # sitting on the bottom edge?
+    # --- Rule read off I ---------------------------------------------------
+    # I holds one block colour (sqc) painting solid rectangles, plus a "key
+    # strip" on one grid edge holding one colour per line of the grid.
+    # Every block cell takes the key colour of the line it lies on.
+    gone = set(I.flatten().tolist()) - set(O.flatten().tolist())
+    if not gone:                      # no blocks were placed: nothing to do
+        ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
+        return ops, sels
+    sqc = gone.pop()
 
-    G = I.copy()
-    flip_op = None
-    if far:
-        flip_op = 26 if vertical else 27    # FlipH (l<->r) / FlipV (u<->d)
-        ops.append(flip_op)
-        sels.append(full)                   # reflect the key line onto the leading edge
-        G = np.fliplr(G) if vertical else np.flipud(G)
+    # The key strip is the edge line carrying >=2 cells that are neither
+    # background nor block colour (a perpendicular edge can only clip it once).
+    edges = [
+        ("col", 0,      [(r, 0) for r in range(hi)]),
+        ("col", wi - 1, [(r, wi - 1) for r in range(hi)]),
+        ("row", 0,      [(0, c) for c in range(wi)]),
+        ("row", hi - 1, [(hi - 1, c) for c in range(wi)]),
+    ]
+    kind, idx, best = None, None, -1
+    for k, i, cells in edges:
+        n = sum(1 for (r, c) in cells if I[r, c] != 0 and I[r, c] != sqc)
+        if n >= 2 and n > best:
+            kind, idx, best = k, i, n
+    if kind is None:
+        ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
+        return ops, sels
+    row_based = (kind == "col")       # strip is a column -> colour varies by row
 
-    # In this reflected frame the key line leads: column 0 (or row 0).
-    # Each key cell dyes its own line of square cells.
-    if vertical:
-        for r in range(h):
-            key = int(G[r, 0])
-            if key == 0:
-                continue
-            cells = [(r, c) for c in range(1, w) if int(G[r, c]) == sqc]
-            if not cells:
-                continue
-            ops.append(key)
-            sels.append(sel_of(cells))
-            for rr, cc in cells:
-                G[rr, cc] = key
-    else:
-        for c in range(w):
-            key = int(G[0, c])
-            if key == 0:
-                continue
-            cells = [(r, c) for r in range(1, h) if int(G[r, c]) == sqc]
-            if not cells:
-                continue
-            ops.append(key)
-            sels.append(sel_of(cells))
-            for rr, cc in cells:
-                G[rr, cc] = key
+    # --- Blocks as objects -------------------------------------------------
+    cellset = {(r, c) for r in range(hi) for c in range(wi) if I[r, c] == sqc}
+    comps, seen = [], set()
+    for start in sorted(cellset):
+        if start in seen:
+            continue
+        q = deque([start]); seen.add(start); comp = []
+        while q:
+            r, c = q.popleft(); comp.append((r, c))
+            for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+                if nb in cellset and nb not in seen:
+                    seen.add(nb); q.append(nb)
+        comps.append(comp)
 
-    if flip_op is not None:                 # reflect back into the original frame
-        ops.append(flip_op)
-        sels.append(full)
+    def runs_of(vals):
+        vals = sorted(vals)
+        out, s, p = [], vals[0], vals[0]
+        for v in vals[1:]:
+            if v == p + 1:
+                p = v
+            else:
+                out.append((s, p)); s = v; p = v
+        out.append((s, p))
+        return out
 
-    ops.append(34)
-    sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
+    # One object at a time; inside it, stripe by stripe, using the key colour
+    # measured from the strip in I.
+    for comp in comps:
+        lines = {}
+        for (r, c) in comp:
+            k = r if row_based else c
+            lines.setdefault(k, []).append(c if row_based else r)
+        for k in sorted(lines):
+            key = int(I[k, idx]) if row_based else int(I[idx, k])
+            for a, b in runs_of(lines[k]):
+                ops.append(key)
+                if row_based:
+                    sels.append([k, a, 0, b - a])
+                else:
+                    sels.append([a, k, b - a, 0])
+
+    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
@@ -242,7 +226,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

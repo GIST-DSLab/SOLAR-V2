@@ -33,241 +33,162 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-from collections import Counter
-
 import numpy as np
-
-from maker.sel_helpers import sel_of
-
-
-# ----------------------------------------------------------------------------
-# The task: a "bracket box" made of two parallel full-length lines with small
-# end-caps.  Outside each bracket sits a scattered pattern.  Each pattern is
-# mirrored (across the axis parallel to the bracket) and slid THROUGH the
-# bracket line so that it comes to rest 2 cells inside the box (i.e. right
-# behind the end-cap row/column).  The whole configuration may be transposed
-# (brackets horizontal -> vertical), which is the only structural variant.
-# ----------------------------------------------------------------------------
-
-VARIANTS = [{"transposed": False}, {"transposed": True}]
+from collections import Counter
 
 
 def sample_colors(num_examples=None) -> dict:
+    import random
     cols = list(range(10))
     bgc = random.choice(cols)
-    boxc = random.choice([c for c in cols if c != bgc])
-    # objc != 0 so the moving pattern is a real (non-transparent) ARCLE object
-    objc = random.choice([c for c in cols if c not in (bgc, boxc) and c != 0])
+    # objc must be non-zero: the object is relocated with CopyI/Paste, and 0 is
+    # "nothing" to the clipboard.
+    objc = random.choice([c for c in range(1, 10) if c != bgc])
+    boxc = random.choice([c for c in cols if c not in (bgc, objc)])
 
+    variants = [{"transposed": False}, {"transposed": True}]
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+    if n_ex >= len(variants):
+        examples = [dict(v) for v in variants]
+        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+        examples = [dict(v) for v in random.sample(variants, n_ex)]
     plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "objc": objc, "boxc": boxc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, boxc,
-             transposed=None, **kwargs) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, boxc, transposed=None) -> dict:
+    from random import randint, choice, sample
     if transposed is None:
-        transposed = random.choice(VARIANTS)["transposed"]
-
-    def unifint(lo, hi):
-        if hi < lo:
-            hi = lo
-        a = lo + int((hi - lo) * diff_lb)
-        b = lo + int((hi - lo) * diff_ub)
-        a = max(lo, min(hi, a))
-        b = max(lo, min(hi, b))
-        if b < a:
-            a, b = b, a
-        return random.randint(a, b)
-
-    # canonical frame = brackets horizontal; transpose at the very end
-    if transposed:
-        hcap, wcap = min(30, max_w), min(30, max_h)
-    else:
-        hcap, wcap = min(30, max_h), min(30, max_w)
-    hcap = max(10, hcap)
-    wcap = max(4, wcap)
-
-    h = unifint(10, hcap)
-    w = unifint(4, wcap)
-    fullh = unifint(10, h)
-    fullw = unifint(3, w)
+        transposed = choice((True, False))
+    lim_h, lim_w = (max_w, max_h) if transposed else (max_h, max_w)
+    h = unifint(diff_lb, diff_ub, (10, lim_h))
+    w = unifint(diff_lb, diff_ub, (4, lim_w))
+    fullh = unifint(diff_lb, diff_ub, (10, h))
+    fullw = unifint(diff_lb, diff_ub, (3, w))
+    bcanv = canvas(bgc, (h, w))
+    loci = randint(0, h - fullh)
+    locj = randint(0, w - fullw)
+    loc = (loci, locj)
+    canvi = canvas(bgc, (fullh, fullw))
+    canvo = canvas(bgc, (fullh, fullw))
     objh = (fullh // 2 - 3) // 2
-    loci = random.randint(0, h - fullh)
-    locj = random.randint(0, w - fullw)
-
-    gi = [[bgc] * w for _ in range(h)]
-    tl = objh + 1                 # top bracket line row (relative)
-    bl = fullh - objh - 2         # bottom bracket line row (relative)
-    for j in range(fullw):
-        gi[loci + tl][locj + j] = boxc
-        gi[loci + bl][locj + j] = boxc
-    for (r, c) in ((tl + 1, 0), (tl + 1, fullw - 1), (bl - 1, 0), (bl - 1, fullw - 1)):
-        gi[loci + r][locj + c] = boxc
-    go = [row[:] for row in gi]
-
-    ntot = objh * (fullw - 2)
-    for side in (0, 1):
-        cands = [(r, c) for r in range(objh) for c in range(1, fullw - 1)]
-        if side == 1:
-            cands = [(fullh - 1 - r, c) for (r, c) in cands]
-        d = unifint(0, ntot // 2)
-        n = random.choice((d, ntot - d))
-        n = min(max(1, n), ntot)
-        cells = random.sample(cands, n)
-        rmin = min(r for r, _ in cells)
-        rmax = max(r for r, _ in cells)
-        # mirror inside own bbox, then park 2 cells inside the bracket
-        off = (tl + 2) - rmin if side == 0 else (bl - 2) - rmax
-        for (r, c) in cells:
-            gi[loci + r][locj + c] = objc
-            go[loci + (rmin + rmax - r) + off][locj + c] = objc
-
+    br = connect((objh + 1, 0), (objh + 1, fullw - 1))
+    br = br | {(objh + 2, 0), (objh + 2, fullw - 1)}
+    cands = backdrop(frozenset({(0, 1), (objh - 1, fullw - 2)}))
+    ncands = objh * (fullw - 2)
+    for k in range(2):
+        canvi = fill(canvi, boxc, br)
+        canvo = fill(canvo, boxc, br)
+        ncellsd = unifint(diff_lb, diff_ub, (0, ncands // 2))
+        ncells = choice((ncellsd, ncands - ncellsd))
+        ncells = min(max(1, ncells), ncands)
+        # anchor the object on the far edge of its band: this makes the reflected
+        # copy land exactly against the bracket (keeps generator == verifier).
+        anchor = (0, randint(1, fullw - 2))
+        rest = [c for c in totuple(cands) if c != anchor]
+        cells = frozenset([anchor] + sample(rest, ncells - 1))
+        canvi = fill(canvi, objc, cells)
+        canvo = fill(canvo, objc, shift(hmirror(cells), (objh + 3, 0)))
+        canvi = hmirror(canvi)
+        canvo = hmirror(canvo)
+    gi = paint(bcanv, shift(asobject(canvi), loc))
+    go = paint(bcanv, shift(asobject(canvo), loc))
     if transposed:
-        gi = [list(x) for x in zip(*gi)]
-        go = [list(x) for x in zip(*go)]
-    return {"input": gi, "output": go}
+        gi = dmirror(gi)
+        go = dmirror(go)
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    """
+    Rule (read off I): a two-bracket frame sits in the middle; one blob of object
+    cells lies outside each bracket.  Each blob is mirrored through its bracket and
+    tucked inside the frame, flush against the bracket's end row/col; its old place
+    becomes background.
+
+    Per blob: CopyI its bbox -> Paste inside the frame -> flip it in place
+    (only if the flip actually changes it) -> erase the blob's old bbox.
+    """
+    import numpy as np
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    ho, wo = O.shape
+    hi, wi = I.shape
     ops, sels = [], []
 
-    cnt = Counter(I.flatten().tolist())
-    bgc = int(cnt.most_common(1)[0][0])
-    others = [int(c) for c in sorted(cnt) if int(c) != bgc]
+    pts_of = {}
+    for c in np.unique(I):
+        pts_of[int(c)] = [(int(r), int(cc)) for r, cc in np.argwhere(I == c)]
 
-    def cells_of(g, col):
-        return [(int(r), int(c)) for r, c in np.argwhere(g == col)]
+    def bbox(pts):
+        rs = [p[0] for p in pts]
+        cs = [p[1] for p in pts]
+        return min(rs), max(rs), min(cs), max(cs)
 
-    def bbox(cs):
-        rs = [r for r, _ in cs]
-        cl = [c for _, c in cs]
-        return min(rs), max(rs), min(cl), max(cl)
+    def is_frame(pts):
+        r0, r1, c0, c1 = bbox(pts)
+        for (r, c) in pts:
+            if r0 < r < r1 and c0 < c < c1:
+                return False
+        H = r1 - r0 + 1
+        W = c1 - c0 + 1
+        rowcnt = Counter(r for r, _ in pts)
+        colcnt = Counter(c for _, c in pts)
+        if len(pts) == 2 * W + 4 and rowcnt[r0] == W and rowcnt[r1] == W:
+            return True
+        if len(pts) == 2 * H + 4 and colcnt[c0] == H and colcnt[c1] == H:
+            return True
+        return False
 
-    def box_score(cs):
-        # the bracket colour: every cell on its bbox border, size == 2*side + 4
-        if not cs:
-            return -1
-        r0, r1, c0, c1 = bbox(cs)
-        bh, bw = r1 - r0 + 1, c1 - c0 + 1
-        if not all(r in (r0, r1) or c in (c0, c1) for r, c in cs):
-            return -1
-        if len(cs) not in (2 * bw + 4, 2 * bh + 4):
-            return -1
-        S = set(cs)
-        s = 0
-        if all((r0, c) in S for c in range(c0, c1 + 1)) and \
-           all((r1, c) in S for c in range(c0, c1 + 1)):
-            s += 1
-        if all((r, c0) in S for r in range(r0, r1 + 1)) and \
-           all((r, c1) in S for r in range(r0, r1 + 1)):
-            s += 1
-        return s
+    boxc = None
+    for c in sorted(pts_of):
+        if len(pts_of[c]) >= 6 and is_frame(pts_of[c]):
+            boxc = c
+            break
+    rest = [c for c in pts_of if c != boxc]
+    objc = min(rest, key=lambda c: len(pts_of[c]))
+    bgc = [c for c in rest if c != objc][0]
 
-    if len(others) < 2:
-        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
-        return ops, sels
+    box = pts_of[boxc]
+    br0, br1, bc0, bc1 = bbox(box)
+    # brackets are the two full lines: horizontal if the frame occupies its own
+    # centre column (a full-width line does; two vertical bars do not).
+    horizontal = any(c == bc0 + (bc1 - bc0 + 1) // 2 for _, c in box)
 
-    boxc = sorted(others, key=lambda c: -box_score(cells_of(I, c)))[0]
-    objc = [c for c in others if c != boxc][0]
+    obj = pts_of[objc]
+    if horizontal:
+        groups = [([p for p in obj if p[0] < br0], 'near'),
+                  ([p for p in obj if p[0] > br1], 'far')]
+    else:
+        groups = [([p for p in obj if p[1] < bc0], 'near'),
+                  ([p for p in obj if p[1] > bc1], 'far')]
 
-    box = cells_of(I, boxc)
-    r0, r1, c0, c1 = bbox(box)
-    center_c = c0 + (c1 - c0 + 1) // 2
-    horizontal_lines = any(c == center_c for _, c in box)
-    axis = 0 if horizontal_lines else 1          # axis along which things travel
-
-    LO, HI = (r0, r1) if axis == 0 else (c0, c1)  # the two bracket lines
-    flip_op = 27 if axis == 0 else 26             # FlipV / FlipH
-    pos_op = 21 if axis == 0 else 22              # MoveD / MoveR
-    neg_op = 20 if axis == 0 else 23              # MoveU / MoveL
-
-    def sh(p, s):
-        return (p[0] + s, p[1]) if axis == 0 else (p[0], p[1] + s)
-
-    obj = cells_of(I, objc)
-    groups = [
-        ([p for p in obj if p[axis] < LO], LO + 2, 'lo'),
-        ([p for p in obj if p[axis] > HI], HI - 2, 'hi'),
-    ]
-
-    for grp, target, side in groups:
+    for grp, side in groups:
         if not grp:
             continue
-        co = [p[axis] for p in grp]
-        gmin, gmax = min(co), max(co)
+        u, l, a, b = bbox(grp)
+        hh = l - u + 1
+        ww = b - a + 1
+        rel = {(r - u, c - a) for r, c in grp}
+        if horizontal:
+            dr = br0 + 2 if side == 'near' else br1 - 2 - (hh - 1)
+            dc = a
+            flip_op = 27                                  # up<->down
+            same = rel == {(hh - 1 - r, c) for r, c in rel}
+        else:
+            dr = u
+            dc = bc0 + 2 if side == 'near' else bc1 - 2 - (ww - 1)
+            flip_op = 26                                  # left<->right
+            same = rel == {(r, ww - 1 - c) for r, c in rel}
 
-        def mir(p):
-            return (gmin + gmax - p[0], p[1]) if axis == 0 else (p[0], gmin + gmax - p[1])
+        ops.append(28); sels.append([u, a, hh - 1, ww - 1])      # grab the blob
+        ops.append(30); sels.append([dr, dc, 0, 0])              # drop it inside the frame
+        if not same:
+            ops.append(flip_op); sels.append([dr, dc, hh - 1, ww - 1])
+        ops.append(bgc); sels.append([u, a, hh - 1, ww - 1])     # clear its old place
 
-        mirrored = [mir(p) for p in grp]
-        shift = (target - gmin) if side == 'lo' else (target - gmax)
-
-        def fits(cellset, s):
-            for p in cellset:
-                q = sh(p, s)
-                if not (0 <= q[0] < ho and 0 <= q[1] < wo):
-                    return False
-                if O[q[0], q[1]] != objc:
-                    return False
-            return True
-
-        carried = mirrored
-        use_shift = shift
-        do_flip = set(mirrored) != set(grp)
-        if not fits(mirrored, shift):
-            picked = None
-            for cand, flipped in ((mirrored, True), (grp, False)):
-                best = None
-                for s in range(-(ho + wo), ho + wo + 1):
-                    if s == 0:
-                        continue
-                    if fits(cand, s) and (best is None or abs(s - shift) < abs(best - shift)):
-                        best = s
-                if best is not None:
-                    picked = (cand, best, flipped and set(cand) != set(grp))
-                    break
-            if picked is not None:
-                carried, use_shift, do_flip = picked
-        if use_shift == 0:
-            continue
-
-        dest = [sh(p, use_shift) for p in carried]
-
-        if objc == 0:
-            # colour 0 is transparent to every ARCLE object op, so the pattern
-            # cannot be grabbed and slid: draw it at its destination and clear
-            # the vacated pattern instead.
-            ops.append(0); sels.append(sel_of(sorted(set(dest))))
-            ops.append(bgc); sels.append(sel_of(sorted(set(grp))))
-            continue
-
-        # 1) mirror the pattern in place (about its own bounding box)
-        if do_flip:
-            ops.append(flip_op); sels.append(sel_of(grp))
-        # 2) slide it through the bracket line until it rests inside the box
-        steps = abs(use_shift)
-        mop = pos_op if use_shift > 0 else neg_op
-        for k in range(steps):
-            ops.append(mop)
-            sels.append(sel_of(carried) if k == 0 else sel_of([]))
-        # 3) the grabbed footprint (original + mirrored positions) is left at 0
-        holes = (set(grp) | set(carried)) - set(dest)
-        if bgc != 0 and holes:
-            ops.append(bgc); sels.append(sel_of(sorted(holes)))
-
-    # whole grid rectangle: submit
-    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
@@ -311,7 +232,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

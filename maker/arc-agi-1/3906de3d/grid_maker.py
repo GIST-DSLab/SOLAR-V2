@@ -36,155 +36,141 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 
-try:
-    from maker.sel_helpers import sel_of
-except Exception:  # pragma: no cover
-    def sel_of(cells):
-        return {"cells": [[int(r), int(c)] for (r, c) in cells]}
-
-
-# ---------------------------------------------------------------- colors ----
-ROTS = [0, 1, 2, 3]   # discrete structural variant: global orientation of the scene
+ROTS = ['identity', 'rot90', 'rot180', 'rot270']
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
-    # bgc and linc are kept non-zero: they are the two colours that live inside the
-    # strips we reflect, and ARCLE's object ops treat 0 as "nothing there".
-    bgc = random.choice([c for c in cols if c != 0])
-    linc = random.choice([c for c in cols if c != 0 and c != bgc])
-    boxc = random.choice([c for c in cols if c != bgc and c != linc])
+    # linc must be non-zero: the line is the object that gets MOVED, and ARCLE's
+    # object buffer keeps only non-zero cells (a 0-coloured line would be a NOOP).
+    linc = random.choice([c for c in range(10) if c != 0])
+    rest = [c for c in range(10) if c != linc]
+    bgc, boxc = random.sample(rest, 2)
 
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(ROTS):
-        examples = [{"rot": r} for r in ROTS]
-        examples += [{"rot": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
+        examples = [{"rotname": r} for r in ROTS]
+        examples += [{"rotname": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
         random.shuffle(examples)
     else:
-        examples = [{"rot": r} for r in random.sample(ROTS, n_ex)]
+        examples = [{"rotname": r} for r in random.sample(ROTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "boxc": boxc, "linc": linc, "instance_plan": plan}
 
 
-# -------------------------------------------------------------- generator ----
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, boxc, linc, rot=None) -> dict:
-    if rot is None:
-        rot = random.choice(ROTS)
-
-    def unifint(bounds):
-        a, b = bounds
-        if b < a:
-            b = a
-        lo = a + int((b - a) * diff_lb)
-        hi = a + int((b - a) * diff_ub)
-        if hi < lo:
-            hi = lo
-        return random.randint(lo, hi)
-
-    # a 90/270 rotation swaps the axes, so swap the caps before sampling
-    hlim = max_w if rot % 2 == 1 else max_h
-    wlim = max_h if rot % 2 == 1 else max_w
-    hlim = max(5, min(30, int(hlim)))
-    wlim = max(5, min(30, int(wlim)))
-
-    h = unifint((5, hlim))
-    w = unifint((5, wlim))
-    oh = unifint((2, h // 2))
-    ow = unifint((3, w - 2))
-    locj = random.randint(1, w - ow - 1)
-
-    gi = [[bgc] * w for _ in range(h)]
-    cutoffs = {}
-    for jj in range(locj, locj + ow):
-        co = random.randint(1, oh - 1)
-        cutoffs[jj] = co
-        for r in range(co):
-            gi[r][jj] = boxc
-
-    go = [row[:] for row in gi]
-
-    numlns = unifint((1, ow - 1))
-    lnlocs = random.sample(list(range(locj, locj + ow)), numlns)
-    for jj in lnlocs:
-        co = cutoffs[jj]
-        lineh = random.randint(1, h - co - 1)
-        for r in range(h - lineh, h):          # input: line hangs off the far edge
-            gi[r][jj] = linc
-        for r in range(co, co + lineh):        # output: line hangs under the box
-            go[r][jj] = linc
-
-    A = np.rot90(np.array(gi, dtype=int), rot)
-    B = np.rot90(np.array(go, dtype=int), rot)
-    return {"input": A.tolist(), "output": B.tolist()}
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, boxc, linc, rotname=None) -> dict:
+    if rotname is None:
+        rotname = choice(tuple(ROTS))
+    h = unifint(diff_lb, diff_ub, (5, max_h))
+    w = unifint(diff_lb, diff_ub, (5, max_w))
+    oh = unifint(diff_lb, diff_ub, (2, h // 2))
+    ow = unifint(diff_lb, diff_ub, (3, w - 2))
+    locj = randint(1, w - ow - 1)
+    bx = backdrop(frozenset({(0, locj), (oh - 1, locj + ow - 1)}))
+    gi = canvas(bgc, (h, w))
+    gi = fill(gi, boxc, bx)
+    rng = range(locj, locj + ow)
+    cutoffs = [randint(1, oh - 1) for j in rng]
+    for jj, co in zip(rng, cutoffs):
+        gi = fill(gi, bgc, connect((co, jj), (oh - 1, jj)))
+    numlns = unifint(diff_lb, diff_ub, (1, ow - 1))
+    lnlocs = sample(list(rng), numlns)
+    go = tuple(e for e in gi)
+    for jj, co in zip(rng, cutoffs):
+        if jj in lnlocs:
+            lineh = randint(1, h - co - 1)
+            linei = connect((h - lineh, jj), (h - 1, jj))
+            lineo = connect((co, jj), (co + lineh - 1, jj))
+            gi = fill(gi, linc, linei)
+            go = fill(go, linc, lineo)
+    rotf = {'identity': identity, 'rot90': rot90, 'rot180': rot180, 'rot270': rot270}[rotname]
+    return {'input': rotf(gi), 'output': rotf(go)}
 
 
-# ------------------------------------------------------------ derivation ----
 def derive_operations(I, O):
-    """
-    Rule: the scene is a comb of teeth (the 'box') growing from one grid edge; each
-    tooth's column may carry a bar stuck to the OPPOSITE edge.  In the output that
-    column's free part (everything past the tooth) is REVERSED: the bar ends up
-    hanging directly off the tooth and the empty run behind it.  So per affected
-    column/row we simply reflect that one strip -- FlipV for vertical strips,
-    FlipH for horizontal ones.  Nothing else changes.
-    """
+    # Rule: a comb-shaped BOX hangs off one edge (its teeth have varying depth).
+    # Free LINES sit on the OPPOSITE edge, each inside one of the box's lanes.
+    # Each line slides across the gap until it butts against its lane's tooth.
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
     ops, sels = [], []
 
-    # --- normalise orientation (teeth pointing "down" from the top row) --------
-    transposed = len(set(I[0].tolist())) == 1          # teeth grow sideways
-    J = I.T if transposed else I
-    bgc = int(J[0, 0])
-    flipped = int((J[0] == bgc).sum()) > int((J[-1] == bgc).sum())   # teeth at bottom
-    K = J[::-1] if flipped else J
-    hk, wk = K.shape
+    # The box never reaches a corner (locj>=1, oh<=h//2) and neither do the lines,
+    # so a corner cell is always the background colour, in any rotation.
+    bgc = int(I[0, 0])
+    others = sorted({int(v) for v in np.unique(I)} - {bgc})
+    if len(others) < 2:
+        ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
+        return ops, sels
+    c1, c2 = others[0], others[1]
 
-    def orig(r, c):
-        rr = (hk - 1 - r) if flipped else r            # back into J coordinates
-        return (c, rr) if transposed else (rr, c)      # back into I coordinates
+    def touches(c):
+        m = (I == c)
+        e = set()
+        if m[0, :].any(): e.add('T')
+        if m[hi - 1, :].any(): e.add('B')
+        if m[:, 0].any(): e.add('L')
+        if m[:, wi - 1].any(): e.add('R')
+        return e
 
-    flip_op = 26 if transposed else 27                 # 26 = FlipH (left<->right)
-                                                       # 27 = FlipV (up<->down)
+    # Box and lines cling to opposite edges -> that pair fixes the sliding axis.
+    vertical = bool({'T', 'B'} & touches(c1))
 
-    grid = I.copy()
-    box_cols = [c for c in range(wk) if K[0, c] != bgc]
+    def lanes_used(c):
+        m = (I == c)
+        return int(m.any(axis=0).sum()) if vertical else int(m.any(axis=1).sum())
 
-    for c in box_cols:
-        boxc = int(K[0, c])
-        co = 1
-        while co < hk and int(K[co, c]) == boxc:       # first free cell past the tooth
-            co += 1
-        end_col = int(K[hk - 1, c])
-        if end_col == bgc:                             # this tooth carries no bar
+    # The box spans every lane (ow of them); the lines occupy a strict subset.
+    boxc, linc = (c1, c2) if lanes_used(c1) > lanes_used(c2) else (c2, c1)
+    ebox = touches(boxc)
+    low = ('T' in ebox) if vertical else ('L' in ebox)
+
+    n = hi if vertical else wi          # length along the sliding axis
+    nlanes = wi if vertical else hi
+    move_op = (20 if low else 21) if vertical else (23 if low else 22)
+
+    for p in range(nlanes):
+        lane = [int(I[u, p]) if vertical else int(I[p, u]) for u in range(n)]
+        if linc not in lane:
             continue
-        r = hk - 1
-        while r >= co and int(K[r, c]) == end_col:     # bar length
-            r -= 1
-        bar_top = r + 1
-        if bar_top <= co:                              # already flush: flip would be a no-op
+        if low:                                   # box at u=0, line at u=n-1
+            lineh = 0; u = n - 1
+            while u >= 0 and lane[u] == linc:
+                lineh += 1; u -= 1
+            tooth = 0; u = 0
+            while u < n and lane[u] == boxc:
+                tooth += 1; u += 1
+            src, dst = n - lineh, tooth
+        else:                                     # box at u=n-1, line at u=0
+            lineh = 0; u = 0
+            while u < n and lane[u] == linc:
+                lineh += 1; u += 1
+            tooth = 0; u = n - 1
+            while u >= 0 and lane[u] == boxc:
+                tooth += 1; u -= 1
+            src, dst = 0, n - tooth - lineh
+        if lineh == 0 or src == dst:
             continue
 
-        strip = [orig(rr, c) for rr in range(co, hk)]  # the whole free strip of this column
-        ops.append(flip_op)
-        sels.append(sel_of(strip))
+        # slide this whole line, one cell per step, until it meets the tooth
+        shift = abs(dst - src)
+        cur = src
+        for _ in range(shift):
+            sels.append([cur, p, lineh - 1, 0] if vertical else [p, cur, 0, lineh - 1])
+            ops.append(move_op)
+            cur += (-1 if low else 1)
 
-        vals = [int(grid[p]) for p in strip]
-        for p, v in zip(strip, reversed(vals)):
-            grid[p] = v
+        # the slide leaves the swept-through strip at 0; restore it to background
+        if bgc != 0:
+            if low:
+                a, b = dst + lineh, n - 1
+            else:
+                a, b = 0, dst - 1
+            if a <= b:
+                sels.append([a, p, b - a, 0] if vertical else [p, a, 0, b - a])
+                ops.append(bgc)
 
-    # safety net: on well-formed instances this emits nothing
-    if grid.shape == O.shape and not np.array_equal(grid, O):
-        diff = [(r, c) for r in range(ho) for c in range(wo) if grid[r, c] != O[r, c]]
-        for col in sorted({int(O[r, c]) for (r, c) in diff}):
-            cells = [(r, c) for (r, c) in diff if int(O[r, c]) == col]
-            ops.append(col)
-            sels.append(sel_of(cells))
-
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])                # bbox == whole grid, exactly intended
+    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
@@ -228,7 +214,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -33,206 +33,171 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+import numpy as np
+from collections import Counter
+from maker.sel_helpers import sel_of
+
+
 def sample_colors(num_examples=None) -> dict:
-    import random
-    dirs = ["up", "down", "left", "right"]
-    # object colors must be non-zero: ARCLE's object ops (Flip/Move) treat 0 as
-    # "nothing", so a 0-coloured object could not be flipped.
-    objc, otherc = random.sample(range(1, 10), 2)
-    bgc = random.choice([c for c in range(10) if c not in (objc, otherc)])
-    n_ex = num_examples if num_examples else 4
-    if n_ex >= len(dirs):
-        examples = [{"direction": d} for d in dirs]
-        examples += [{"direction": random.choice(dirs)} for _ in range(n_ex - len(dirs))]
+    cols = list(range(10))
+    bgc = random.choice(cols)
+    # objc / otherc must be non-zero: the mover object is relocated with ARCLE Move ops,
+    # and Move only carries NON-ZERO cells of the selection.
+    rest = [c for c in cols if c != bgc and c != 0]
+    objc, otherc = random.sample(rest, 2)
+
+    # Discrete structural variant: which way the stemmed rectangle travels.
+    variants = [{"direction": d} for d in ("up", "down", "left", "right")]
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(variants):
+        examples = [dict(v) for v in variants]
+        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
         random.shuffle(examples)
     else:
-        examples = [{"direction": d} for d in random.sample(dirs, n_ex)]
-    plan = examples + [dict(random.choice(examples))]  # test variant was demonstrated
+        examples = [dict(v) for v in random.sample(variants, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "objc": objc, "otherc": otherc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, otherc, direction=None, **kwargs) -> dict:
-    import random
-    import numpy as np
-
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, otherc, direction=None) -> dict:
     if direction is None:
-        direction = random.choice(["up", "down", "left", "right"])
+        direction = random.choice(("up", "down", "left", "right"))
 
-    def unifint(lb, ub, bounds):
+    def ui(bounds):
         a, b = bounds
-        if b < a:
-            b = a
-        lo = max(a, int(a + (b - a) * lb))
-        hi = min(b, int(a + (b - a) * ub))
-        if hi < lo:
-            lo, hi = hi, lo
-        return random.randint(lo, hi)
+        return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
 
-    transposed = direction in ("left", "right")
-    if transposed:
-        lim = max(10, min(max_h, max_w))
-        hb, wb = lim, lim
-    else:
-        hb, wb = max(10, max_h), max(10, max_w)
+    # any of the 4 orientations may transpose h/w, so bound both by the smaller limit
+    m = min(max_h, max_w)
+    if m < 10:
+        m = 10
 
-    h = unifint(diff_lb, diff_ub, (10, hb))
-    w = unifint(diff_lb, diff_ub, (10, wb))
-    objh = unifint(diff_lb, diff_ub, (2, h - 5))
-    objw = unifint(diff_lb, diff_ub, (2, w - 5))
-
-    # anchor rectangle, kept with a bottom margin of at least 3 rows
+    h = ui((10, m))
+    w = ui((10, m))
+    objh = ui((2, h - 5))
+    objw = ui((2, w - 5))
+    # anchor block placed with a bottom margin > 2 (base orientation: mover travels UP)
     loci = random.randint(0, h - objh - 3)
     locj = random.randint(0, w - objw)
-    rlow = loci + objh - 1
-    leftm, rightm = locj, locj + objw - 1
 
-    # moving rectangle, strictly below the anchor with a gap of >= 1 row
-    locis = random.randint(rlow + 2, h - 2)
+    gi = [[bgc] * w for _ in range(h)]
+    for r in range(loci, loci + objh):
+        for c in range(locj, locj + objw):
+            gi[r][c] = objc
+
+    low = loci + objh - 1
+    left = locj
+    right = locj + objw - 1
+
+    locis = random.randint(low + 2, h - 2)
     locie = random.randint(locis + 1, h - 1)
-    locjs = random.randint(0, min(w - 2, rightm))
-    locje = random.randint(max(locjs + 1, leftm), w - 1)
-    jloc = random.randint(max(leftm, locjs), min(rightm, locje))
-    L = locis - rlow - 1  # length of the connecting line
+    locjs = random.randint(0, min(w - 2, right))
+    locje = random.randint(max(locjs + 1, left), w - 1)
+    jloc = random.randint(max(left, locjs), min(right, locje))
+    lnlen = locis - low - 1
 
-    gi = np.full((h, w), bgc, dtype=int)
-    gi[loci:loci + objh, locj:locj + objw] = objc
-    go = gi.copy()
-    gi[locis:locie + 1, locjs:locje + 1] = otherc
-    gi[rlow + 1:locis, jloc] = otherc
-    go[locis - L:locie + 1 - L, locjs:locje + 1] = otherc
+    go = [row[:] for row in gi]
+    for r in range(locis, locie + 1):
+        for c in range(locjs, locje + 1):
+            gi[r][c] = otherc
+            go[r - lnlen][c] = otherc
+    for r in range(low + 1, locis):
+        gi[r][jloc] = otherc
+
+    def flipud(g):
+        return [row[:] for row in g[::-1]]
+
+    def transpose(g):
+        return [list(t) for t in zip(*g)]
+
+    def rot_cw(g):
+        return [list(t) for t in zip(*g[::-1])]
 
     if direction == "down":
-        gi, go = np.flipud(gi), np.flipud(go)
+        gi, go = flipud(gi), flipud(go)
     elif direction == "left":
-        gi, go = gi.T, go.T
+        gi, go = transpose(gi), transpose(go)
     elif direction == "right":
-        gi, go = np.fliplr(gi.T), np.fliplr(go.T)
+        gi, go = rot_cw(gi), rot_cw(go)
 
-    # perpendicular flip: extra variety without changing the movement direction
-    if random.random() < 0.5:
-        if direction in ("up", "down"):
-            gi, go = np.fliplr(gi), np.fliplr(go)
-        else:
-            gi, go = np.flipud(gi), np.flipud(go)
-
-    return {"input": gi.tolist(), "output": go.tolist()}
+    return {
+        "input": tuple(tuple(r) for r in gi),
+        "output": tuple(tuple(r) for r in go),
+    }
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from itertools import permutations
-    try:
-        from maker.sel_helpers import sel_of
-    except Exception:
-        def sel_of(cells):
-            return {"cells": [[int(r), int(c)] for r, c in cells]}
-
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
     ho, wo = O.shape
+
+    # background = most common colour on the border ring (objects can dominate the interior)
+    border = ([int(I[0, c]) for c in range(w)] + [int(I[h - 1, c]) for c in range(w)] +
+              [int(I[r, 0]) for r in range(h)] + [int(I[r, w - 1]) for r in range(h)])
+    bg = Counter(border).most_common(1)[0][0]
+
     ops, sels = [], []
 
-    colors = sorted(set(int(v) for v in I.flatten().tolist()))
-
-    def cellset(col):
-        rs, cs = np.nonzero(I == col)
-        return set(zip(rs.tolist(), cs.tolist()))
-
-    def bbox(cs):
-        rr = [r for r, _ in cs]
-        cc = [c for _, c in cs]
-        return min(rr), max(rr), min(cc), max(cc)
-
-    def solid(cs):
-        if len(cs) < 4:
-            return False
-        r0, r1, c0, c1 = bbox(cs)
-        return (r1 - r0 + 1) >= 2 and (c1 - c0 + 1) >= 2 and len(cs) == (r1 - r0 + 1) * (c1 - c0 + 1)
-
-    best = None
-    for bg, anc, mov in permutations(colors, 3):
-        anchor = cellset(anc)
-        movcells = cellset(mov)
-        if not solid(anchor) or not movcells:
-            continue
-
-        def isbg(r, c, _bg=bg):
-            return (not (0 <= r < h and 0 <= c < w)) or I[r, c] == _bg
-
-        # a line cell is 1 wide: background on both sides across the line
-        line = {(r, c) for (r, c) in movcells
-                if (isbg(r, c - 1) and isbg(r, c + 1)) or (isbg(r - 1, c) and isbg(r + 1, c))}
-        rect = movcells - line
-        if not line or not solid(rect):
-            continue
-
-        r0, r1, c0, c1 = bbox(rect)
-        ar0, ar1, ac0, ac1 = bbox(anchor)
-        L = len(line)
-        lrows = sorted({r for r, _ in line})
-        lcols = sorted({c for _, c in line})
-
-        direction = None
-        if len(lcols) == 1 and c0 <= lcols[0] <= c1 and lrows == list(range(lrows[0], lrows[0] + L)):
-            if lrows[-1] == r0 - 1 and ar1 == lrows[0] - 1:
-                direction = "up"
-            elif lrows[0] == r1 + 1 and ar0 == lrows[-1] + 1:
-                direction = "down"
-        elif len(lrows) == 1 and r0 <= lrows[0] <= r1 and lcols == list(range(lcols[0], lcols[0] + L)):
-            if lcols[-1] == c0 - 1 and ac1 == lcols[0] - 1:
-                direction = "left"
-            elif lcols[0] == c1 + 1 and ac0 == lcols[-1] + 1:
-                direction = "right"
-        if direction is None:
-            continue
-
-        # the strip = connecting line + moving rectangle; reflecting it across the
-        # strip's middle carries the rectangle up against the anchor.
-        if direction == "up":
-            rr0, rr1, cc0, cc1, flip = r0 - L, r1, c0, c1, 27
-        elif direction == "down":
-            rr0, rr1, cc0, cc1, flip = r0, r1 + L, c0, c1, 27
-        elif direction == "left":
-            rr0, rr1, cc0, cc1, flip = r0, r1, c0 - L, c1, 26
-        else:
-            rr0, rr1, cc0, cc1, flip = r0, r1, c0, c1 + L, 26
-
-        G = I.copy()
-        sub = G[rr0:rr1 + 1, cc0:cc1 + 1]
-        G[rr0:rr1 + 1, cc0:cc1 + 1] = np.flipud(sub) if flip == 27 else np.fliplr(sub)
-        if flip == 27:
-            moved_line = sorted({(rr0 + rr1 - r, c) for r, c in line})
-        else:
-            moved_line = sorted({(r, cc0 + cc1 - c) for r, c in line})
-        for r, c in moved_line:
-            G[r, c] = bg
-        if G.shape == O.shape and np.array_equal(G, O):
-            best = (flip, rr0, rr1, cc0, cc1, moved_line, bg)
+    # the mover is the colour whose cell set differs between I and O; the other block is the anchor
+    M, Mo = set(), set()
+    for col in sorted(set(I.flatten().tolist()) - {bg}):
+        a = {(r, c) for r in range(h) for c in range(w) if int(I[r, c]) == col}
+        b = {(r, c) for r in range(ho) for c in range(wo) if int(O[r, c]) == col}
+        if a != b:
+            M, Mo = a, b
             break
 
-    if best is not None:
-        flip, rr0, rr1, cc0, cc1, moved_line, bg = best
-        # selection is exactly the full rectangular strip (background included) —
-        # the reflection acts on the whole strip, not on a non-rectangular object.
-        strip = [(r, c) for r in range(rr0, rr1 + 1) for c in range(cc0, cc1 + 1)]
-        ops.append(flip)
-        sels.append(sel_of(strip))
-        # what the reflection leaves behind: the line, now on the far side — erase it
+    # split the mover into its solid rectangle and its 1-wide connecting stem
+    stem = []
+    for (r, c) in M:
+        l_in = (r, c - 1) in M
+        r_in = (r, c + 1) in M
+        u_in = (r - 1, c) in M
+        d_in = (r + 1, c) in M
+        if (not l_in and not r_in) or (not u_in and not d_in):
+            stem.append((r, c))
+    stem = sorted(stem)
+    rect = sorted(M - set(stem))
+
+    # destination of the rectangle (pure translation along the stem axis)
+    r0 = min(r for r, c in rect)
+    c0 = min(c for r, c in rect)
+    dr = min(r for r, c in Mo) - r0
+    dc = min(c for r, c in Mo) - c0
+    dest = {(r + dr, c + dc) for (r, c) in rect}
+
+    # erase the stem only when the arriving rectangle would not cover all of it
+    if stem and any(p not in dest for p in stem):
         ops.append(int(bg))
-        sels.append(sel_of(moved_line))
+        sels.append(sel_of(stem))
+
+    # slide the rectangle until it abuts the anchor block
+    steps = abs(dr) + abs(dc)
+    if dr < 0:
+        mop = 20
+    elif dr > 0:
+        mop = 21
+    elif dc > 0:
+        mop = 22
     else:
-        by_color = {}
-        for r in range(min(h, ho)):
-            for c in range(min(w, wo)):
-                if I[r, c] != O[r, c]:
-                    by_color.setdefault(int(O[r, c]), []).append((r, c))
-        for col, cs in by_color.items():
-            ops.append(col)
-            sels.append(sel_of(cs))
+        mop = 23
+    if steps > 0:
+        ops.append(mop)
+        sels.append(sel_of(rect))               # first Move GRABS the rectangle
+        for _ in range(steps - 1):
+            ops.append(mop)
+            sels.append(sel_of([]))             # empty selection -> keep same object grabbed
+
+    # ARCLE leaves the vacated original footprint at 0; repair it when bg != 0
+    hole = sorted(set(rect) - dest)
+    if bg != 0 and hole:
+        ops.append(int(bg))
+        sels.append(sel_of(hole))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])  # full grid rectangle
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -276,7 +241,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

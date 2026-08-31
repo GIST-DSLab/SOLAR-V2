@@ -33,181 +33,103 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+import numpy as np
+
+VARIANTS = [{"rotf": "rot180"}, {"rotf": "rot270"}]
+
+
 def sample_colors(num_examples=None) -> dict:
-    import random
     cols = list(range(10))
     bgc, cola, colb = random.sample(cols, 3)
-    variants = [{"orient": "landscape"}, {"orient": "portrait"}]
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(variants):
-        examples = [dict(v) for v in variants]
-        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(variants, max(1, n_ex))]
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "cola": cola, "colb": colb, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, cola, colb, orient=None) -> dict:
-    import random
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, cola, colb, rotf=None) -> dict:
+    if rotf is None:
+        rotf = random.choice(["rot180", "rot270"])
 
-    if orient is None:
-        orient = random.choice(("landscape", "portrait"))
-
-    # Work in a normalized "landscape" frame: H rows, W cols, W > H,
-    # two dots on the top/bottom row, full-height lines repeating rightwards.
-    # The portrait variant is the transpose of that frame.
-    if orient == "landscape":
-        Hlim, Wlim = min(29, max_h), min(30, max_w)
+    # rot180 keeps (h, w); rot270 emits (w, h) -> swap the caps accordingly
+    if rotf == "rot180":
+        hcap, wcap = max_h, max_w
     else:
-        Hlim, Wlim = min(29, max_w), min(30, max_h)
-    Wlim = max(6, Wlim)
-    Hmax = max(4, min(Hlim, Wlim - 1))
+        hcap, wcap = max_w, max_h
 
-    def uf(lb, ub):
-        if ub <= lb:
-            return lb
-        a = min(max(float(diff_lb), 0.0), 1.0)
-        b = min(max(float(diff_ub), 0.0), 1.0)
-        lo = lb + int(round((ub - lb) * a))
-        hi = lb + int(round((ub - lb) * b))
-        if hi < lo:
-            lo, hi = hi, lo
-        lo = max(lb, min(ub, lo))
-        hi = max(lb, min(ub, hi))
-        return random.randint(lo, hi)
+    h_ub = min(29, hcap, wcap - 1)
+    h = unifint(diff_lb, diff_ub, (4, h_ub))
+    w_ub = min(30, wcap)
+    w = unifint(diff_lb, diff_ub, (h + 1, w_ub))
 
-    H = uf(4, Hmax)
-    Wlo = max(H + 1, 6)
-    Whi = max(Wlo, Wlim)
-    W = uf(Wlo, Whi)
+    gi = canvas(bgc, (h, w))
+    go = canvas(bgc, (h, w))
 
-    # leftmost dot column (kept small so at least three lines fit)
-    c1 = uf(1, max(1, (W - 1) // 3))
-    dhi = max(2, (W - 1 - c1) // 2)
-    d = uf(2, dhi)
-    c2 = c1 + d
-    if c2 > W - 2:
-        c2 = W - 2
-        d = c2 - c1
+    locja = unifint(diff_lb, diff_ub, (3, w - 2))
+    locjb = unifint(diff_lb, diff_ub, (1, locja - 2))
+    locia = choice((0, h - 1))
+    locib = choice((0, h - 1))
 
-    r1 = random.choice((0, H - 1))
-    r2 = random.choice((0, H - 1))
-    if random.random() < 0.5:
-        leftcol, rightcol = cola, colb
-    else:
-        leftcol, rightcol = colb, cola
+    gi = fill(gi, cola, {(locia, locja)})
+    gi = fill(gi, colb, {(locib, locjb)})
 
-    gi = [[bgc] * W for _ in range(H)]
-    go = [[bgc] * W for _ in range(H)]
-    gi[r1][c1] = leftcol
-    gi[r2][c2] = rightcol
+    ofs = -2 * (locja - locjb)
+    for aa in range(locja, -1, ofs):
+        go = fill(go, cola, connect((0, aa), (h - 1, aa)))
+    for bb in range(locjb, -1, ofs):
+        go = fill(go, colb, connect((0, bb), (h - 1, bb)))
 
-    k = 0
-    while c1 + k * d <= W - 1:
-        cc = c1 + k * d
-        col = leftcol if k % 2 == 0 else rightcol
-        for r in range(H):
-            go[r][cc] = col
-        k += 1
-
-    if orient == "portrait":
-        gi = [list(row) for row in zip(*gi)]
-        go = [list(row) for row in zip(*go)]
-
-    return {"input": [[int(v) for v in row] for row in gi],
-            "output": [[int(v) for v in row] for row in go]}
+    f = rot180 if rotf == "rot180" else rot270
+    gi = f(gi)
+    go = f(go)
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from collections import Counter
-    try:
-        from maker.sel_helpers import sel_of
-    except Exception:
-        def sel_of(cells):
-            return {"cells": [[int(r), int(c)] for (r, c) in cells]}
-
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
-    ho, wo = O.shape
+    hi, wi = I.shape
+
+    # background: canvas colour, overwhelmingly dominant (only 2 marker cells exist)
+    vals, counts = np.unique(I, return_counts=True)
+    bgc = int(vals[int(np.argmax(counts))])
+
+    # the two marker cells in I
+    marks = [(r, c, int(I[r, c])) for r in range(hi) for c in range(wi) if I[r, c] != bgc]
+
     ops, sels = [], []
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-    dots = [(r, c, int(I[r, c])) for r in range(h) for c in range(w) if I[r, c] != bgc]
-
-    if len(dots) != 2:
-        # defensive fallback: paint the differing cells grouped by target colour
-        for col in sorted({int(O[r, c]) for r in range(ho) for c in range(wo)
-                           if O[r, c] != I[r, c]}):
-            cells = [(r, c) for r in range(ho) for c in range(wo)
-                     if O[r, c] != I[r, c] and int(O[r, c]) == col]
-            if cells:
-                ops.append(col)
-                sels.append(sel_of(cells))
-        ops.append(34)
-        sels.append([0, 0, ho - 1, wo - 1])
-        return ops, sels
-
-    horizontal = h > w  # portrait instance -> full-width horizontal lines
-
-    if not horizontal:
-        dots.sort(key=lambda t: t[1])
-        p1, k1 = dots[0][1], dots[0][2]
-        p2, k2 = dots[1][1], dots[1][2]
-        limit = w - 1
-        flip_op = 26  # FlipH: left<->right, mirrors a vertical strip
-
-        def line_cells(p):
-            return [(r, p) for r in range(h)]
-
-        def band(a, b):                 # full rectangle: whole columns a..b
-            return [0, a, h - 1, b - a]
-
-        def origin(b):                  # paste origin (top-left of the band)
-            return [0, b, 0, 0]
+    if hi < wi:
+        # landscape: each marker grows into a full COLUMN, repeated with stride 2*gap
+        marks.sort(key=lambda t: t[1])
+        (_, c1, v1), (_, c2, v2) = marks[0], marks[1]
+        stride = 2 * (c2 - c1)
+        for c0, v in ((c1, v1), (c2, v2)):          # finish one marker's family, then the other
+            c = c0
+            while c < wi:
+                ops.append(v)
+                sels.append([0, c, hi - 1, 0])
+                c += stride
     else:
-        dots.sort(key=lambda t: t[0])
-        p1, k1 = dots[0][0], dots[0][2]
-        p2, k2 = dots[1][0], dots[1][2]
-        limit = h - 1
-        flip_op = 27  # FlipV: up<->down, mirrors a horizontal band
-
-        def line_cells(p):
-            return [(p, c) for c in range(w)]
-
-        def band(a, b):                 # full rectangle: whole rows a..b
-            return [a, 0, b - a, w - 1]
-
-        def origin(b):
-            return [b, 0, 0, 0]
-
-    d = p2 - p1
-
-    # 1. each dot grows into a full line across the grid
-    ops.append(k1)
-    sels.append(sel_of(line_cells(p1)))
-    ops.append(k2)
-    sels.append(sel_of(line_cells(p2)))
-
-    # 2. every further line is the mirror image of the previous pair:
-    #    copy the strip holding the last two lines, lay it down starting at the
-    #    last line, and reflect that strip in place.
-    K = (limit - p1) // d
-    for k in range(2, K + 1):
-        a = p1 + (k - 2) * d
-        b = p1 + (k - 1) * d
-        ops.append(29)                  # CopyO: the strip we ourselves drew
-        sels.append(band(a, b))         # full rectangle (background included)
-        ops.append(30)                  # Paste at the strip's new origin
-        sels.append(origin(b))
-        ops.append(flip_op)             # reflect the strip in place
-        sels.append(band(b, b + d))     # full rectangle (background included)
+        # portrait: each marker grows into a full ROW, repeated with stride 2*gap
+        marks.sort(key=lambda t: t[0])
+        (r1, _, v1), (r2, _, v2) = marks[0], marks[1]
+        stride = 2 * (r2 - r1)
+        for r0, v in ((r1, v1), (r2, v2)):
+            r = r0
+            while r < hi:
+                ops.append(v)
+                sels.append([r, 0, 0, wi - 1])
+                r += stride
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
@@ -251,7 +173,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

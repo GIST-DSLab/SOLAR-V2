@@ -37,66 +37,40 @@ import random
 import numpy as np
 from maker.sel_helpers import sel_of
 
-
-# ----------------------------------------------------------------------------------
-# The task: a grid of two-colour noise (bgc / noisec) is crossed by a "corridor" that
-# was wiped clean to bgc: a vertical TRUNK band (width dim, from row spi down to the
-# bottom edge) and one or more horizontal ARM bands (height hh, shooting left and/or
-# right from the trunk to the grid edge).  The output fills the INTERIOR of every band
-# with 3: the band shrunk by one cell on each of its two long sides and by one cell at
-# its closed end (a grid edge is not a closed end).
-#
-# The rule is direction-symmetric — the verifier says so literally with
-# `power(compose(rot90, rule), FOUR)`: the very same "fill this band's interior"
-# procedure is applied to the grid in all four orientations.  The trajectory below
-# performs that: it fills the bands that run RIGHTWARD in the current frame, rotates
-# the grid 90deg (op24), fills again, ... four times, so the grid ends up back in its
-# original orientation with every band filled.
-# ----------------------------------------------------------------------------------
-
-
-VARIANTS = [
-    {"mode": "right"},   # arms shoot right only
-    {"mode": "left"},    # arms shoot left only
-    {"mode": "both"},    # one arm group shooting both ways (same rows)
-    {"mode": "extra"},   # two arm groups, opposite directions, independent rows
-]
+SGN_VARIANTS = [(-1,), (1,), (-1, 1)]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = [c for c in range(10) if c != 3]
     bgc, noisec = random.sample(cols, 2)
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+    if n_ex >= len(SGN_VARIANTS):
+        examples = [{"sgns_choice": list(v)} for v in SGN_VARIANTS]
+        examples += [{"sgns_choice": list(random.choice(SGN_VARIANTS))}
+                     for _ in range(n_ex - len(SGN_VARIANTS))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]  # test case was shown
+        examples = [{"sgns_choice": list(v)}
+                    for v in random.sample(SGN_VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "noisec": noisec, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, mode=None, **kwargs) -> dict:
-    if mode is None:
-        mode = random.choice([v["mode"] for v in VARIANTS])
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, sgns_choice=None) -> dict:
+    if sgns_choice is None:
+        sgns_choice = list(random.choice(SGN_VARIANTS))
+    sgns = tuple(sgns_choice)
 
-    # square canvas: the rule is applied in four orientations, and ARCLE's Rotate is
-    # position-correct only on square selections.
-    hi = min(max_h, max_w, 30)
-    lo = min(18, hi)
-    n = unifint(diff_lb, diff_ub, (lo, hi))
-    h = w = n
+    h = unifint(diff_lb, diff_ub, (min(18, max_h), min(30, max_h)))
+    w = unifint(diff_lb, diff_ub, (min(18, max_w), min(30, max_w)))
 
     lb = int(0.4 * h * w)
     ub = int(0.5 * h * w)
     nbgc = unifint(diff_lb, diff_ub, (lb, ub))
-
     gi = canvas(noisec, (h, w))
     inds = totuple(asindices(gi))
-    bgcinds = random.sample(inds, nbgc)
+    bgcinds = sample(inds, nbgc)
     gi = fill(gi, bgc, bgcinds)
-
     sinds = asindices(canvas(-1, (3, 3)))
     bgcf = recolor(bgc, sinds)
     noisecf = recolor(noisec, sinds)
@@ -104,20 +78,17 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, mode=None, **kwargs) -
     addb = set()
     for occ in occurrences(gi, bgcf):
         occi, occj = occ
-        addn.add((random.randint(0, 2) + occi, random.randint(0, 2) + occj))
+        addn.add((randint(0, 2) + occi, randint(0, 2) + occj))
     for occ in occurrences(gi, noisecf):
         occi, occj = occ
-        addb.add((random.randint(0, 2) + occi, random.randint(0, 2) + occj))
+        addb.add((randint(0, 2) + occi, randint(0, 2) + occj))
     gi = fill(gi, noisec, addn)
     gi = fill(gi, bgc, addb)
-
     go = tuple(e for e in gi)
 
-    dim = random.randint(random.randint(3, 8), 8)
-    locj = random.randint(3, w - dim - 4)
-    spi = random.choice((0, random.randint(3, h // 2)))
-
-    # trunk: wipe the band, then fill its interior with 3
+    dim = randint(randint(3, 8), 8)
+    locj = randint(3, min(h, w) - dim - 4)
+    spi = choice((0, randint(3, h // 2)))
     for j in range(locj, locj + dim):
         ln = connect((spi, j), (h - 1, j))
         gi = fill(gi, bgc, ln)
@@ -126,30 +97,31 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, mode=None, **kwargs) -
         ln = connect((spi + 1 if spi > 0 else spi, j), (h - 1, j))
         go = fill(go, 3, ln)
 
-    def draw_arms(gi, go, sgns):
-        startloc = random.choice((spi, random.randint(spi + 3, h - 6)))
-        hh = random.randint(3, min(8, h - startloc - 3))
-        for sgn in sgns:
-            for ii in range(startloc, startloc + hh):
+    startloc = choice((spi, randint(spi + 3, h - 6)))
+    hh = randint(3, min(8, h - startloc - 3))
+    for sgn in sgns:
+        for ii in range(startloc, startloc + hh, 1):
+            ln = shoot((ii, locj), (0, sgn))
+            gi = fill(gi, bgc, ln)
+            go = fill(go, bgc, ln - ofcolor(go, 3))
+    for sgn in sgns:
+        for ii in range(startloc + 1 if startloc > 0 else startloc, startloc + hh - 1, 1):
+            ln = shoot((ii, locj + dim - 2 if sgn == -1 else locj + 1), (0, sgn))
+            go = fill(go, 3, ln)
+
+    if len(sgns) == 1 and unifint(diff_lb, diff_ub, (0, 1)) == 1:
+        sgns2 = (-sgns[0],)
+        startloc = choice((spi, randint(spi + 3, h - 6)))
+        hh = randint(3, min(8, h - startloc - 3))
+        for sgn in sgns2:
+            for ii in range(startloc, startloc + hh, 1):
                 ln = shoot((ii, locj), (0, sgn))
                 gi = fill(gi, bgc, ln)
                 go = fill(go, bgc, ln - ofcolor(go, 3))
-        for sgn in sgns:
-            for ii in range(startloc + 1 if startloc > 0 else startloc, startloc + hh - 1):
+        for sgn in sgns2:
+            for ii in range(startloc + 1 if startloc > 0 else startloc, startloc + hh - 1, 1):
                 ln = shoot((ii, locj + dim - 2 if sgn == -1 else locj + 1), (0, sgn))
                 go = fill(go, 3, ln)
-        return gi, go
-
-    if mode == "both":
-        gi, go = draw_arms(gi, go, (-1, 1))
-    elif mode == "left":
-        gi, go = draw_arms(gi, go, (-1,))
-    elif mode == "right":
-        gi, go = draw_arms(gi, go, (1,))
-    else:  # "extra": one group each way, at independent rows
-        first = random.choice((-1, 1))
-        gi, go = draw_arms(gi, go, (first,))
-        gi, go = draw_arms(gi, go, (-first,))
 
     return {'input': gi, 'output': go}
 
@@ -157,71 +129,34 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, noisec, mode=None, **kwargs) -
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = O.shape
-    M = (O == 3)
+    ho, wo = O.shape
 
-    # ---- measure the corridor's bands (all measurements are of band geometry) -----
-    # The trunk always runs down to the bottom edge; the arms never reach it, so the
-    # bottom row identifies the trunk's interior columns.
-    trunk_cols = [c for c in range(w) if M[h - 1, c]]
-    c1, c2 = trunk_cols[0], trunk_cols[-1]
-    # trunk's closed end: walk up while the whole trunk width is still filled
-    a = h - 1
-    while a - 1 >= 0 and M[a - 1, c1:c2 + 1].all():
-        a -= 1
-    # arms always run out to a side edge, so the edge columns identify their rows
-    left_rows = [r for r in range(h) if M[r, 0]]
-    right_rows = [r for r in range(h) if M[r, w - 1]]
-
-    def row_groups(rows):
-        grps = []
-        for r in rows:
-            if grps and r == grps[-1][-1] + 1:
-                grps[-1].append(r)
-            else:
-                grps.append([r])
-        return grps
-
-    # A band is stored by the orientation in which it runs RIGHTWARD:
-    #   k=0 rightward arms, k=1 the (downward) trunk, k=2 leftward arms, k=3 upward.
-    bands = {0: [], 1: [], 2: [], 3: []}
-    for grp in row_groups(right_rows):
-        bands[0].append([(r, c) for r in grp for c in range(c1, w)])
-    bands[1].append([(r, c) for r in range(a, h) for c in range(c1, c2 + 1)])
-    for grp in row_groups(left_rows):
-        bands[2].append([(r, c) for r in grp for c in range(0, c2 + 1)])
+    # The only change is: interiors of the cleared corridors become 3.
+    # Those 3-cells form a few solid rectangles (vertical trunk + horizontal arms).
+    target = (O == 3)
+    covered = np.zeros_like(target, dtype=bool)
 
     ops, sels = [], []
-
-    if h == w:
-        n = h
-        # one CCW turn of the grid maps (r, c) -> (n-1-c, r)
-        def rot(cells, k):
-            out = list(cells)
-            for _ in range(k):
-                out = [(n - 1 - c, r) for (r, c) in out]
-            return out
-
-        # Apply the same "fill this band's interior" stroke in each of the four
-        # orientations, rotating the whole grid between them (op24 = Rotate90/CCW).
-        # Four rotations = one full turn, so the grid is submitted in its original
-        # orientation.  The selection is exactly the whole (square) grid rectangle.
-        for k in range(4):
-            for cells in bands[k]:
-                ops.append(3)                       # Color3 on this band's interior
-                sels.append(sel_of(rot(cells, k)))
-            ops.append(24)
-            sels.append([0, 0, n - 1, n - 1])       # bbox == exactly the whole grid
-    else:
-        # non-square safety net: ARCLE's Rotate is only position-correct on square
-        # selections, so fill each band in place instead.
-        for k in range(4):
-            for cells in bands[k]:
-                ops.append(3)
-                sels.append(sel_of(cells))
+    for r in range(ho):
+        for c in range(wo):
+            if not target[r, c] or covered[r, c]:
+                continue
+            # grow right along this row
+            c1 = c
+            while c1 + 1 < wo and target[r, c1 + 1] and not covered[r, c1 + 1]:
+                c1 += 1
+            # grow down while the whole column span stays 3 and uncovered
+            r1 = r
+            while r1 + 1 < ho and all(target[r1 + 1, cc] and not covered[r1 + 1, cc]
+                                      for cc in range(c, c1 + 1)):
+                r1 += 1
+            covered[r:r1 + 1, c:c1 + 1] = True
+            # selection is exactly this full rectangle -> bbox form is the true cell set
+            ops.append(3)
+            sels.append([r, c, r1 - r, c1 - c])
 
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -265,7 +200,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

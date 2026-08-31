@@ -363,13 +363,18 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
     # part of the task that version never handled. Noise is answered by drawing
     # more instances from more seeds, which `--rand_seed` now takes, not by
     # forgiving a miss.
-    if base and base["copy"] > 0:
+    if base and (base["copy"] > 0 or base["idle"] > 0):
         # The incumbent's coverage is not a bar the honest candidates have to
         # clear. a48eeaf7 solved 45 of 45 and two of those it solved by drawing
         # the answer: every version that derives from I alone misses the same
         # two. Measuring them against 45 rejects them for the very instances the
-        # incumbent cannot do either.
-        clean = [v["solve"] for v in live.values() if v["copy"] <= 1e-9]
+        # incumbent cannot do either. The same holds when the incumbent's
+        # geometry cancels: 6855a6e4 reaches every target and moves an object
+        # down and back up again to do it, and the version that does not solves
+        # nine per cent fewer. Coverage bought that way is not coverage to
+        # defend.
+        clean = [v["solve"] for v in live.values()
+                 if v["copy"] <= 1e-9 and v["idle"] <= 1e-9]
         if clean:
             s0 = max(clean)
     ok = {k: v for k, v in live.items() if v["solve"] >= s0 - 1e-9}
@@ -390,6 +395,13 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
     if not good:
         return None, ("no candidate keeps its parameters off O and performs the "
                       "geometry it contains")
+    # Coverage first among the candidates that passed: solving more of what the
+    # generator draws is a property of the maker, where route only counts
+    # whether an operation appears. 0a938d79 was kept over a version that
+    # solves every instance because it scored higher on route, which is the
+    # wrong way round.
+    sv = max(v["solve"] for v in good.values())
+    good = {k: v for k, v in good.items() if v["solve"] >= sv - 1e-9}
     hi = max(v["route"] for v in good.values())
     top = {k: v for k, v in good.items() if v["route"] >= hi - 1e-9}
     if incumbent in top:
@@ -470,7 +482,7 @@ def main() -> None:
             f"{scores[c]['copy']:.2f}/{scores[c]['idle']:.2f}"
             if scores[c].get("loaded") else f"{c}:-" for c in args.candidates)
         print(f"{t}  {s}   -> {win or 'none of them'}", flush=True)
-        if args.apply and win != incumbent:
+        if args.apply and win is not None and win != incumbent:
             src, dst = root / win / t, root / incumbent / t
             shutil.rmtree(dst, ignore_errors=True)
             shutil.copytree(src, dst)

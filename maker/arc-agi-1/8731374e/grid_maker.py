@@ -33,33 +33,69 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
+import numpy as np
 from collections import deque
 
-import numpy as np
+
+def sample_colors(num_examples=None) -> dict:
+    cols = list(range(10))
+    bgc, fgc = sample(cols, 2)
+    return {"bgc": bgc, "fgc": fgc}
 
 
-# ----------------------------------------------------------------------------
-# shared helpers
-# ----------------------------------------------------------------------------
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    lo = a + int((b - a) * diff_lb)
-    hi = a + int((b - a) * diff_ub)
-    lo = max(a, min(lo, b))
-    hi = max(lo, min(hi, b))
-    return random.randint(lo, hi)
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, fgc: int) -> dict:
+    cols = interval(0, 10, 1)
+    h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
+    w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
+    inh = randint(5, h - 2)
+    inw = randint(5, w - 2)
+    num = unifint(diff_lb, diff_ub, (1, min(inh, inw)))
+    mat = canvas(bgc, (inh - 2, inw - 2))
+    tol = lambda g: list(list(e) for e in g)
+    tot = lambda g: tuple(tuple(e) for e in g)
+    mat = fill(mat, fgc, connect((0, 0), (num - 1, num - 1)))
+    mat = tol(mat)
+    shuffle(mat)
+    mat = tol(dmirror(tot(mat)))
+    shuffle(mat)
+    mat = dmirror(tot(mat))
+    sgi = paint(canvas(bgc, (inh, inw)), shift(asobject(mat), (1, 1)))
+    inds = ofcolor(sgi, fgc)
+    lins = mapply(fork(combine, vfrontier, hfrontier), inds)
+    go = fill(sgi, fgc, lins)
+    numci = unifint(diff_lb, diff_ub, (3, 10))
+    numc = 13 - numci
+    ccols = sample(cols, numc)
+    c = canvas(-1, (h, w))
+    inds = asindices(c)
+    obj = {(choice(ccols), ij) for ij in inds}
+    gi = paint(c, obj)
+    loci = randint(1, h - inh - 1)
+    locj = randint(1, w - inw - 1)
+    loc = (loci, locj)
+    plcd = shift(asobject(sgi), loc)
+    gi = paint(gi, plcd)
+    a, b = ulcorner(plcd)
+    c, d = lrcorner(plcd)
+    p1 = choice(totuple(connect((a - 1, b), (a - 1, d))))
+    p2 = choice(totuple(connect((a, b - 1), (c, b - 1))))
+    p3 = choice(totuple(connect((c + 1, b), (c + 1, d))))
+    p4 = choice(totuple(connect((a, d + 1), (c, d + 1))))
+    remcols = remove(bgc, ccols)
+    fixobj = {
+        (choice(remcols), p1), (choice(remcols), p2),
+        (choice(remcols), p3), (choice(remcols), p4)
+    }
+    gi = paint(gi, fixobj)
+    return {'input': gi, 'output': go}
 
 
-def _components(I, min_size):
-    """4-connected same-color components, as (color, r0, c0, r1, c1) bboxes."""
-    h, w = I.shape
-    seen = np.zeros((h, w), dtype=bool)
-    out = []
-    for r in range(h):
-        for c in range(w):
+def _largest_component(I):
+    hi, wi = I.shape
+    seen = np.zeros((hi, wi), dtype=bool)
+    best = None
+    for r in range(hi):
+        for c in range(wi):
             if seen[r, c]:
                 continue
             col = I[r, c]
@@ -71,291 +107,108 @@ def _components(I, min_size):
                 cells.append((y, x))
                 for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
                     ny, nx = y + dy, x + dx
-                    if 0 <= ny < h and 0 <= nx < w and not seen[ny, nx] and I[ny, nx] == col:
+                    if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] and I[ny, nx] == col:
                         seen[ny, nx] = True
                         q.append((ny, nx))
-            if len(cells) >= min_size:
-                ys = [p[0] for p in cells]
-                xs = [p[1] for p in cells]
-                out.append((int(col), min(ys), min(xs), max(ys), max(xs)))
+            if best is None or len(cells) > len(best[1]):
+                best = (int(col), cells)
+    return best
+
+
+def _dot_color(win):
+    vals, cnts = np.unique(win, return_counts=True)
+    return int(vals[int(np.argmin(cnts))])
+
+
+def _crossfill(win):
+    if win.size == 0:
+        return win
+    fg = _dot_color(win)
+    out = win.copy()
+    hh, ww = win.shape
+    for r in range(hh):
+        for c in range(ww):
+            if win[r, c] == fg:
+                out[r, :] = fg
+                out[:, c] = fg
     return out
 
 
-def _trim(I, bg, r0, c0, r1, c1):
-    """Shave the dirtiest border line (highest fraction of non-bg) until all four are clean."""
-    for _ in range(400):
-        if r1 - r0 < 4 or c1 - c0 < 4:
-            break
-        lw = c1 - c0 + 1
-        lh = r1 - r0 + 1
-        cnt = [
-            int(np.count_nonzero(I[r0, c0:c1 + 1] != bg)),
-            int(np.count_nonzero(I[r1, c0:c1 + 1] != bg)),
-            int(np.count_nonzero(I[r0:r1 + 1, c0] != bg)),
-            int(np.count_nonzero(I[r0:r1 + 1, c1] != bg)),
-        ]
-        frac = [cnt[0] / lw, cnt[1] / lw, cnt[2] / lh, cnt[3] / lh]
-        k = max(range(4), key=lambda i: frac[i])
-        if cnt[k] == 0:
-            break
-        if k == 0:
-            r0 += 1
-        elif k == 1:
-            r1 -= 1
-        elif k == 2:
-            c0 += 1
-        else:
-            c1 -= 1
-    return r0, c0, r1, c1
-
-
-def _expand(I, bg, r0, c0, r1, c1):
-    """Grow outward while the adjacent line still looks like a panel line (<=1 non-bg)."""
-    h, w = I.shape
-    changed = True
-    while changed:
-        changed = False
-        if r0 > 0 and np.count_nonzero(I[r0 - 1, c0:c1 + 1] != bg) <= 1:
-            r0 -= 1
-            changed = True
-        if r1 < h - 1 and np.count_nonzero(I[r1 + 1, c0:c1 + 1] != bg) <= 1:
-            r1 += 1
-            changed = True
-        if c0 > 0 and np.count_nonzero(I[r0:r1 + 1, c0 - 1] != bg) <= 1:
-            c0 -= 1
-            changed = True
-        if c1 < w - 1 and np.count_nonzero(I[r0:r1 + 1, c1 + 1] != bg) <= 1:
-            c1 += 1
-            changed = True
-    return r0, c0, r1, c1
-
-
-def _retract(I, bg, r0, c0, r1, c1):
-    """Pull sides in until the outer ring is pure bg (the clean frame of the panel)."""
-    while r1 - r0 >= 4 and c1 - c0 >= 4:
-        if np.any(I[r0, c0:c1 + 1] != bg):
-            r0 += 1
-            continue
-        if np.any(I[r1, c0:c1 + 1] != bg):
-            r1 -= 1
-            continue
-        if np.any(I[r0:r1 + 1, c0] != bg):
-            c0 += 1
-            continue
-        if np.any(I[r0:r1 + 1, c1] != bg):
-            c1 -= 1
-            continue
-        break
-    return r0, c0, r1, c1
-
-
-def _validate(I, bg, r0, c0, r1, c1):
-    sub = I[r0:r1 + 1, c0:c1 + 1]
-    hh, ww = sub.shape
-    if hh < 5 or ww < 5:
-        return None
-    if (np.any(sub[0] != bg) or np.any(sub[-1] != bg)
-            or np.any(sub[:, 0] != bg) or np.any(sub[:, -1] != bg)):
-        return None
-    mask = sub != bg
-    if int(mask.sum()) < 1:
-        return None
-    if mask.sum(axis=1).max() > 1 or mask.sum(axis=0).max() > 1:
-        return None
-    fgs = set(int(v) for v in sub[mask].tolist())
-    if len(fgs) != 1:
-        return None
-    return fgs.pop()
-
-
-def _detect_region(I):
-    """Locate the framed panel: a rectangle of one colour whose border ring is clean and
-    whose interior holds at most one speck per row and per column (that is exactly what
-    the generator builds, and what the verifier's rotate-and-peel loop converges to)."""
-    I = np.asarray(I, dtype=int)
-    h, w = I.shape
-    seeds = []
-    for col, r0, c0, r1, c1 in _components(I, 16):
-        seeds.append((col, r0, c0, r1, c1))
-    for col in sorted(set(int(v) for v in I.flatten().tolist())):
-        if np.count_nonzero(I == col) >= 20:
-            seeds.append((col, 0, 0, h - 1, w - 1))
-    best = None
-    tried = set()
-    for bg, a0, b0, a1, b1 in seeds:
-        key = (bg, a0, b0, a1, b1)
-        if key in tried:
-            continue
-        tried.add(key)
-        r0, c0, r1, c1 = _trim(I, bg, a0, b0, a1, b1)
-        r0, c0, r1, c1 = _expand(I, bg, r0, c0, r1, c1)
-        r0, c0, r1, c1 = _retract(I, bg, r0, c0, r1, c1)
-        fg = _validate(I, bg, r0, c0, r1, c1)
-        if fg is None:
-            continue
-        area = (r1 - r0 + 1) * (c1 - c0 + 1)
-        if best is None or area > best[0]:
-            best = (area, r0, c0, r1, c1, bg, fg)
-    if best is None:
-        return None
-    return best[1], best[2], best[3], best[4], best[5], best[6]
-
-
-# ----------------------------------------------------------------------------
-# 1. sample_colors
-# ----------------------------------------------------------------------------
-def sample_colors(num_examples=None) -> dict:
-    # bgc = panel colour, fgc = speck colour (the rule is stated in these two),
-    # ccols = the noise palette; all fixed once per episode.
-    cols = list(range(10))
-    bgc, fgc = random.sample(cols, 2)
-    ccols = cols[:]
-    random.shuffle(ccols)
-    return {"bgc": bgc, "fgc": fgc, "ccols": ccols}
-
-
-# ----------------------------------------------------------------------------
-# 2. generate
-# ----------------------------------------------------------------------------
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc, ccols=None) -> dict:
-    if ccols is None:
-        ccols = list(range(10))
-        random.shuffle(ccols)
-    max_h = max(10, min(30, int(max_h)))
-    max_w = max(10, min(30, int(max_w)))
-
-    last = None
-    for _attempt in range(400):
-        h = _unifint(diff_lb, diff_ub, (10, max_h))
-        w = _unifint(diff_lb, diff_ub, (10, max_w))
-        inh = random.randint(5, h - 2)
-        inw = random.randint(5, w - 2)
-        num = _unifint(diff_lb, diff_ub, (1, min(inh, inw)))
-
-        # diagonal of specks, rows shuffled, transposed, rows shuffled, transposed back
-        # -> at most one speck per row and per column
-        mh, mw = inh - 2, inw - 2
-        mat = [[bgc] * mw for _ in range(mh)]
-        for i in range(num):
-            if i < mh and i < mw:
-                mat[i][i] = fgc
-        random.shuffle(mat)
-        mat = [list(r) for r in zip(*mat)]      # dmirror
-        random.shuffle(mat)
-        mat = [list(r) for r in zip(*mat)]      # dmirror back
-
-        sgi = [[bgc] * inw for _ in range(inh)]
-        for i in range(mh):
-            for j in range(mw):
-                sgi[i + 1][j + 1] = mat[i][j]
-
-        dots = [(i, j) for i in range(inh) for j in range(inw) if sgi[i][j] != bgc]
-        go = [row[:] for row in sgi]
-        for (i, j) in dots:
-            for jj in range(inw):
-                go[i][jj] = fgc
-            for ii in range(inh):
-                go[ii][j] = fgc
-
-        numci = _unifint(diff_lb, diff_ub, (3, 10))
-        numc = 13 - numci
-        cc = ccols[:numc]
-        remcols = [x for x in cc if x != bgc]
-        if not remcols:
-            continue
-
-        gi = [[random.choice(cc) for _ in range(w)] for _ in range(h)]
-        loci = random.randint(1, h - inh - 1)
-        locj = random.randint(1, w - inw - 1)
-        for i in range(inh):
-            for j in range(inw):
-                gi[loci + i][locj + j] = sgi[i][j]
-        a, b = loci, locj
-        c, d = loci + inh - 1, locj + inw - 1
-        # one non-panel cell hugging each side, so the panel's edges are unambiguous
-        for p in ((a - 1, random.randint(b, d)), (random.randint(a, c), b - 1),
-                  (c + 1, random.randint(b, d)), (random.randint(a, c), d + 1)):
-            gi[p[0]][p[1]] = random.choice(remcols)
-
-        last = {"input": gi, "output": go}
-        det = _detect_region(np.array(gi, dtype=int))
-        if det is None:
-            continue
-        if (det[0], det[1], det[2], det[3], det[4]) != (a, b, c, d, bgc):
-            continue        # noise made the panel edge ambiguous -> resample
-        return {"input": gi, "output": go}
-
-    return last
-
-
-# ----------------------------------------------------------------------------
-# 3. derive_operations
-# ----------------------------------------------------------------------------
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
+    hi, wi = I.shape
+    ho, wo = O.shape
 
-    r0, c0, r1, c1, bgc, fgc = _detect_region(I)
-    h = r1 - r0 + 1
-    w = c1 - c0 + 1
-    panel = I[r0:r1 + 1, c0:c1 + 1]
-    dots = [(int(r), int(c)) for r in range(h) for c in range(w) if panel[r, c] != bgc]
-    rows = sorted(set(r for r, _ in dots))
-    cols = sorted(set(c for _, c in dots))
+    # 1. Locate the solid rectangle: biggest same-color blob in the noise.
+    bgc, cells = _largest_component(I)
+    rs = [p[0] for p in cells]
+    cs = [p[1] for p in cells]
+    top, bot, left, right = min(rs), max(rs), min(cs), max(cs)
+
+    # 2. Peel border lines that random noise of the same color glued onto it:
+    #    a genuine rectangle border line is (almost) entirely canvas-colored.
+    for _ in range(8):
+        for side in range(4):
+            if bot - top < 2 or right - left < 2:
+                break
+            if side == 0:
+                line = I[top:bot + 1, left]
+            elif side == 1:
+                line = I[bot, left:right + 1]
+            elif side == 2:
+                line = I[top:bot + 1, right]
+            else:
+                line = I[top, left:right + 1]
+            if len(line) - 2 > int(np.count_nonzero(line == bgc)):
+                if side == 0:
+                    left += 1
+                elif side == 1:
+                    bot -= 1
+                elif side == 2:
+                    right -= 1
+                else:
+                    top += 1
+
+    rect = I[top:bot + 1, left:right + 1]
+    if rect.shape != (ho, wo) or not np.array_equal(_crossfill(rect), O):
+        for r in range(hi - ho + 1):
+            for c in range(wi - wo + 1):
+                win = I[r:r + ho, c:c + wo]
+                if np.array_equal(_crossfill(win), O):
+                    top, left = r, c
+                    bot, right = r + ho - 1, c + wo - 1
+                    break
+            else:
+                continue
+            break
+        rect = I[top:bot + 1, left:right + 1]
+
+    fgc = _dot_color(rect)
 
     ops, sels = [], []
 
-    # 1. keep only the framed panel (bbox == exactly that full rectangle)
+    # 3. Keep only the rectangle: crop the canvas to it.
     ops.append(33)
-    sels.append([r0, c0, h - 1, w - 1])
+    sels.append([top, left, ho - 1, wo - 1])
 
-    # 2. each speck sends a frontier along its row: paint those rows whole
-    for r in rows:
-        ops.append(fgc)
-        sels.append([r, 0, 0, w - 1])              # exactly the full row r
-
-    cur = panel.copy()
-    for r in rows:
-        cur[r, :] = fgc
-
-    # 3. quarter-turn clockwise: the panel's columns now stand as rows, so the
-    #    remaining frontiers get drawn by exactly the same gesture as the first ones
-    rot_state = np.rot90(cur, 3)
-    use_rotation = not (h == w and np.array_equal(rot_state, cur))
-    sq = max(h, w)
-    if use_rotation:
-        if h != w:
-            ops.append(33)
-            sels.append([0, 0, sq - 1, sq - 1])     # pad canvas to a square to turn it
-        ops.append(25)                              # Rotate CW, whole square selection
-        sels.append([0, 0, sq - 1, sq - 1])
-        if h != w:
-            ops.append(33)
-            sels.append([0, sq - h, w - 1, h - 1])  # crop back to the turned panel
-        for c in cols:
-            ops.append(fgc)
-            sels.append([c, 0, 0, h - 1])           # full row c == the panel's column c
-        for c in cols:
-            rot_state[c, :] = fgc
-        # 4. quarter-turn back, so the panel stands as it did
-        back = np.rot90(rot_state, 1)
-        if h != w or not np.array_equal(back, rot_state):
-            if h != w:
-                ops.append(33)
-                sels.append([0, 0, sq - 1, sq - 1])     # pad to a square again
-            ops.append(24)                              # Rotate CCW, whole square
-            sels.append([0, 0, sq - 1, sq - 1])
-            if h != w:
-                ops.append(33)
-                sels.append([sq - h, 0, h - 1, w - 1])  # crop back to the panel
-    else:
-        # turning would leave the picture identical -> no-op; draw the columns in place
-        for c in cols:
-            ops.append(fgc)
-            sels.append([0, c, h - 1, 0])           # exactly the full column c
+    # 4. Each dot shoots out its full row and full column.
+    done_r, done_c = set(), set()
+    for r in range(ho):
+        for c in range(wo):
+            if rect[r, c] != fgc:
+                continue
+            if r not in done_r:
+                ops.append(fgc)
+                sels.append([r, 0, 0, wo - 1])
+                done_r.add(r)
+            if c not in done_c:
+                ops.append(fgc)
+                sels.append([0, c, ho - 1, 0])
+                done_c.add(c)
 
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -399,7 +252,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

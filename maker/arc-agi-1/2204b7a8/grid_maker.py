@@ -39,136 +39,144 @@ from collections import Counter
 from maker.sel_helpers import sel_of
 
 
-# ---------------------------------------------------------------- helpers
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    ist = int(a + (b - a) * diff_lb)
-    ien = int(a + (b - a) * diff_ub)
-    if ist > ien:
-        ist, ien = ien, ist
-    return random.randint(ist, ien)
-
-
-# The one discrete structural variant of this task: the generator ends with a
-# coin flip that dmirrors (transposes) the pair, so the two border LINES are
-# either the first/last COLUMN or the first/last ROW.  Both must be shown.
-VARIANTS = [{"transposed": False}, {"transposed": True}]
+VARIANTS = [
+    {"transposed": False},
+    {"transposed": True},
+]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc = random.choice(cols)                                   # canvas
+    bgc = random.choice(cols)
     rem = [c for c in cols if c != bgc]
-    ccol = random.choice(rem)                                   # the marks
+    ccol = random.choice(rem)
     rem2 = [c for c in rem if c != ccol]
-    c1 = random.choice(rem2)                                    # near line
-    c2 = random.choice([c for c in rem2 if c != c1])            # far line
+    c1 = random.choice(rem2)
+    c2 = random.choice([c for c in rem2 if c != c1])
 
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
-        ex = [dict(v) for v in VARIANTS]
-        ex += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(ex)
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(examples)
     else:
-        ex = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = ex + [dict(random.choice(ex))]                       # test seen before
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "ccol": ccol, "c1": c1, "c2": c2, "instance_plan": plan}
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, ccol, c1, c2, transposed=None) -> dict:
     if transposed is None:
         transposed = random.choice([True, False])
-    # build in the "vertical lines" frame (h x w); transpose at the end if asked
-    hb = max(4, min(30, max_w if transposed else max_h))
-    wb = max(4, min(30, max_h if transposed else max_w))
+
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        lo = max(a, a + int(round((b - a) * lb)))
+        hi = min(b, a + int(round((b - a) * ub)))
+        if hi < lo:
+            hi = lo
+        return random.randint(lo, hi)
+
+    # after an optional transpose the grid becomes (w, h); bound accordingly
+    if transposed:
+        hb = (4, min(30, max_w))
+        wb = (4, min(30, max_h))
+    else:
+        hb = (4, min(30, max_h))
+        wb = (4, min(30, max_w))
+
     while True:
-        h = _unifint(diff_lb, diff_ub, (4, hb))
-        w = _unifint(diff_lb, diff_ub, (4, wb))
+        h = unifint(diff_lb, diff_ub, hb)
+        w = unifint(diff_lb, diff_ub, wb)
+        if w < 4 or h < 4:
+            continue
+        inds = [(i, j) for i in range(h) for j in range(1, w - 1)]
         nc_ub = (h * (w - 2)) // 2 - 1
         if nc_ub < 1:
             continue
-        nc = _unifint(diff_lb, diff_ub, (1, nc_ub))
-        inds = [(i, j) for i in range(h) for j in range(1, w - 1)]
-        locs = random.sample(inds, min(nc, len(inds)))
-        if w % 2 == 1:                       # odd width -> middle column stays clean
+        nc = unifint(diff_lb, diff_ub, (1, nc_ub))
+        locs = random.sample(inds, nc)
+        if w % 2 == 1:
             locs = [ij for ij in locs if ij[1] != w // 2]
         if not locs:
             continue
+
         gi = [[bgc] * w for _ in range(h)]
         for i in range(h):
             gi[i][0] = c1
             gi[i][w - 1] = c2
+        go = [row[:] for row in gi]
+        half = w // 2
         for (i, j) in locs:
             gi[i][j] = ccol
-        go = [row[:] for row in gi]
-        for (i, j) in locs:
-            go[i][j] = c1 if j < w // 2 else c2
+            go[i][j] = c1 if j < half else c2
+
+        # palette must contain exactly the 4 roles (bgc must survive in interior)
+        pal = set()
+        for row in gi:
+            pal.update(row)
+        if len(pal) != 4:
+            continue
         break
+
     if transposed:
         gi = [list(r) for r in zip(*gi)]
         go = [list(r) for r in zip(*go)]
+
     return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
-    """
-    Rule: every mark takes the colour of the border line on ITS OWN side.
-    The two sides are mirror images of one another in role, so the trajectory
-    performs that reflection: paint the half touching the c1 line, MIRROR the
-    grid so the c2 line becomes the near line (its half swings into the near
-    position), then paint the marks that are now near, and mirror back.
-    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
-
-    # orientation: a uniform first row means the lines are rows, not columns
-    row_lines = len(set(I[0].tolist())) == 1
-
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-    c1 = int(I[0, 0])           # near line colour
-    c2 = int(I[h - 1, w - 1])   # far line colour
-    ccol = [c for c in sorted(set(I.flatten().tolist()))
-            if c not in (bgc, c1, c2)][0]
-
-    marks = [(r, c) for r in range(h) for c in range(w) if I[r, c] == ccol]
-
-    if row_lines:
-        near = [(r, c) for (r, c) in marks if r < h // 2]
-        far = [(r, c) for (r, c) in marks if r >= h - h // 2]
-        flip_op = 27                                   # FlipV: up <-> down
-        mirrored_far = [(h - 1 - r, c) for (r, c) in far]
-    else:
-        near = [(r, c) for (r, c) in marks if c < w // 2]
-        far = [(r, c) for (r, c) in marks if c >= w - w // 2]
-        flip_op = 26                                   # FlipH: left <-> right
-        mirrored_far = [(r, w - 1 - c) for (r, c) in far]
-
-    # whole-grid rectangle: the flip really does act on every cell, background
-    # and both border lines included, so the bbox IS the intended cell set.
-    full = [0, 0, h - 1, w - 1]
-
     ops, sels = [], []
 
-    # 1. the marks lying against the c1 line take that line's colour
-    if near:
-        ops.append(c1)
-        sels.append(sel_of(near))
+    # Two solid border lines: either the first/last COLUMN or the first/last ROW.
+    # A pure border column is uniform; in the transposed case column 0 holds
+    # c1, interior values, c2 -> never uniform (c1 != c2).
+    vertical = (len(set(I[:, 0].tolist())) == 1) and (len(set(I[:, -1].tolist())) == 1)
 
-    if far:
-        # 2. reflect the grid: the c2 line and its marks swing into the near side
-        ops.append(flip_op)
-        sels.append(full)
-        # 3. the marks now lying against the leading line (every ccol cell that
-        #    is still left on the grid) take that line's colour, c2
-        ops.append(c2)
-        sels.append(sel_of(mirrored_far))
-        # 4. reflect back to the original reading frame
-        ops.append(flip_op)
-        sels.append(full)
+    if vertical:
+        col_a = int(I[0, 0])          # left border colour, measured from I
+        col_b = int(I[0, -1])         # right border colour, measured from I
+        interior = I[:, 1:w - 1]
+        cnt = Counter(interior.flatten().tolist())
+        bgc = cnt.most_common(1)[0][0]
+        marker = [c for c in cnt if c != bgc]
+        marker = marker[0] if marker else bgc
+        half = w // 2
+        group_a, group_b = [], []
+        for r in range(h):
+            for c in range(1, w - 1):
+                if int(I[r, c]) == marker:
+                    (group_a if c < half else group_b).append((r, c))
+    else:
+        col_a = int(I[0, 0])          # top border colour
+        col_b = int(I[-1, 0])         # bottom border colour
+        interior = I[1:h - 1, :]
+        cnt = Counter(interior.flatten().tolist())
+        bgc = cnt.most_common(1)[0][0]
+        marker = [c for c in cnt if c != bgc]
+        marker = marker[0] if marker else bgc
+        half = h // 2
+        group_a, group_b = [], []
+        for r in range(1, h - 1):
+            for c in range(w):
+                if int(I[r, c]) == marker:
+                    (group_a if r < half else group_b).append((r, c))
+
+    # markers of the first half take that half's border colour
+    if group_a:
+        ops.append(int(col_a))
+        sels.append(sel_of(sorted(group_a)))
+    # markers of the second half take the opposite border colour
+    if group_b:
+        ops.append(int(col_b))
+        sels.append(sel_of(sorted(group_b)))
 
     ops.append(34)
-    sels.append(full)
+    sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 
@@ -212,7 +220,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
