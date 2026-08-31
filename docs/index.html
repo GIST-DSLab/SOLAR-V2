@@ -318,7 +318,7 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 <section class="tile light">
   <div class="inner">
     <h2 class="display">Subsets</h2>
-    <p class="caption" style="margin:0 0 32px">One released, four in beta.</p>
+    <p class="caption" style="margin:0 0 32px">One released, three in beta.</p>
     <div class="subsets">
       <a class="subset live" href="#/tasks/re-arc">
         <div class="tag">Released</div>
@@ -336,12 +336,6 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
         <div class="tag">Beta</div>
         <div class="name">Handcraft</div>
         <div class="meta">Makers written by hand, as a control<br>10 makers · 10 episodes each</div>
-        <div class="go">Browse tasks ›</div>
-      </a>
-      <a class="subset live" href="#/tasks/compare">
-        <div class="tag">Beta</div>
-        <div class="name">Before and after</div>
-        <div class="meta">One instance, solved by the released maker and by the one the feedback rounds produced<br>77 tasks · 2 trajectories each</div>
         <div class="go">Browse tasks ›</div>
       </a>
       <a class="subset live" href="#/tasks/demo">
@@ -484,13 +478,6 @@ const SUBSETS = {
   // the problem, each train pair a demonstration that also carries its own
   // trajectory. Variable episode count. Browsed flat (one family per task, so no
   // sample layer); served locally like `demo`.
-  // The same instance solved by the maker that shipped and by the maker the
-  // feedback rounds produced. Instances come from RE-ARC's generator, seeded by
-  // --rand_seed and so independent of the maker, which is what makes the two
-  // rows comparable at all. Two rows per task, no sample layer.
-  "compare": {label:"Before and after", tab:"Before/after", tasks:77,
-              family:true, local:true, flat:true, path:"compare",
-              blurb:"One instance, solved by the released maker and by the one the feedback rounds produced"},
   "arc-agi2": {label:"ARC-AGI-2 training set", tab:"ARC-AGI-2", tasks:30,
                family:true, local:true, flat:true, path:"arc-agi2",
                blurb:"Real ARC-AGI-2 tasks, every demonstration solved step by step"},
@@ -613,9 +600,8 @@ function decodeEpisode(row){
   for(let i=0;i<row.ex_in__shape[0];i++)
     ex.push({in: planeAt(exIn, i, exInD[i*2], exInD[i*2+1], eiP),
              out: planeAt(exOut, i, exOutD[i*2], exOutD[i*2+1], eoP)});
-  // role/example_index only exist on the demo subset; undefined elsewhere, and
-  // `label` only on compare, where the rows are two routes rather than roles.
-  return {id: row.id, ops, states, sel, after, ex, label: row.label,
+  // role/example_index only exist on the demo subset; undefined elsewhere.
+  return {id: row.id, ops, states, sel, after, ex,
           role: row.role, example_index: row.example_index};
 }
 /* A family's episodes are not independent draws: they are its problem(s) and its
@@ -625,9 +611,6 @@ function decodeEpisode(row){
 let FAM = null;   // current family sample {rows:[{role,...}]}, set on family load
 function epLabel(i, short){
   if(!sub().family || !FAM) return String(i + 1);
-  // compare's rows are the same instance solved twice, so they carry their own
-  // names ("arc-best", "now") instead of a role to number.
-  if(FAM.rows[i] && FAM.rows[i].label) return FAM.rows[i].label;
   const roles = FAM.rows.map(r => r.role), role = roles[i];
   let k = 0; for(let j = 0; j <= i; j++) if(roles[j] === role) k++;
   const multi = roles.filter(r => r === role).length > 1;
