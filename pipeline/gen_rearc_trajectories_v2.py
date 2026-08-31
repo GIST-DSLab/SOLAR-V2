@@ -171,58 +171,140 @@ def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80):
     return None
 
 
-def _palette_rank(g):
-    """Colours of a grid, most cells first — a stand-in for which role each plays."""
-    import collections as _c
-    cnt = _c.Counter(int(v) for row in g for v in row)
-    return [c for c, _ in sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))]
 
+def _fix_colours(seq):
+    """Hold re-arc's colour draws to one assignment for the length of an episode.
 
-def _recolour_map(src_grid, dst_ranks):
-    """A permutation of 0..9 sending src's colours onto dst's, rank for rank.
+    The generators name the parts of a task and give each one a colour in a
+    fixed order -- `bgc = choice(cols)`, then `ccol = choice(remcols)`, then
+    `dcol` -- and they do it afresh on every call, so an episode's three
+    demonstrations and its test each arrived in their own colours. The original
+    ARC tasks do not: whichever colour marks the thing the rule is about is that
+    colour in every demonstration pair, and reading it off them is how the test
+    is meant to be solvable.
 
-    re-arc's generators pick their colours afresh on every call, so the three
-    examples of an episode and its test each arrive in a different palette. The
-    original ARC tasks do not look like that: a colour that means something —
-    the marker over a hole, the frame, the fill — is the same colour in every
-    demonstration pair, and a solver is meant to read it off them. Ranking by
-    cell count is a guess at which colour plays which part; the verifier below
-    is what says whether the guess was right.
+    Ranking the colours of a finished grid by how many cells they cover was the
+    first attempt at this and it guesses wrong exactly where it matters. In
+    2c608aff the box and the noise come out 20 cells to 20, and a guess that
+    swaps them unifies the palette while reversing what the pair is showing.
+    Fixing the draw instead of the result cannot swap anything: the k-th colour
+    the generator asks for is the k-th colour of one permutation, so the part
+    that is `ccol` in one pair is `ccol` in all of them.
+
+    Only colour draws are held. A pool of five or more integers in 0..9 is one;
+    everything else the generators pick with the same functions -- an
+    orientation, a direction, a count -- has two or four members and passes
+    through.
     """
-    src = _palette_rank(src_grid)
-    if len(src) != len(dst_ranks):
+    try:
+        items = list(seq)
+    except Exception:
         return None
-    m = {a: b for a, b in zip(src, dst_ranks)}
-    used = set(m.values())
-    spare = [c for c in range(10) if c not in used]
-    for c in range(10):                      # complete it to a permutation
-        if c not in m:
-            m[c] = spare.pop(0) if spare else c
-    return m if len(set(m.values())) == 10 else None
+    if len(items) < 5 or not all(isinstance(x, int) and 0 <= x <= 9 for x in items):
+        return None
+    return items
 
 
-def _apply_map(a, m):
-    out = np.array(a, int)
-    return np.vectorize(lambda v: m[int(v)])(out).astype(int) if out.size else out
+class _HeldColours:
+    """Patch generators.choice/sample for one episode, restore after."""
+
+    def __init__(self, perm, genfn=None):
+        self.perm = perm
+        self.genfn = genfn
+
+    def __enter__(self):
+        # Every maker begins by deleting utils, dsl and generators from
+        # sys.modules so its own embedded copy of the DSL wins, so the module
+        # object is not a reliable handle -- the generator we hold was captured
+        # before that and still reads its names out of the dictionary it was
+        # defined in. Patch that dictionary.
+        self._g = self.genfn.__globals__
+        self._choice = self._g.get("choice")
+        self._sample = self._g.get("sample")
+        perm = self.perm
+
+        def choice(seq):
+            items = _fix_colours(seq)
+            if items is not None:
+                pool = set(items)
+                for c in perm:
+                    if c in pool:
+                        return c
+            return self._choice(seq)
+
+        def sample(seq, k):
+            items = _fix_colours(seq)
+            if items is not None:
+                pool = set(items)
+                picked = [c for c in perm if c in pool][:k]
+                if len(picked) == k:
+                    return picked
+            return self._sample(seq, k)
+
+        self._g["choice"], self._g["sample"] = choice, sample
+        return self
+
+    def __exit__(self, *exc):
+        self._g["choice"], self._g["sample"] = self._choice, self._sample
+        return False
 
 
-def _unify(pair, dst_ranks, vfn):
-    """Recolour a pair onto the episode's palette, keeping it only if it still obeys.
+def _maker_palette(gm_mod):
+    """The colours this task's maker says are roles, in the order it names them.
 
-    A colour permutation preserves the rule of most tasks and not of the ones
-    where a particular colour *is* the rule. Rather than guess which is which,
-    the recoloured pair is handed back to the task's own verifier: if it no
-    longer reproduces the output, the recolouring changed the task and the pair
-    is thrown away instead.
+    Which colours carry meaning is a per-task judgement and the maker already
+    made it: sample_colors() picks one assignment for a whole episode, and its
+    comments say why -- 0dfd9992 notes that the patch colour "has to stay the
+    same across the episode for the test to be readable". Where colour is not a
+    role the same function says so by returning nothing: 0d3d703e's reads "no
+    colors are freely sampled ... only which subset of the 8 input colors
+    appears varies (structural, not a role)", and holding it would flatten the
+    variation the task is made of.
+
+    So the answer to whether to hold, and to what, comes from here rather than
+    from anything this file could work out on its own.
     """
-    I, O = pair
-    m = _recolour_map(I, dst_ranks)
-    if m is None:
+    fn = getattr(gm_mod, "sample_colors", None)
+    if fn is None:
         return None
-    I2, O2 = _apply_map(I, m), _apply_map(O, m)
-    if vfn is not None and not _pair_ok(vfn, I2, O2):
+    try:
+        import inspect as _i
+        got = fn(num_examples=3) if "num_examples" in _i.signature(fn).parameters else fn()
+    except Exception:
         return None
-    return I2, O2
+    if not isinstance(got, dict) or not got:
+        return None                      # the maker says colour is not a role here
+    order = []
+    for k, v in got.items():
+        if k in ("category_plan", "instance_plan"):
+            continue
+        for c in (v if isinstance(v, (list, tuple)) else [v]):
+            if isinstance(c, int) and 0 <= c <= 9 and c not in order:
+                order.append(c)
+    if not order:
+        return None
+    return order + [c for c in range(10) if c not in order]
+
+
+def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None):
+    """One episode's pairs, all drawn under the same colour assignment."""
+    pool, tries = [], 0
+    if perm is None:
+        perm = _random.sample(range(10), 10)
+    ctx = _HeldColours(perm, genfn) if unify else None
+    if ctx is not None:
+        ctx.__enter__()
+    try:
+        while len(pool) < need and tries < need * 40:
+            tries += 1
+            lb = _random.random() * 0.8
+            pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw, vfn=vfn)
+            if pr is not None:
+                pool.append(pr)
+    finally:
+        if ctx is not None:
+            ctx.__exit__()
+    return pool if len(pool) >= need else None
 
 def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     """Instances from re-arc generate_<task> (size-capped) + maker's derive_operations.
@@ -239,21 +321,12 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     # one: it is what decides that a recolouring left the task alone.
     ufn = vfn if vfn is not None else _get_verifier(tid)
     for s in range(n_samples):
-        pool, tries, ranks = [], 0, None
-        while len(pool) < need and tries < need * 60:
-            tries += 1
-            lb = _random.random() * 0.8
-            pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw, vfn=vfn)
-            if pr is None:
-                continue
-            if ranks is None:                 # the first pair sets the palette
-                pool.append(pr)
-                ranks = _palette_rank(pr[0])
-                continue
-            got = _unify(pr, ranks, ufn)
-            if got is not None:
-                pool.append(got)
-        if len(pool) < need:
+        perm = _maker_palette(gm_mod)
+        pool = _episode_pool(genfn, need, max_hw, vfn, ufn,
+                             unify=perm is not None, perm=perm)
+        if pool is None:
+            pool = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=False)
+        if pool is None:
             continue
         ex, (I, O) = pool[:n_examples], pool[n_examples]
         try:
