@@ -305,14 +305,15 @@ def regenerate_finding(task: str, concept: str | None, cur: dict,
             f"output is not the answer to the input you were given, so the route "
             f"cannot have measured anything from the input: it transcribed O.")
     ev.append(
-        "Both at once is what is being asked for. Perform the transformation the "
-        "verifier names, and take every parameter of it — which region, which "
-        "axis, how far — from I. O is what you check against at the end, not "
-        "where the plan comes from. A fallback branch that paints O when the "
-        "transformation does not fit is the transcription, however rarely it "
-        "runs.")
+        "One thing is being asked for: take every parameter of the route — which "
+        "region, which colour, which axis, how far — from I. O is what you check "
+        "against at the end, not where the plan comes from. A fallback branch "
+        "that paints O when the rule does not fit is the transcription, however "
+        "rarely it runs. Nothing is being asked about which operations you use: "
+        "whatever route derives from I is the right one, and a route that paints "
+        "cells is not worse than one that turns them.")
     ev += _honest_attempt_evidence(scores, pairs)
-    return {"code": "CONCEPT_ROUTE_READS_ANSWER", "severity": "high",
+    return {"code": "ANSWER_COPIED_FROM_O", "severity": "high",
             "evidence": "\n\n".join(ev)}
 
 
