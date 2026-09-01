@@ -196,7 +196,25 @@ _COLOUR_SITE = {}
 _ROUNDS = int(os.environ.get("SOLAR_PALETTE_ROUNDS", "30"))
 
 
-def _asks_for_colour(depth=2):
+def _caller_site():
+    """The generator's own line, however many wrappers are stacked on choice.
+
+    Counting frames breaks the moment a second wrapper goes on: the colour hold
+    and the kind planner both patch `choice`, the planner is entered last so the
+    generator calls it first, and when it declines and falls through to the
+    colour hold, a fixed depth lands on the planner's wrapper in this file
+    rather than on the line in generators.py. The colour test then looks for
+    `cols` on the wrong line, finds nothing, and quietly stops holding --
+    episodes sharing a colour fell from 0.99 to 0.88. Climbing out of this file
+    is right whatever is stacked.
+    """
+    f = sys._getframe(1)
+    while f is not None and f.f_code.co_filename == __file__:
+        f = f.f_back
+    return (f.f_code.co_filename, f.f_lineno) if f is not None else None
+
+
+def _asks_for_colour():
     """Is the call the generator is making a colour draw, by the name it passes?
 
     Values alone cannot tell: a colour pool is a subset of 0..9 and so is
@@ -205,10 +223,8 @@ def _asks_for_colour(depth=2):
     what they pass -- `cols`, `remcols`, `ccols`, `colopts`, `itv` -- so the
     name is what decides.
     """
-    try:
-        f = sys._getframe(depth)
-        key = (f.f_code.co_filename, f.f_lineno)
-    except Exception:
+    key = _caller_site()
+    if key is None:
         return False
     hit = _COLOUR_SITE.get(key)
     if hit is None:                      # one call site, one answer, decided once
@@ -404,11 +420,7 @@ class _PlannedCases:
         def choice(seq):
             items = _is_case_pool(seq)
             if items is not None:
-                try:
-                    f = sys._getframe(1)
-                    key = (f.f_code.co_filename, f.f_lineno)
-                except Exception:
-                    key = None
+                key = _caller_site()
                 if key is not None:
                     opts = outer.seen.setdefault(key, items)
                     i = outer.index
