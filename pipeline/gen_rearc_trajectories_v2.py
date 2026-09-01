@@ -341,6 +341,75 @@ def _maker_palette(gm_mod):
     return order + [c for c in range(10) if c not in order], len(order)
 
 
+
+def _is_case_pool(seq):
+    """A small set of alternatives the generator picks the instance's kind from.
+
+    `choice((True, False))` and `choice((identity, rot90, rot180, rot270))` are
+    how re-arc decides whether this instance is transposed, or which way round
+    it is -- the thing a maker's instance_plan exists to spread across an
+    episode so the test asks about a kind the demonstrations showed. Left to
+    chance, three examples land on one side often enough to matter: 2204b7a8
+    misses on one episode in ten, d4469b4b -- which keeps three kinds behind a
+    (colour, shape) table -- on five.
+    """
+    try:
+        items = list(seq)
+    except Exception:
+        return None
+    if not 2 <= len(items) <= 5:
+        return None
+    if all(isinstance(x, bool) for x in items):
+        return items
+    if all(callable(x) for x in items):
+        return items
+    if all(isinstance(x, tuple) and 1 <= len(x) <= 3 for x in items):
+        return items
+    return None
+
+
+class _PlannedCases:
+    """Walk the kinds across an episode's pairs, and let the test repeat one.
+
+    Applied where the choice is made rather than by picking among finished
+    instances, so every pair is still exactly what re-arc's generator produced.
+    Keyed by call site, so a generator making two such choices keeps them apart.
+    """
+
+    def __init__(self, genfn, n_examples):
+        self.genfn = genfn
+        self.n_examples = n_examples
+        self.index = 0                    # which pair of the episode is being drawn
+        self.seen = {}                    # call site -> the options it offered
+
+    def __enter__(self):
+        self._g = self.genfn.__globals__
+        self._choice = self._g.get("choice")
+        outer = self
+
+        def choice(seq):
+            items = _is_case_pool(seq)
+            if items is not None:
+                try:
+                    f = sys._getframe(1)
+                    key = (f.f_code.co_filename, f.f_lineno)
+                except Exception:
+                    key = None
+                if key is not None:
+                    opts = outer.seen.setdefault(key, items)
+                    i = outer.index
+                    if i < outer.n_examples:
+                        return opts[i % len(opts)]
+                    return opts[_random.randrange(min(outer.n_examples, len(opts)))]
+            return outer._choice(seq)
+
+        self._g["choice"] = choice
+        return self
+
+    def __exit__(self, *exc):
+        self._g["choice"] = self._choice
+        return False
+
 def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0):
     """One episode's pairs, all drawn under the same colour assignment."""
     pool, tries = [], 0
@@ -365,15 +434,19 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0):
     # rejected instance -- so a long fallback does not rescue the episode, it
     # only delays the draw. Fifteen episodes are drawn and ten are needed.
     deadline = _time.monotonic() + slack
+    cases = _PlannedCases(genfn, need - 1)
+    cases.__enter__()
     try:
         while len(pool) < need and tries < budget and _time.monotonic() < deadline:
             tries += 1
+            cases.index = len(pool)       # the examples first, then the test
             lb = _random.random() * 0.8
             pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw,
                              vfn=vfn, retries=retries, deadline=deadline)
             if pr is not None:
                 pool.append(pr)
     finally:
+        cases.__exit__()
         if ctx is not None:
             ctx.__exit__()
     return pool if len(pool) >= need else None
