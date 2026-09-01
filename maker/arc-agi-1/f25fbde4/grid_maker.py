@@ -37,206 +37,182 @@ import random
 import numpy as np
 from collections import Counter
 
+try:
+    from maker.sel_helpers import sel_of
+except Exception:  # pragma: no cover
+    def sel_of(cells):
+        return {"cells": [[int(r), int(c)] for (r, c) in cells]}
 
+
+# ----------------------------------------------------------------------------
+# 1. colors -- the generator samples bgc and fgc randomly; fix both per episode
+# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    # both roles get a visible color: the drawing is duplicated with Copy/Paste
-    # and ARCLE reads color 0 as "nothing there"
-    cols = list(range(1, 10))
+    cols = list(range(10))
     bgc = random.choice(cols)
     fgc = random.choice([c for c in cols if c != bgc])
     return {"bgc": bgc, "fgc": fgc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc) -> dict:
-    h = unifint(diff_lb, diff_ub, (2, max_h))
-    w = unifint(diff_lb, diff_ub, (2, max_w))
-    # output is the drawing's box at double size, so keep that box small enough
-    max_oh = max(1, min(15, h - 1, max_h // 2))
-    max_ow = max(1, min(15, w - 1, max_w // 2))
-    if max_oh * max_ow >= 2:
-        ncd = unifint(diff_lb, diff_ub, (1, max(1, (max_oh * max_ow) // 2)))
-        nc = min(max(1, ncd), max_oh * max_ow - 1)
-    else:
-        nc = 0
-    c = canvas(bgc, (h, w))
-    bounds = asindices(canvas(-1, (max_oh, max_ow)))
-    ch = choice(totuple(bounds))
-    shp = {ch}
-    bounds = remove(ch, bounds)
-    for j in range(nc):
-        candidates = totuple((bounds - shp) & mapply(neighbors, shp))
-        if not candidates:
+# ----------------------------------------------------------------------------
+# 2. generator
+# ----------------------------------------------------------------------------
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    lo = a + int((b - a) * diff_lb)
+    hi = a + int((b - a) * diff_ub)
+    lo = max(a, min(b, lo))
+    hi = max(lo, min(b, hi))
+    return random.randint(lo, hi)
+
+
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc, **kwargs) -> dict:
+    mh = max(4, min(30, int(max_h)))
+    mw = max(4, min(30, int(max_w)))
+
+    h = w = bh = bw = None
+    for _ in range(500):
+        hh = _unifint(diff_lb, diff_ub, (2, mh))
+        ww = _unifint(diff_lb, diff_ub, (2, mw))
+        # shape bbox is capped at 15 (generator) and at half the canvas limit
+        # so that the 2x upscaled output still fits inside max_h x max_w
+        bbh = min(15, hh - 1, max(1, mh // 2))
+        bbw = min(15, ww - 1, max(1, mw // 2))
+        if bbh >= 1 and bbw >= 1 and bbh * bbw >= 2:
+            h, w, bh, bw = hh, ww, bbh, bbw
             break
-        shp.add(choice(candidates))
-    shp = normalize(shp)
-    oh, ow = shape(shp)
-    loci = randint(0, h - oh)
-    locj = randint(0, w - ow)
-    plcd = shift(shp, (loci, locj))
-    gi = fill(c, fgc, plcd)
-    go = upscale(compress(gi), 2)
-    return {'input': gi, 'output': go}
+    if h is None:
+        h, w = min(mh, 6), min(mw, 6)
+        bh = min(15, h - 1, max(1, mh // 2))
+        bw = min(15, w - 1, max(1, mw // 2))
+
+    ncd = _unifint(diff_lb, diff_ub, (1, max(1, (bh * bw) // 2)))
+    nc = min(max(1, ncd), bh * bw - 1)
+
+    # 8-connected random polyomino grown inside the bh x bw bounds
+    cells = {(random.randrange(bh), random.randrange(bw))}
+    for _ in range(nc):
+        cand = set()
+        for (r, c) in cells:
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    rr, cc = r + dr, c + dc
+                    if 0 <= rr < bh and 0 <= cc < bw and (rr, cc) not in cells:
+                        cand.add((rr, cc))
+        if not cand:
+            break
+        cells.add(random.choice(sorted(cand)))
+
+    mr = min(r for r, _ in cells)
+    mc = min(c for _, c in cells)
+    cells = {(r - mr, c - mc) for (r, c) in cells}
+    oh = max(r for r, _ in cells) + 1
+    ow = max(c for _, c in cells) + 1
+
+    li = random.randint(0, h - oh)
+    lj = random.randint(0, w - ow)
+    if li == 0 and lj == 0:
+        # keep the shape off the exact top-left corner so that the crop step
+        # of the trajectory is always a real, non-removable operation
+        if h - oh >= 1:
+            li = random.randint(1, h - oh)
+        elif w - ow >= 1:
+            lj = random.randint(1, w - ow)
+
+    gi = [[bgc] * w for _ in range(h)]
+    for (r, c) in cells:
+        gi[r + li][c + lj] = fgc
+
+    go = []
+    for r in range(oh):
+        row = []
+        for c in range(ow):
+            v = gi[r + li][c + lj]
+            row.append(v)
+            row.append(v)
+        go.append(list(row))
+        go.append(list(row))
+
+    return {"input": gi, "output": go}
 
 
-def _replay(I, ops, sels, ho, wo):
-    """Faithful ARCLE replay of the ops used here (0, 28, 29, 30, 33)."""
-    H, W = max(I.shape[0], ho), max(I.shape[1], wo)
-    inp = np.zeros((H, W), dtype=int)
-    inp[:I.shape[0], :I.shape[1]] = I
-    idim = [I.shape[0], I.shape[1]]
-    grid = inp.copy()
-    gdim = [I.shape[0], I.shape[1]]
-    clip = np.zeros((H, W), dtype=int)
-    cdim = [0, 0]
-    for op, (r, c, h, w) in zip(ops, sels):
-        x0, y0, x1, y1 = r, c, r + h, c + w
-        if op == 0:
-            grid[x0:x1 + 1, y0:y1 + 1] = 0
-        elif op in (28, 29):
-            src, sdim = (inp, idim) if op == 28 else (grid, gdim)
-            if x1 >= sdim[0] or y1 > sdim[1]:
-                continue
-            clip[:] = 0
-            cdim[:] = [x1 - x0 + 1, y1 - y0 + 1]
-            patch = src[x0:x1 + 1, y0:y1 + 1]
-            np.copyto(clip[:cdim[0], :cdim[1]], patch, where=(patch != 0))
-        elif op == 30:
-            if cdim[0] == 0 or cdim[1] == 0 or x0 >= H or y0 >= W:
-                continue
-            ex, ey = min(x0 + cdim[0], H), min(y0 + cdim[1], W)
-            patch = clip[:cdim[0], :cdim[1]][:ex - x0, :ey - y0]
-            np.copyto(grid[x0:ex, y0:ey], patch, where=(patch > 0))
-        elif op == 33:
-            gh, gw = x1 - x0 + 1, y1 - y0 + 1
-            reg = grid[x0:x1 + 1, y0:y1 + 1]
-            patch = np.zeros((gh, gw), dtype=int)
-            np.copyto(patch, reg, where=(reg != 0))
-            grid[:] = 0
-            grid[:gh, :gw] = patch
-            gdim[:] = [gh, gw]
-    return grid[:gdim[0], :gdim[1]]
-
-
+# ----------------------------------------------------------------------------
+# 3. trajectory: crop to the shape's bounding box, expand the canvas, then
+#    duplicate every column and every row (2x upscale).  Everything below is
+#    measured from I only; O is never read.
+# ----------------------------------------------------------------------------
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
 
-    # background = color of a plain row; the drawing never spans a whole row
-    bgc = None
-    for r in range(hi):
-        if int(I[r].min()) == int(I[r].max()):
-            bgc = int(I[r, 0])
-            break
-    if bgc is None:
-        bgc = int(Counter(I.flatten().tolist()).most_common(1)[0][0])
+    # background = the colour the canvas was painted with (strict majority here)
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    mask = I != bgc
-    rr = np.where(mask.any(axis=1))[0]
-    cc = np.where(mask.any(axis=0))[0]
-    rmin, rmax = int(rr[0]), int(rr[-1])
-    cmin, cmax = int(cc[0]), int(cc[-1])
-    bh, bw = rmax - rmin + 1, cmax - cmin + 1
+    rows = [r for r in range(hi) if any(I[r, c] != bgc for c in range(wi))]
+    cols = [c for c in range(wi) if any(I[r, c] != bgc for r in range(hi))]
+    r0, r1 = min(rows), max(rows)
+    c0, c1 = min(cols), max(cols)
+    h = r1 - r0 + 1
+    w = c1 - c0 + 1
 
-    setup, body = [], []
-    if (rmin, cmin) != (0, 0):
-        # drop the empty margin: keep the drawing's bounding box
-        setup.append((33, [rmin, cmin, bh - 1, bw - 1]))
-        g = I[rmin:rmax + 1, cmin:cmax + 1].copy()
-    else:
-        g = I.copy()                    # the drawing already starts in the corner
-    if g.shape != (2 * bh, 2 * bw):
-        # open the canvas to twice the drawing's size
-        setup.append((33, [0, 0, 2 * bh - 1, 2 * bw - 1]))
-        gg = np.zeros((2 * bh, 2 * bw), dtype=int)
-        a = min(g.shape[0], 2 * bh)
-        b = min(g.shape[1], 2 * bw)
-        gg[:a, :b] = g[:a, :b]
-        g = gg
-    clip = [None]
+    ops, sels = [], []
 
-    def stretch(lines, span, vertical):
-        # each line of the drawing is stamped onto the two lines that replace it
-        for i in lines:
-            # rows are read off the input, columns off the row-doubled grid
-            src = (g[:span, i] if vertical else I[rmin + i, cmin:cmin + span]).copy()
-            for t in (2 * i, 2 * i + 1):
-                if t == i:
-                    continue                        # this line already sits there
-                cur = g[:span, t] if vertical else g[t, :span]
-                if np.array_equal(cur, src):
-                    continue                        # already identical
-                stamp = bool(np.any((src != 0) & (cur != src)))
-                # a stamp is see-through, so blank what it cannot cover itself
-                gap = (src == 0) & (cur != 0)
-                k = 0
-                while k < span:
-                    if gap[k]:
-                        e = k
-                        while e + 1 < span and gap[e + 1]:
-                            e += 1
-                        body.append((0, [k, t, e - k, 0] if vertical else [t, k, 0, e - k]))
-                        cur[k:e + 1] = 0
-                        k = e + 1
-                    else:
-                        k += 1
-                if not stamp:
-                    continue
-                key = (vertical, tuple(src.tolist()))
-                if clip[0] != key:                  # clipboard may still hold it
-                    if vertical:
-                        body.append((29, [0, i, span - 1, 0]))
-                    else:
-                        body.append((28, [rmin + i, cmin, 0, span - 1]))
-                    clip[0] = key
-                body.append((30, [0, t, 0, 0] if vertical else [t, 0, 0, 0]))
-                np.copyto(cur, src, where=(src != 0))
+    # (1) crop the canvas down to the shape's bounding box (full rectangle)
+    ops.append(33); sels.append([r0, c0, h - 1, w - 1])
+    # (2) expand the canvas to twice that size (full rectangle)
+    ops.append(33); sels.append([0, 0, 2 * h - 1, 2 * w - 1])
 
-    # double every row, then double every column of the result
-    stretch(range(bh), bw, False)
-    # rightmost column first, so the columns still to be read stay untouched
-    stretch(range(bw - 1, -1, -1), 2 * bh, True)
+    G = np.zeros((2 * h, 2 * w), dtype=int)
+    G[:h, :w] = I[r0:r1 + 1, c0:c1 + 1]
+    clip = None
 
-    steps = setup + body
+    # (3) horizontal doubling: column j of the cropped shape -> columns 2j, 2j+1
+    for j in range(w - 1, -1, -1):
+        src = [int(v) for v in G[:h, j]]
+        for t in (2 * j, 2 * j + 1):
+            if all(int(G[i, t]) == src[i] for i in range(h)):
+                continue
+            clear = [(i, t) for i in range(h) if src[i] == 0 and int(G[i, t]) != 0]
+            if clear:
+                # Paste never writes colour 0 -- clear those cells explicitly
+                ops.append(0); sels.append(sel_of(clear))
+                for (a, b) in clear:
+                    G[a, b] = 0
+            if any(src[i] != 0 and int(G[i, t]) != src[i] for i in range(h)):
+                key = ("col", tuple(src))
+                if clip != key:
+                    ops.append(29); sels.append([0, j, h - 1, 0])
+                    clip = key
+                ops.append(30); sels.append([0, t, 0, 0])
+                for i in range(h):
+                    if src[i] != 0:
+                        G[i, t] = src[i]
 
-    def hoist():
-        # a grab changes nothing on the grid: keep each next to the stamp it feeds
-        j = 0
-        while j < len(steps):
-            if steps[j][0] in (28, 29):
-                k = j
-                while k > 0 and steps[k - 1][0] not in (28, 29, 30):
-                    a, b = steps[j][1], steps[k - 1][1]
-                    apart = (a[0] + a[2] < b[0] or b[0] + b[2] < a[0]
-                             or a[1] + a[3] < b[1] or b[1] + b[3] < a[1])
-                    # a row grab reads the input, which no step ever touches
-                    if steps[j][0] == 28 or (steps[k - 1][0] == 0 and apart):
-                        k -= 1
-                    else:
-                        break
-                if k != j:
-                    steps.insert(k, steps.pop(j))
-            j += 1
+    # (4) vertical doubling: row i -> rows 2i, 2i+1
+    for i in range(h - 1, -1, -1):
+        src = [int(v) for v in G[i, :2 * w]]
+        for t in (2 * i, 2 * i + 1):
+            if all(int(G[t, c]) == src[c] for c in range(2 * w)):
+                continue
+            clear = [(t, c) for c in range(2 * w) if src[c] == 0 and int(G[t, c]) != 0]
+            if clear:
+                ops.append(0); sels.append(sel_of(clear))
+                for (a, b) in clear:
+                    G[a, b] = 0
+            if any(src[c] != 0 and int(G[t, c]) != src[c] for c in range(2 * w)):
+                key = ("row", tuple(src))
+                if clip != key:
+                    ops.append(29); sels.append([i, 0, 0, 2 * w - 1])
+                    clip = key
+                ops.append(30); sels.append([t, 0, 0, 0])
+                for c in range(2 * w):
+                    if src[c] != 0:
+                        G[t, c] = src[c]
 
-    def prune():
-        # a see-through stamp can leave an earlier step with nothing left to do
-        dropped = False
-        for k in range(len(steps) - 1, -1, -1):
-            trial = steps[:k] + steps[k + 1:]
-            if np.array_equal(_replay(I, [o for o, _ in trial],
-                                      [s for _, s in trial], ho, wo), O):
-                steps.pop(k)
-                dropped = True
-        return dropped
-
-    while True:
-        hoist()
-        if not prune():
-            break
-    assert np.array_equal(
-        _replay(I, [o for o, _ in steps], [s for _, s in steps], ho, wo), O), "mismatch"
-    return [o for o, _ in steps] + [34], [s for _, s in steps] + [[0, 0, ho - 1, wo - 1]]
+    ops.append(34); sels.append([0, 0, 2 * h - 1, 2 * w - 1])
+    return ops, sels
 
 
 # ── GridMaker ─────────────────────────────────────────────────────────────────
@@ -279,7 +255,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

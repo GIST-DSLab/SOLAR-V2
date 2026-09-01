@@ -33,57 +33,65 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-import numpy as np
-from maker.sel_helpers import sel_of
-
-
 def sample_colors(num_examples=None) -> dict:
-    # background is hardcoded 0 in the generator; the rule depends only on
-    # cell-presence and column index, not on foreground colors.
-    return {}
-
-
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
-
-
-def generate(diff_lb, diff_ub, max_h, max_w, **color_kwargs) -> dict:
+    # Generator picks its palette from colors excluding 0 (background) and 6 (the
+    # marker colour written by the rule).  The rule itself only cares about
+    # "non-zero cell in a column whose index is a multiple of 3", so the palette
+    # merely needs to stay consistent across the whole episode.
     cols = [c for c in range(10) if c not in (0, 6)]
-    h = _unifint(diff_lb, diff_ub, (2, max_h))
-    w = _unifint(diff_lb, diff_ub, (2, max_w))
-    gi = [[0 for _ in range(w)] for _ in range(h)]
-    go = [[0 for _ in range(w)] for _ in range(h)]
-    ncols = _unifint(diff_lb, diff_ub, (1, 8))
+    ncols = random.randint(1, 8)
     ccols = random.sample(cols, ncols)
+    return {"ccols": ccols}
+
+
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, ccols=None) -> dict:
+    if ccols is None:
+        base = [c for c in range(10) if c not in (0, 6)]
+        ccols = random.sample(base, random.randint(1, 8))
+    ccols = list(ccols)
+
+    h = unifint(diff_lb, diff_ub, (2, max_h))
+    w = unifint(diff_lb, diff_ub, (2, max_w))
+    gi = canvas(0, (h, w))
+    go = canvas(0, (h, w))
+    opts = interval(0, h, 1)
     for j in range(w):
-        nc = _unifint(diff_lb, diff_ub, (1, h - 1))
-        locs = random.sample(range(h), nc)
-        for ii in locs:
-            col = random.choice(ccols)
-            gi[ii][j] = col
-            go[ii][j] = 6 if j % 3 == 0 else col
-    return {"input": tuple(tuple(r) for r in gi),
-            "output": tuple(tuple(r) for r in go)}
+        nc = unifint(diff_lb, diff_ub, (1, h - 1))
+        locs = sample(opts, nc)
+        obj = frozenset({(choice(ccols), (ii, j)) for ii in locs})
+        gi = paint(gi, obj)
+        if j % 3 == 0:
+            obj = recolor(6, obj)
+        go = paint(go, obj)
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    import numpy as np
+    from maker.sel_helpers import sel_of
+
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+    ho, wo = np.asarray(O, dtype=int).shape  # shape only
+
     ops, sels = [], []
 
-    # every non-background cell sitting in a column whose index is a multiple
-    # of 3 becomes 6; one Color6 op per such column, masked to its real cells
+    # Rule (read off the generator): the canvas background is 0; every column whose
+    # index is a multiple of 3 has all of its non-background cells repainted to 6.
+    # Everything below is measured from I alone: which columns (c % 3 == 0) and
+    # which cells inside them (I[r, c] != 0).  The colour 6 is a constant of the rule.
+    MARK = 6
+    BG = 0
+
     for c in range(0, wi, 3):
-        cells = [(r, c) for r in range(hi) if I[r, c] != 0 and O[r, c] != I[r, c]]
-        if cells:
-            ops.append(6)
-            sels.append(sel_of(cells))
+        cells = [(r, c) for r in range(hi) if I[r, c] != BG and I[r, c] != MARK]
+        if not cells:
+            continue  # nothing visible would change in this column
+        ops.append(MARK)
+        sels.append(sel_of(cells))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -127,7 +135,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

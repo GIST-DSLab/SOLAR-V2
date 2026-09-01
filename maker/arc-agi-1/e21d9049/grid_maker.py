@@ -39,36 +39,47 @@ from collections import Counter
 from maker.sel_helpers import sel_of
 
 
-# ----------------------------------------------------------------------------
-# 1. episode-level colors
-# ----------------------------------------------------------------------------
-# The rule ("repeat each bar's colour pattern periodically along its own row /
-# column") does not depend on WHICH colours the bar cells carry -- only on the
-# pattern being present.  So only the background needs to be fixed per episode.
 def sample_colors(num_examples=None) -> dict:
+    # The rule depends only on the geometry/pattern of the two bars, not on their
+    # colours, so only the background colour needs fixing for the episode.
     bgc = random.choice(list(range(10)))
     return {"bgc": bgc}
 
 
-# ----------------------------------------------------------------------------
-# 2. generator (RE-ARC generator with max_h/max_w bounds and injected bgc)
-# ----------------------------------------------------------------------------
-def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, **kwargs) -> dict:
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
     cols = interval(0, 10, 1)
-    h = unifint(diff_lb, diff_ub, (10, max(10, max_h)))
-    w = unifint(diff_lb, diff_ub, (10, max(10, max_w)))
-    ph = unifint(diff_lb, diff_ub, (2, 9))
-    pw = unifint(diff_lb, diff_ub, (2, 9))
-    if bgc is None:
-        bgc = choice(cols)
+    hlo = min(10, max_h)
+    wlo = min(10, max_w)
+    h = unifint(diff_lb, diff_ub, (hlo, max_h))
+    w = unifint(diff_lb, diff_ub, (wlo, max_w))
+    ph = unifint(diff_lb, diff_ub, (2, max(2, min(9, h - 1))))
+    pw = unifint(diff_lb, diff_ub, (2, max(2, min(9, w - 1))))
     remcols = remove(bgc, cols)
     hbar = frozenset({(choice(remcols), (k, 0)) for k in range(ph)})
     wbar = frozenset({(choice(remcols), (0, k)) for k in range(pw)})
+
+    # place the bars; reject placements where one bar's stray cell lands exactly
+    # adjacent to (but not on) the other bar, which would make the two bars
+    # indistinguishable from a single longer bar in the input
     locih = randint(0, h - ph)
     locjh = randint(0, w - 1)
-    loch = (locih, locjh)
-    locjw = randint(0, w - pw)
     lociw = randint(0, h - 1)
+    locjw = randint(0, w - pw)
+    for _ in range(500):
+        inV = locih <= lociw <= locih + ph - 1
+        inW = locjw <= locjh <= locjw + pw - 1
+        if inV == inW:
+            break
+        if inW and (lociw < locih - 1 or lociw > locih + ph):
+            break
+        if inV and (locjh < locjw - 1 or locjh > locjw + pw):
+            break
+        locih = randint(0, h - ph)
+        locjh = randint(0, w - 1)
+        lociw = randint(0, h - 1)
+        locjw = randint(0, w - pw)
+
+    loch = (locih, locjh)
     locw = (lociw, locjw)
     canv = canvas(bgc, (h, w))
     hbar = shift(hbar, loch)
@@ -89,112 +100,80 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, **kwargs) -> dict:
     return {'input': gi, 'output': go}
 
 
-# ----------------------------------------------------------------------------
-# 3. derive_operations
-# ----------------------------------------------------------------------------
-def _longest_run(vals, bgc):
-    """(start, length) of the longest contiguous non-background run."""
-    best_s, best_l = 0, 0
-    i, n = 0, len(vals)
-    while i < n:
-        if vals[i] != bgc:
-            j = i
-            while j < n and vals[j] != bgc:
-                j += 1
-            if j - i > best_l:
-                best_s, best_l = i, j - i
-            i = j
-        else:
-            i += 1
-    return best_s, best_l
-
-
-def _largest_period(seq, maxp):
-    """Largest p <= maxp that is a true period of the whole line."""
-    n = len(seq)
-    best = None
-    for p in range(1, min(maxp, n) + 1):
-        if all(seq[i] == seq[i + p] for i in range(n - p)):
-            best = p
-    return best if best is not None else max(1, min(maxp, n))
-
-
-def _stamp(cur, O, ops, sels, cells):
-    """Paint one repetition of the bar pattern: one Color op per colour of the
-    stamp, skipping cells that already hold the colour (those ops would be
-    no-ops)."""
-    todo = [(r, c) for (r, c) in cells if cur[r, c] != O[r, c]]
-    by_col = {}
-    for (r, c) in todo:
-        by_col.setdefault(int(O[r, c]), []).append((r, c))
-    for v in sorted(by_col, key=lambda k: by_col[k][0]):
-        pts = by_col[v]
-        ops.append(v)
-        sels.append(sel_of(pts))
-        for (r, c) in pts:
-            cur[r, c] = v
-
-
 def derive_operations(I, O):
-    # Rule: the grid holds one horizontal bar (a short colour sequence in a row)
-    # and one vertical bar (a colour sequence in a column).  Each bar's pattern
-    # is repeated periodically outward along its own line until the whole row /
-    # column is filled.  Bar cells may be colour 0, so Copy/Paste (which treats
-    # 0 as transparent) cannot stamp them -- the repetitions are painted with
-    # explicit Color ops, one stamp (one period) at a time, growing outward
-    # from the original bar.
+    """Rule (read entirely from I): the input holds one short vertical bar and one
+    short horizontal bar on a plain background.  The vertical bar's colour sequence
+    is repeated periodically (period = its length) down its whole column, and the
+    horizontal bar's colour sequence is repeated periodically (period = its length)
+    across its whole row.  O is only used for its shape (same as I)."""
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    h, w = I.shape
+    hi, wi = I.shape
+    G = I.copy()
+
+    # background = the colour the canvas was painted with (bars are <= 18 cells
+    # on a grid of >= 100 cells, so it is the overwhelming majority colour)
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    fg = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != bgc]
+
+    # the vertical bar's column is the column holding the most foreground cells
+    # (>= 2), every other column holds at most one; likewise for the row.
+    colcnt = Counter(c for _, c in fg)
+    rowcnt = Counter(r for r, _ in fg)
+    jh = max(sorted(colcnt), key=lambda c: colcnt[c])
+    iw = max(sorted(rowcnt), key=lambda r: rowcnt[r])
+
+    def longest_run(vals):
+        runs, cur = [], [vals[0]]
+        for v in vals[1:]:
+            if v == cur[-1] + 1:
+                cur.append(v)
+            else:
+                runs.append(cur)
+                cur = [v]
+        runs.append(cur)
+        return max(runs, key=len)
+
+    vrows = longest_run(sorted(r for r, c in fg if c == jh))
+    hcols = longest_run(sorted(c for r, c in fg if r == iw))
+    ih, ph = vrows[0], len(vrows)
+    jw, pw = hcols[0], len(hcols)
+    vpat = [int(I[r, jh]) for r in vrows]   # vertical bar colour sequence
+    hpat = [int(I[iw, c]) for c in hcols]   # horizontal bar colour sequence
+
     ops, sels = [], []
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # 1. extend the vertical bar periodically over its whole column,
+    #    one Color op per colour of the bar's sequence (top-down order)
+    vtarget = [vpat[(r - ih) % ph] for r in range(hi)]
+    order = []
+    for r in range(hi):
+        if vtarget[r] not in order:
+            order.append(vtarget[r])
+    for v in order:
+        cells = [(r, jh) for r in range(hi) if vtarget[r] == v and G[r, jh] != v]
+        if cells:
+            ops.append(int(v))
+            sels.append(sel_of(cells))
+            for (r, c) in cells:
+                G[r, c] = v
 
-    # the horizontal bar's row and the vertical bar's column are the row / column
-    # carrying the most non-background cells (>=2 vs at most 1 elsewhere)
-    rowc = [int(np.sum(I[r] != bgc)) for r in range(h)]
-    colc = [int(np.sum(I[:, c] != bgc)) for c in range(w)]
-    r0 = max(range(h), key=lambda r: rowc[r])
-    c0 = max(range(w), key=lambda c: colc[c])
+    # 2. extend the horizontal bar periodically over its whole row
+    htarget = [hpat[(c - jw) % pw] for c in range(wi)]
+    order = []
+    for c in range(wi):
+        if htarget[c] not in order:
+            order.append(htarget[c])
+    for v in order:
+        cells = [(iw, c) for c in range(wi) if htarget[c] == v and G[iw, c] != v]
+        if cells:
+            ops.append(int(v))
+            sels.append(sel_of(cells))
+            for (r, c) in cells:
+                G[r, c] = v
 
-    cur = I.copy()
-
-    # ---- horizontal bar: repeat its pattern along row r0 -------------------
-    a, L = _longest_run(list(I[r0]), bgc)
-    if L > 0:
-        p = _largest_period([int(x) for x in O[r0]], L)
-        starts = []
-        s = a + p
-        while s < w:                      # outward to the right
-            starts.append(s)
-            s += p
-        s = a - p
-        while s + p > 0:                  # outward to the left
-            starts.append(s)
-            s -= p
-        for s in starts:
-            _stamp(cur, O, ops, sels,
-                   [(r0, c) for c in range(s, s + p) if 0 <= c < w])
-
-    # ---- vertical bar: repeat its pattern along column c0 ------------------
-    u, M = _longest_run([int(x) for x in I[:, c0]], bgc)
-    if M > 0:
-        q = _largest_period([int(x) for x in O[:, c0]], M)
-        starts = []
-        s = u + q
-        while s < h:                      # outward downward
-            starts.append(s)
-            s += q
-        s = u - q
-        while s + q > 0:                  # outward upward
-            starts.append(s)
-            s -= q
-        for s in starts:
-            _stamp(cur, O, ops, sels,
-                   [(r, c0) for r in range(s, s + q) if 0 <= r < h])
-
+    # Submit: selection is the whole (unchanged-size) grid rectangle
     ops.append(34)
-    sels.append([0, 0, h - 1, w - 1])
+    sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 

@@ -35,18 +35,26 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
+from collections import Counter
+
+from maker.sel_helpers import sel_of
+
+
+# ---------------------------------------------------------------- colors ----
 
 VARIANTS = [
-    {"bar_dir": "h", "bar_visible": True},
-    {"bar_dir": "h", "bar_visible": False},
-    {"bar_dir": "v", "bar_visible": True},
-    {"bar_dir": "v", "bar_visible": False},
+    {"horizontal": True,  "bar_hidden": False},
+    {"horizontal": False, "bar_hidden": False},
+    {"horizontal": True,  "bar_hidden": True},
+    {"horizontal": False, "bar_hidden": True},
 ]
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = [c for c in range(10) if c != 2]          # 2 is reserved as the fill color
-    bgc, col = random.sample(cols, 2)
+    cols = [c for c in range(10) if c != 2]          # 2 is reserved by the rule
+    bgc = random.choice(cols)
+    col = random.choice([c for c in cols if c != bgc])
+
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -58,160 +66,120 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "col": col, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, col, bar_dir=None, bar_visible=None) -> dict:
-    if bar_dir is None:
-        bar_dir = random.choice(["h", "v"])
-    if bar_visible is None:
-        bar_visible = random.choice([True, False])
+# -------------------------------------------------------------- generator ---
 
-    def U(a, b):
-        if b < a:
-            b = a
-        return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, col,
+             horizontal=None, bar_hidden=None) -> dict:
+    if horizontal is None:
+        horizontal = choice((True, False))
+    if bar_hidden is None:
+        bar_hidden = choice((True, False))
 
-    h = U(8, max(8, max_h))
-    w = U(8, max(8, max_w))
-    ih = U(5, h - 1)
-    iw = U(5, w - 1)
-    loci = random.randint(0, h - ih)
-    locj = random.randint(0, w - iw)
-    r0, c0 = loci, locj
-    r1, c1 = loci + ih - 1, locj + iw - 1
+    mh = max(8, min(30, int(max_h)))
+    mw = max(8, min(30, int(max_w)))
 
-    bx = set()
-    for c in range(c0, c1 + 1):
-        bx.add((r0, c))
-        bx.add((r1, c))
-    for r in range(r0, r1 + 1):
-        bx.add((r, c0))
-        bx.add((r, c1))
+    h = unifint(diff_lb, diff_ub, (8, mh))
+    w = unifint(diff_lb, diff_ub, (8, mw))
+    ih = unifint(diff_lb, diff_ub, (5, h - 1))
+    iw = unifint(diff_lb, diff_ub, (5, w - 1))
+    loci = randint(0, h - ih)
+    locj = randint(0, w - iw)
 
-    if bar_dir == "h":
-        rr = random.randint(r0 + 2, r1 - 2)
-        br = {(rr, c) for c in range(c0 + 1, c1)}
+    bx = box(frozenset({(loci, locj), (loci + ih - 1, locj + iw - 1)}))
+    if horizontal:
+        locc = randint(loci + 2, loci + ih - 3)
+        br = connect((locc, locj + 1), (locc, locj + iw - 2))
     else:
-        cc = random.randint(c0 + 2, c1 - 2)
-        br = {(r, cc) for r in range(r0 + 1, r1)}
+        locc = randint(locj + 2, locj + iw - 3)
+        br = connect((loci + 1, locc), (loci + ih - 2, locc))
 
-    corners = [(r0, c0), (r0, c1), (r1, c0), (r1, c1)]
-    crns = set(random.sample(corners, 3))          # >=3 corners always kept -> bbox recoverable
-    rembx = list(bx - crns)
-    onbr = set(random.sample(sorted(br), 2))       # >=2 bar cells kept -> orientation recoverable
-    rembr = list(br - onbr)
+    c = canvas(bgc, (h, w))
+    crns = sample(totuple(corners(bx)), 3)          # 3 corners always survive
+    rembx = difference(bx, frozenset(crns))
+    onbr = sample(totuple(br), 2)                   # 2 bar cells always survive
+    rembr = difference(br, frozenset(onbr))
+    noccbx = unifint(diff_lb, diff_ub, (0, len(rembx)))
+    noccbr = unifint(diff_lb, diff_ub, (0, len(rembr)))
+    occbx = sample(totuple(rembx), noccbx)
+    occbr = sample(totuple(rembr), noccbr)
 
-    noccbx = U(0, len(rembx))
-    noccbr = U(0, len(rembr))
-    occbx = set(random.sample(rembx, noccbx))
-    occbr = set(random.sample(rembr, noccbr))
+    c = fill(c, col, bx)
+    c = fill(c, col, br)
+    gi = fill(c, bgc, occbx)
+    gi = fill(gi, bgc, occbr)
+    go = fill(c, 2, occbx)
+    go = fill(go, 2, occbr)
+    if bar_hidden:
+        gi = fill(gi, bgc, br)
+        go = fill(go, bgc, br)
 
-    gi = [[bgc for _ in range(w)] for _ in range(h)]
-    go = [[bgc for _ in range(w)] for _ in range(h)]
-    for (r, c) in bx | br:
-        gi[r][c] = col
-        go[r][c] = col
-    for (r, c) in occbx | occbr:
-        gi[r][c] = bgc
-        go[r][c] = 2
-    if not bar_visible:
-        for (r, c) in br:
-            gi[r][c] = bgc
-            go[r][c] = bgc
+    return {'input': gi, 'output': go}
 
-    return {"input": gi, "output": go}
 
+# ------------------------------------------------------------- derivation ---
 
 def derive_operations(I, O):
+    """
+    Rule (read entirely from I):
+      * one foreground colour `col` draws a rectangle outline (3 corners always
+        present, so its bounding box IS the rectangle) plus, optionally, one
+        straight inner bar.
+      * every cell of that outline, and of the bar's full line across the
+        rectangle, that is currently background must be painted with colour 2
+        (a constant named by the rule, not read from O).
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
+
+    FILL = 2                                   # constant demanded by the rule
+
+    # foreground colour = the rarest colour in the input (leastcolor)
+    counts = Counter(I.flatten().tolist())
+    col = min(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+    pts = np.argwhere(I == col)
     ops, sels = [], []
-
-    present = sorted(set(I.flatten().tolist()))
-
-    def fit(color):
-        """Does `color` form a rectangle outline (>=3 corners) plus at most one interior line?"""
-        cells = {(r, c) for r in range(hi) for c in range(wi) if I[r, c] == color}
-        if not cells:
-            return None
-        rs = [r for r, _ in cells]
-        cs = [c for _, c in cells]
-        r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
-        if r1 - r0 < 4 or c1 - c0 < 4:
-            return None
-        corners = [(r0, c0), (r0, c1), (r1, c0), (r1, c1)]
-        if sum(1 for p in corners if p in cells) < 3:
-            return None
-        inner = [(r, c) for (r, c) in cells if r not in (r0, r1) and c not in (c0, c1)]
-        line = set()
-        if inner:
-            rows = {r for r, _ in inner}
-            cols = {c for _, c in inner}
-            if len(rows) == 1:                       # remnants share a row -> horizontal bar
-                rr = rows.pop()
-                line = {(rr, c) for c in range(c0, c1 + 1)}
-            elif len(cols) == 1:                     # remnants share a column -> vertical bar
-                cc = cols.pop()
-                line = {(r, cc) for r in range(r0, r1 + 1)}
-            else:
-                return None
-        return (r0, c0, r1, c1, line)
-
-    fits = [(c, fit(c)) for c in present]
-    fits = [(c, f) for (c, f) in fits if f is not None]
-    if not fits:
-        ops.append(34)
-        sels.append([0, 0, ho - 1, wo - 1])
-        return ops, sels
-    if len(fits) > 1:                                # tie-break: the outline color is the sparse one
-        fits.sort(key=lambda t: int((I == t[0]).sum()))
-    col, (r0, c0, r1, c1, line) = fits[0]
-    bgc = next((c for c in present if c != col), col)
-
-    # the shape the input is missing: full box outline + the bar's line
-    box = set()
-    for c in range(c0, c1 + 1):
-        box.add((r0, c))
-        box.add((r1, c))
-    for r in range(r0, r1 + 1):
-        box.add((r, c0))
-        box.add((r, c1))
-    targets = {p for p in (box | line) if I[p[0], p[1]] == bgc}
-
-    if not targets:
-        ops.append(34)
-        sels.append([0, 0, ho - 1, wo - 1])
+    if len(pts) == 0:
+        ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
         return ops, sels
 
-    tr, tc = next(iter(targets))
-    fill_col = int(O[tr, tc])
+    r0, c0 = int(pts[:, 0].min()), int(pts[:, 1].min())
+    r1, c1 = int(pts[:, 0].max()), int(pts[:, 1].max())
 
-    # walk the box edge by edge (disjoint), then the bar; emit one op per contiguous gap
-    regions = [
-        [(r0, c) for c in range(c0, c1 + 1)],            # top edge
-        [(r, c1) for r in range(r0 + 1, r1)],            # right edge
-        [(r1, c) for c in range(c1, c0 - 1, -1)],        # bottom edge
-        [(r, c0) for r in range(r1 - 1, r0, -1)],        # left edge
-    ]
-    bar = sorted(p for p in line if p[0] not in (r0, r1) and p[1] not in (c0, c1))
-    if bar:
-        regions.append(bar)
+    # ---- the four sides of the rectangle (corners belong to top / bottom) ----
+    top    = [(r0, c) for c in range(c0, c1 + 1)     if I[r0, c] != col]
+    right  = [(r, c1) for r in range(r0 + 1, r1)     if I[r, c1] != col]
+    bottom = [(r1, c) for c in range(c0, c1 + 1)     if I[r1, c] != col]
+    left   = [(r, c0) for r in range(r0 + 1, r1)     if I[r, c0] != col]
 
-    for region in regions:
-        run = []
-        for p in region + [None]:
-            if p is not None and p in targets:
-                run.append(p)
-                continue
-            if run:
-                rr = [q[0] for q in run]
-                cc = [q[1] for q in run]
-                ops.append(fill_col)
-                sels.append([min(rr), min(cc), max(rr) - min(rr), max(cc) - min(cc)])
-                run = []
+    # ---- the inner bar, reconstructed from the col cells strictly inside ----
+    inner = [(int(r), int(c)) for r, c in pts if r0 < r < r1 and c0 < c < c1]
+    line = []
+    if inner:
+        rows = {r for r, _ in inner}
+        cols = {c for _, c in inner}
+        if len(rows) == 1 and len(cols) == 1:
+            # single surviving cell: fall back on the rule's own tie-break
+            horizontal = (r1 - r0 + 1) > (c1 - c0 + 1)
+            rr, cc = inner[0]
+        else:
+            horizontal = (len(rows) == 1)
+            rr, cc = inner[0]
+        if horizontal:
+            line = [(rr, c) for c in range(c0 + 1, c1) if I[rr, c] != col]
+        else:
+            line = [(r, cc) for r in range(r0 + 1, r1) if I[r, cc] != col]
+
+    # ---- complete each side, going round the rectangle, then the bar --------
+    for region in (top, right, bottom, left, line):
+        if region:
+            ops.append(FILL)                 # Color2
+            sels.append(sel_of(region))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, ho - 1, wo - 1])      # full-grid rectangle: submit
     return ops, sels
 
 
@@ -255,7 +223,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

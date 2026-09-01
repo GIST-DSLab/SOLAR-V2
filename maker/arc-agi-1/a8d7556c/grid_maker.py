@@ -33,15 +33,24 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import numpy as np
+from collections import deque
+from maker.sel_helpers import sel_of
+
+
 def sample_colors(num_examples=None) -> dict:
+    # generator: cols = interval(0,10) minus (0, 2); the canvas colour is that fgc,
+    # holes are 0 and the painted squares are always colour 2 (hardcoded -> not sampled).
     cols = [c for c in range(10) if c not in (0, 2)]
-    fgc = choice(cols)
+    fgc = random.choice(cols)
     return {"fgc": fgc}
 
 
 def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, fgc: int) -> dict:
-    h = unifint(diff_lb, diff_ub, (6, max_h))
-    w = unifint(diff_lb, diff_ub, (6, max_w))
+    hi_h = max(6, min(30, int(max_h)))
+    hi_w = max(6, min(30, int(max_w)))
+    h = unifint(diff_lb, diff_ub, (6, hi_h))
+    w = unifint(diff_lb, diff_ub, (6, hi_w))
     c = canvas(fgc, (h, w))
     numblacks = unifint(diff_lb, diff_ub, (1, (h * w) // 3 * 2))
     inds = totuple(asindices(c))
@@ -62,44 +71,53 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, fgc: int) -
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from collections import deque
-    from maker.sel_helpers import sel_of
-
+    """
+    Rule (read off the generator, not from O): every 2x2 block of the grid whose four
+    cells are all colour 0 gets painted colour 2.  Colour 2 is a constant of the rule.
+    Everything below is measured from I only; O is used solely for the Submit bbox.
+    """
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+    ho, wo = np.asarray(O, dtype=int).shape
+
+    HOLE = 0        # holes punched by the generator
+    PAINT = 2       # colour the rule names
+
+    # 1. Find every all-zero 2x2 square in the INPUT and take the union of their cells.
+    targets = set()
+    for a in range(hi - 1):
+        for b in range(wi - 1):
+            if (I[a, b] == HOLE and I[a + 1, b] == HOLE
+                    and I[a, b + 1] == HOLE and I[a + 1, b + 1] == HOLE):
+                targets.add((a, b))
+                targets.add((a + 1, b))
+                targets.add((a, b + 1))
+                targets.add((a + 1, b + 1))
+
+    # 2. Group those cells into connected blobs (4-connectivity) so each Color op
+    #    paints one human-meaningful region rather than a raster smear.
     ops, sels = [], []
-
-    # cells that belong to at least one all-zero 2x2 square get painted 2
-    changed = np.zeros((hi, wi), dtype=bool)
-    for r in range(hi):
-        for c in range(wi):
-            if I[r, c] != O[r, c]:
-                changed[r, c] = True
-
-    # paint one connected blob at a time (not raster order)
-    seen = np.zeros((hi, wi), dtype=bool)
-    for r in range(hi):
-        for c in range(wi):
-            if not changed[r, c] or seen[r, c]:
-                continue
-            comp = []
-            q = deque([(r, c)])
-            seen[r, c] = True
-            while q:
-                a, b = q.popleft()
-                comp.append((a, b))
-                for da, db in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    na, nb = a + da, b + db
-                    if 0 <= na < hi and 0 <= nb < wi and changed[na, nb] and not seen[na, nb]:
-                        seen[na, nb] = True
-                        q.append((na, nb))
-            ops.append(2)          # Color2
-            sels.append(sel_of(comp))
+    remaining = set(targets)
+    for start in sorted(targets):
+        if start not in remaining:
+            continue
+        comp = []
+        dq = deque([start])
+        remaining.discard(start)
+        while dq:
+            r, c = dq.popleft()
+            comp.append((r, c))
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nb = (r + dr, c + dc)
+                if nb in remaining:
+                    remaining.discard(nb)
+                    dq.append(nb)
+        comp.sort()
+        ops.append(PAINT)          # Color2 on exactly this blob's cells
+        sels.append(sel_of(comp))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -143,7 +161,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

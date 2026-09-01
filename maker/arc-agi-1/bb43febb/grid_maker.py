@@ -33,16 +33,33 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import numpy as np
+from collections import deque
+
+try:
+    from maker.sel_helpers import sel_of
+except Exception:  # fallback if helper module is unavailable
+    def sel_of(cells):
+        return {"cells": [[int(r), int(c)] for (r, c) in cells]}
+
+
+# ---------------------------------------------------------------- 1. colors
 def sample_colors(num_examples=None) -> dict:
-    cols = remove(2, interval(0, 10, 1))
-    bgc = choice(totuple(cols))
+    # generator samples: bgc from colors 0..9 minus 2, and one distinct color per
+    # rectangle.  The rule (fill the interior of every solid rectangle with 2)
+    # depends only on shape, not on the rectangles' colors -> fix bgc only.
+    cols = [c for c in range(10) if c != 2]
+    bgc = int(np.random.choice(cols))
     return {"bgc": bgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int = 30, max_w: int = 30, bgc: int = 0) -> dict:
+# ---------------------------------------------------------------- 2. generate
+def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
     cols = remove(2, interval(0, 10, 1))
-    h = unifint(diff_lb, diff_ub, (10, max_h))
-    w = unifint(diff_lb, diff_ub, (10, max_w))
+    hlo = min(10, max_h)
+    wlo = min(10, max_w)
+    h = unifint(diff_lb, diff_ub, (hlo, max(hlo, max_h)))
+    w = unifint(diff_lb, diff_ub, (wlo, max(wlo, max_w)))
     remcols = remove(bgc, cols)
     gi = canvas(bgc, (h, w))
     go = canvas(bgc, (h, w))
@@ -75,42 +92,67 @@ def generate(diff_lb: float, diff_ub: float, max_h: int = 30, max_w: int = 30, b
     return {'input': gi, 'output': go}
 
 
+# ------------------------------------------------------- 3. derive_operations
 def derive_operations(I, O):
-    import numpy as np
-    from collections import deque
-    from maker.sel_helpers import sel_of
-
+    """
+    Rule (from the generator/verifier): every 4-connected single-colour region of
+    the INPUT that exactly fills its own bounding rectangle (and is at least 2
+    cells in each direction) gets its INTERIOR - the rectangle inset by one cell
+    on every side - painted with colour 2, leaving a one-cell frame of the
+    original colour.  Colour 2 is named by the rule (the generator never uses it
+    as a block colour), so it is a constant here, not something read from O.
+    Everything else - which regions, where, how big - is measured from I alone.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+
     ops, sels = [], []
 
-    # Cells that became 2: the interiors (inbox) of each solid rectangle.
-    diff = (O == 2) & (I != 2)
-
-    seen = np.zeros_like(diff, dtype=bool)
-    for r in range(hi):
-        for c in range(wi):
-            if not diff[r, c] or seen[r, c]:
+    # --- find every univalued 4-connected component of I -------------------
+    seen = np.zeros((hi, wi), dtype=bool)
+    rects = []                       # (r0, c0, r1, c1) of solid rectangles
+    for sr in range(hi):
+        for sc in range(wi):
+            if seen[sr, sc]:
                 continue
-            # BFS one interior region (interiors of distinct rects are never adjacent,
-            # they are separated by their own border ring)
+            col = I[sr, sc]
             cells = []
-            q = deque([(r, c)])
-            seen[r, c] = True
+            q = deque([(sr, sc)])
+            seen[sr, sc] = True
             while q:
-                y, x = q.popleft()
-                cells.append((y, x))
-                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < hi and 0 <= nx < wi and diff[ny, nx] and not seen[ny, nx]:
-                        seen[ny, nx] = True
-                        q.append((ny, nx))
-            ops.append(2)              # Color2: paint this interior
-            sels.append(sel_of(cells))
+                r, c = q.popleft()
+                cells.append((r, c))
+                for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] \
+                            and I[nr, nc] == col:
+                        seen[nr, nc] = True
+                        q.append((nr, nc))
+            rs = [r for r, _ in cells]
+            cs = [c for _, c in cells]
+            r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
+            bh, bw = r1 - r0 + 1, c1 - c0 + 1
+            # solid block == it covers its whole bounding box, and is thick
+            if len(cells) == bh * bw and bh > 1 and bw > 1:
+                rects.append((r0, c0, r1, c1))
 
+    # --- paint each block's interior, block by block, in reading order -----
+    for (r0, c0, r1, c1) in sorted(rects):
+        if r1 - r0 < 2 or c1 - c0 < 2:
+            continue                              # no interior to fill
+        interior = [(r, c)
+                    for r in range(r0 + 1, r1)
+                    for c in range(c0 + 1, c1)]
+        if all(I[r, c] == 2 for r, c in interior):
+            continue                              # would be a no-op
+        # interior is exactly this full rectangle -> Color2 over its cells
+        ops.append(2)
+        sels.append(sel_of(interior))
+
+    ho, wo = O.shape
     ops.append(34)
-    sels.append([0, 0, O.shape[0] - 1, O.shape[1] - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -154,7 +196,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -37,99 +37,127 @@ import random
 import numpy as np
 from collections import Counter
 
-try:
-    from maker.sel_helpers import sel_of
-except Exception:
-    def sel_of(cells):
-        cells = list(cells)
-        rs = [r for r, _ in cells]
-        cs = [c for _, c in cells]
-        return [min(rs), min(cs), max(rs) - min(rs), max(cs) - min(cs)]
+from maker.sel_helpers import sel_of
 
 
+# ---------------------------------------------------------------------------
+# 1. episode-level colors
+# ---------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
+    # generator: cols = difference(interval(0,10,1), (1,2))  -> colors 1 and 2 are
+    # reserved for the two markings, so neither bgc nor sqc may be 1 or 2.
     cols = [c for c in range(10) if c not in (1, 2)]
     bgc, sqc = random.sample(cols, 2)
     return {"bgc": bgc, "sqc": sqc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc) -> dict:
-    def unifint(lb, ub, rng):
-        a, b = rng
-        return random.randint(int(round(a + (b - a) * lb)),
-                              int(round(a + (b - a) * ub)))
+# ---------------------------------------------------------------------------
+# 2. generator
+# ---------------------------------------------------------------------------
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, sqc: int) -> dict:
+    hub = max(9, min(30, int(max_h)))
+    wub = max(9, min(30, int(max_w)))
 
-    lim = min(max_h, max_w)          # rotation may swap h/w
-    if lim < 9:
-        lim = 9
-    h = unifint(diff_lb, diff_ub, (9, lim))
-    w = unifint(diff_lb, diff_ub, (9, lim))
-
-    seploc = random.randint(4, h - 5)
+    h = unifint(diff_lb, diff_ub, (9, hub))
+    w = unifint(diff_lb, diff_ub, (9, wub))
+    seploc = randint(4, h - 5)
     bigh = unifint(diff_lb, diff_ub, (4, seploc))
     bigw = unifint(diff_lb, diff_ub, (3, w - 1))
-    bigloci = random.randint(0, seploc - bigh)
-    biglocj = random.randint(0, w - bigw)
-
+    bigloci = randint(0, seploc - bigh)
+    biglocj = randint(0, w - bigw)
     smallmaxh = h - seploc - 1
     smallmaxw = w - 1
-    bigsize = bigh * bigw
     cands = []
+    bigsize = bigh * bigw
     for a in range(3, smallmaxh + 1):
         for b in range(3, smallmaxw + 1):
             if a * b < bigsize:
                 cands.append((a, b))
-    if not cands:
-        raise ValueError("no small rect candidates")
-    cands.sort(key=lambda ab: ab[0] * ab[1])
-    idx = unifint(diff_lb, diff_ub, (0, len(cands) - 1))
+    cands = sorted(cands, key=lambda ab: ab[0] * ab[1])
+    num = len(cands)
+    idx = unifint(diff_lb, diff_ub, (0, num - 1))
     smallh, smallw = cands[idx]
-    smallloci = random.randint(seploc + 1, h - smallh)
-    smalllocj = random.randint(0, w - smallw)
+    smallloci = randint(seploc + 1, h - smallh)
+    smalllocj = randint(0, w - smallw)
 
-    gi = [[bgc for _ in range(w)] for _ in range(h)]
-    for r in range(bigloci, bigloci + bigh):
-        for c in range(biglocj, biglocj + bigw):
-            gi[r][c] = sqc
-    for r in range(smallloci, smallloci + smallh):
-        for c in range(smalllocj, smalllocj + smallw):
-            gi[r][c] = sqc
-
-    go = [row[:] for row in gi]
-    for r in range(bigloci + 1, bigloci + bigh - 1):
-        for c in range(biglocj + 1, biglocj + bigw - 1):
-            go[r][c] = 2
-    for r in range(smallloci + 1, smallloci + smallh - 1):
-        for c in range(smalllocj + 1, smalllocj + smallw - 1):
-            go[r][c] = 1
-
-    k = random.choice((0, 1, 2, 3))
-    if k:
-        gi = np.rot90(np.array(gi, dtype=int), k).tolist()
-        go = np.rot90(np.array(go, dtype=int), k).tolist()
-
-    return {"input": gi, "output": go}
+    gi = canvas(bgc, (h, w))
+    bigsq = backdrop(frozenset({(bigloci, biglocj), (bigloci + bigh - 1, biglocj + bigw - 1)}))
+    smallsq = backdrop(frozenset({(smallloci, smalllocj), (smallloci + smallh - 1, smalllocj + smallw - 1)}))
+    gi = fill(gi, sqc, bigsq | smallsq)
+    go = fill(gi, 2, backdrop(inbox(bigsq)))
+    go = fill(go, 1, backdrop(inbox(smallsq)))
+    rotf = choice((identity, rot90, rot180, rot270))
+    gi = rotf(gi)
+    go = rotf(go)
+    return {'input': gi, 'output': go}
 
 
+# ---------------------------------------------------------------------------
+# 3. trajectory
+# ---------------------------------------------------------------------------
 def derive_operations(I, O):
+    """
+    Rule (read from I only):
+      The grid holds exactly two solid rectangles of one non-background colour.
+      Paint the interior (the rectangle minus its 1-cell border) of the LARGER
+      rectangle with colour 2, and the interior of the SMALLER rectangle with
+      colour 1.  Colours 1 and 2 are constants named by the rule; nothing here
+      is measured in O (only O's shape is used, for the Submit selection).
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
+
+    # --- find every solid-rectangle connected component of I (4-connectivity) ---
+    seen = np.zeros((hi, wi), dtype=bool)
+    rects = []
+    for r in range(hi):
+        for c in range(wi):
+            if seen[r, c]:
+                continue
+            col = int(I[r, c])
+            stack = [(r, c)]
+            seen[r, c] = True
+            cells = []
+            while stack:
+                y, x = stack.pop()
+                cells.append((y, x))
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = y + dy, x + dx
+                    if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] and I[ny, nx] == col:
+                        seen[ny, nx] = True
+                        stack.append((ny, nx))
+            rs = [p[0] for p in cells]
+            cs = [p[1] for p in cells]
+            r0, r1 = min(rs), max(rs)
+            c0, c1 = min(cs), max(cs)
+            hh, ww = r1 - r0 + 1, c1 - c0 + 1
+            # solid rectangle, and big enough to have an interior
+            if len(cells) == hh * ww and hh >= 3 and ww >= 3:
+                rects.append((hh * ww, r0, c0, hh, ww, col))
+
+    # the background component is never a solid rectangle, so exactly the two
+    # placed rectangles survive; largest first (their areas are never equal)
+    rects.sort(key=lambda t: -t[0])
+
     ops, sels = [], []
 
-    # Only change: each rectangle's interior gets painted (small->1, big->2).
-    # Interiors are solid rectangles, measured directly from the I/O diff.
-    for val in (1, 2):
-        cells = [(r, c) for r in range(ho) for c in range(wo)
-                 if O[r, c] == val and I[r, c] != val]
-        if not cells:
-            continue
-        ops.append(val)
-        sels.append(sel_of(cells))
+    def interior(rect):
+        _, r0, c0, hh, ww, _ = rect
+        return [(r, c) for r in range(r0 + 1, r0 + hh - 1)
+                       for c in range(c0 + 1, c0 + ww - 1)]
+
+    if len(rects) >= 2:
+        big, small = rects[0], rects[1]
+        # interiors are full rectangles of cells; sel_of lists exactly those cells
+        ops.append(2)
+        sels.append(sel_of(interior(big)))     # larger rectangle -> colour 2
+        ops.append(1)
+        sels.append(sel_of(interior(small)))   # smaller rectangle -> colour 1
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, ho - 1, wo - 1])        # Submit: whole-canvas bbox
     return ops, sels
 
 
@@ -173,7 +201,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

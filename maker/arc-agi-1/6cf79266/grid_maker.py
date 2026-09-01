@@ -33,67 +33,95 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+import numpy as np
+from maker.sel_helpers import sel_of
+
+
 def sample_colors(num_examples=None) -> dict:
-    # Rule depends only on where 3x3 all-zero blocks sit; background 0 is hardcoded
-    # in the generator and foreground colors are irrelevant to the transformation.
-    return {}
+    # The generator samples a random foreground palette `ccols` from colors 2..9
+    # (0 is the hole/background marker, 1 is the answer color -- both hardcoded).
+    cols = [c for c in range(10) if c not in (0, 1)]
+    nfgcs = random.randint(1, 8)
+    ccols = random.sample(cols, nfgcs)
+    return {"ccols": ccols}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int = 30, max_w: int = 30) -> dict:
-    cols = difference(interval(0, 10, 1), (0, 1))
-    h = unifint(diff_lb, diff_ub, (6, max_h))
-    w = unifint(diff_lb, diff_ub, (6, max_w))
-    nfgcs = unifint(diff_lb, diff_ub, (1, 8))
-    ccols = sample(cols, nfgcs)
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, ccols=None) -> dict:
+    if not ccols:
+        pool = [c for c in range(10) if c not in (0, 1)]
+        ccols = random.sample(pool, random.randint(1, 8))
+    ccols = list(ccols)
+
+    hub = max(6, min(30, int(max_h)))
+    wub = max(6, min(30, int(max_w)))
+    h = unifint(diff_lb, diff_ub, (6, hub))
+    w = unifint(diff_lb, diff_ub, (6, wub))
+
     gi = canvas(-1, (h, w))
-    fgcobj = {(choice(ccols), ij) for ij in asindices(gi)}
+    fgcobj = {(random.choice(ccols), ij) for ij in asindices(gi)}
     gi = paint(gi, fgcobj)
+
     num = unifint(diff_lb, diff_ub, (int(0.25 * h * w), int(0.6 * h * w)))
     inds = asindices(gi)
-    locs = sample(totuple(inds), num)
+    locs = random.sample(totuple(inds), num)
     gi = fill(gi, 0, locs)
+
     noccs = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 16)))
     cands = asindices(canvas(-1, (h - 2, w - 2)))
-    locs = sample(totuple(cands), noccs)
+    locs = random.sample(totuple(cands), noccs)
     mini = asindices(canvas(-1, (3, 3)))
     for ij in locs:
         gi = fill(gi, 0, shift(mini, ij))
+
     trg = recolor(0, mini)
     occs = occurrences(gi, trg)
     go = tuple(e for e in gi)
     for occ in occs:
         go = fill(go, 1, shift(mini, occ))
+
     return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    import numpy as np
+    """
+    Rule (from the generator/verifier): every 3x3 window of the INPUT that is
+    entirely color 0 is repainted with color 1.  Everything below is measured
+    from I only; O is never inspected apart from nothing at all.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+
+    # 1. Find every 3x3 all-zero window in the INPUT -> union of cells to mark.
+    mark = np.zeros((hi, wi), dtype=bool)
+    for r in range(hi - 2):
+        for c in range(wi - 2):
+            if not I[r:r + 3, c:c + 3].any():          # window is all 0
+                mark[r:r + 3, c:c + 3] = True
+
     ops, sels = [], []
 
-    # Every cell belonging to some all-background 3x3 block becomes 1.
-    target = (O == 1) & (I != 1)
-
-    covered = np.zeros_like(target, dtype=bool)
-    # Greedy maximal-rectangle cover of the target cells -> few Color1 ops,
-    # each rectangle painted exactly once (no overlapping repaints).
+    # 2. Paint one connected blank region at a time (regions are disjoint,
+    #    so every op visibly changes the grid and none is removable).
+    seen = np.zeros((hi, wi), dtype=bool)
     for r in range(hi):
         for c in range(wi):
-            if not target[r, c] or covered[r, c]:
-                continue
-            w = 0
-            while c + w < wi and target[r, c + w] and not covered[r, c + w]:
-                w += 1
-            h = 1
-            while r + h < hi and all(
-                target[r + h, cc] and not covered[r + h, cc] for cc in range(c, c + w)
-            ):
-                h += 1
-            covered[r:r + h, c:c + w] = True
-            ops.append(1)                      # Color1: rectangle is entirely target cells
-            sels.append([r, c, h - 1, w - 1])
+            if mark[r, c] and not seen[r, c]:
+                stack = [(r, c)]
+                seen[r, c] = True
+                comp = []
+                while stack:
+                    y, x = stack.pop()
+                    comp.append((y, x))
+                    for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < hi and 0 <= nx < wi and mark[ny, nx] and not seen[ny, nx]:
+                            seen[ny, nx] = True
+                            stack.append((ny, nx))
+                comp.sort()
+                ops.append(1)                 # Color1
+                sels.append(sel_of(comp))     # exact cells of this blank region
 
     ops.append(34)
     sels.append([0, 0, hi - 1, wi - 1])
@@ -140,7 +168,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

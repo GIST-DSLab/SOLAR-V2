@@ -36,177 +36,194 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter
+from maker.sel_helpers import sel_of
 
-# The only structural variant is the global rotation applied to both grids: it decides
-# which corner of every 2x2 block holds the dot, and therefore the diagonal direction in
-# which the 4x4 squares grow. All four must be demonstrated when there are example slots.
-VARIANTS = [{"rot": 0}, {"rot": 1}, {"rot": 2}, {"rot": 3}]
+ROTS = ['identity', 'rot90', 'rot180', 'rot270']
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc, sqc, dotc = random.sample(cols, 3)
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+    # the rotation is a discrete structural variant (it decides which corner of the
+    # 2x2 seed holds the dot, hence the diagonal direction of the two big squares)
+    if n_ex >= len(ROTS):
+        examples = [{"rot": r} for r in ROTS]
+        examples += [{"rot": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+        examples = [{"rot": r} for r in random.sample(ROTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "sqc": sqc, "dotc": dotc, "instance_plan": plan}
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc, dotc, rot=None) -> dict:
     if rot is None:
-        rot = random.choice([0, 1, 2, 3])
-
-    def unifint(lb, ub, bounds):
-        a, b = bounds
-        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
-
-    hlim, wlim = max_h // 3, max_w // 3
-    if rot % 2 == 1:                      # rot90/rot270 swap the output dims
-        hlim, wlim = max_w // 3, max_h // 3
-    hb, wb = min(10, hlim), min(10, wlim)
-    if hb < 3 or wb < 3:
-        raise ValueError("max grid dims too small for this task")
-
-    h = unifint(diff_lb, diff_ub, (3, hb))
-    w = unifint(diff_lb, diff_ub, (3, wb))
-
-    gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * (3 * w) for _ in range(3 * h)]
-
-    def cells_of(loc):
-        i, j = loc
-        return {(i, j), (i, j + 1), (i + 1, j), (i + 1, j + 1)}
-
-    def place(loc):
-        i, j = loc
-        gi[i][j] = sqc
-        gi[i][j + 1] = sqc
-        gi[i + 1][j] = sqc
-        gi[i + 1][j + 1] = dotc
-        for (br, bc) in ((i, j), (i + 4, j + 4)):
-            for r in range(br, br + 4):
-                for c in range(bc, bc + 4):
-                    go[r][c] = sqc
-
-    def dnb(cells):
-        out = set(cells)
-        for (r, c) in cells:
-            out |= {(r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)}
-        return out
-
-    iinds = {(r, c) for r in range(h) for c in range(w)}
-    loc = (random.randint(0, min(h - 2, 3 * h - 8)),
-           random.randint(0, min(w - 2, 3 * w - 8)))
-    place(loc)
-    iinds -= dnb(cells_of(loc))
-
+        rot = random.choice(ROTS)
+    # output canvas is 3x the input in both dimensions (and rot90/rot270 transpose it)
+    if rot in ('rot90', 'rot270'):
+        hub = max(3, min(10, max_w // 3))
+        wub = max(3, min(10, max_h // 3))
+    else:
+        hub = max(3, min(10, max_h // 3))
+        wub = max(3, min(10, max_w // 3))
+    h = unifint(diff_lb, diff_ub, (3, hub))
+    w = unifint(diff_lb, diff_ub, (3, wub))
+    gi = canvas(bgc, (h, w))
+    go = canvas(bgc, (3 * h, 3 * w))
+    sqi = {(dotc, (1, 1))} | recolor(sqc, {(0, 0), (0, 1), (1, 0)})
+    sqo = backdrop(frozenset({(0, 0), (3, 3)}))
+    sqo |= shift(sqo, (4, 4))
+    loci = randint(0, min(h - 2, 3 * h - 8))
+    locj = randint(0, min(w - 2, 3 * w - 8))
+    loc = (loci, locj)
+    plcdi = shift(sqi, loc)
+    plcdo = shift(sqo, loc)
+    gi = paint(gi, plcdi)
+    go = fill(go, sqc, plcdo)
     noccs = unifint(diff_lb, diff_ub, (0, (h * w) // 9))
-    succ, tr, maxtr = 0, 0, 10 * noccs
+    succ = 0
+    tr = 0
+    maxtr = 10 * noccs
+    iinds = ofcolor(gi, bgc) - mapply(dneighbors, toindices(plcdi))
     while tr < maxtr and succ < noccs:
         tr += 1
-        cands = [ij for ij in iinds if ij[0] <= h - 2 and ij[1] <= w - 2]
-        if not cands:
+        cands = sfilter(iinds, lambda ij: ij[0] <= h - 2 and ij[1] <= w - 2)
+        if len(cands) == 0:
             break
-        loc = random.choice(cands)
-        cs = cells_of(loc)
-        if cs <= iinds:
+        loc = choice(totuple(cands))
+        plcdi = shift(sqi, loc)
+        plcdo = shift(sqo, loc)
+        plcdii = toindices(plcdi)
+        if plcdii.issubset(iinds):
             succ += 1
-            iinds = iinds - dnb(cs)
-            place(loc)
-
-    def rotcw(g, k):
-        for _ in range(k % 4):
-            g = [list(t) for t in zip(*g[::-1])]
-        return [list(r) for r in g]
-
-    return {"input": rotcw(gi, rot), "output": rotcw(go, rot)}
+            iinds = (iinds - plcdii) - mapply(dneighbors, plcdii)
+            gi = paint(gi, plcdi)
+            go = fill(go, sqc, plcdo)
+    rotf = {'identity': identity, 'rot90': rot90, 'rot180': rot180, 'rot270': rot270}[rot]
+    gi = rotf(gi)
+    go = rotf(go)
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    """
-    Rule read off I -> O:
-      * canvas grows 3x in both axes;
-      * every 2x2 block (3 cells of sqc + 1 dot) points diagonally away from its dot;
-      * the whole picture slides to the canvas corner the dot points at
-        (offset = ((1-dr)*2h, (1-dc)*2w));
-      * each block becomes a 4x4 square growing from its anti-corner in the dot's
-        diagonal direction, plus a second 4x4 square 4 further along that diagonal;
-      * everything else is background.
-    So: expand canvas -> paint the new background -> per object: erase what it vacated,
-    then draw its two squares.
-    """
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
+    ho_chk, wo_chk = np.asarray(O).shape
     hi, wi = I.shape
-    ho, wo = O.shape
+    # rule: the answer canvas is exactly 3x the input in each dimension
+    ho, wo = 3 * hi, 3 * wi
+
+    def components(mask):
+        seen = np.zeros((hi, wi), dtype=bool)
+        comps = []
+        for r in range(hi):
+            for c in range(wi):
+                if mask[r, c] and not seen[r, c]:
+                    stack = [(r, c)]
+                    seen[r, c] = True
+                    cells = []
+                    while stack:
+                        y, x = stack.pop()
+                        cells.append((y, x))
+                        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                            ny, nx = y + dy, x + dx
+                            if 0 <= ny < hi and 0 <= nx < wi and mask[ny, nx] and not seen[ny, nx]:
+                                seen[ny, nx] = True
+                                stack.append((ny, nx))
+                    comps.append(cells)
+        return comps
+
+    def analyze(bg):
+        """Every non-background component must be a 2x2 seed: 3 cells of the square
+        colour + 1 dot cell.  The dot's corner gives the growth direction."""
+        comps = components(I != bg)
+        if not comps:
+            return None
+        blocks = []
+        sqc = None
+        dd = None
+        for cells in comps:
+            if len(cells) != 4:
+                return None
+            r0 = min(y for y, x in cells)
+            c0 = min(x for y, x in cells)
+            if set(cells) != {(r0 + a, c0 + b) for a in (0, 1) for b in (0, 1)}:
+                return None
+            cnt = Counter(int(I[y, x]) for y, x in cells)
+            if sorted(cnt.values()) != [1, 3]:
+                return None
+            sq = [k for k, v in cnt.items() if v == 3][0]
+            dot = [k for k, v in cnt.items() if v == 1][0]
+            dcell = [(y, x) for y, x in cells if I[y, x] == dot][0]
+            d = (dcell[0] - r0, dcell[1] - c0)
+            if sqc is None:
+                sqc, dd = sq, d
+            elif sq != sqc or d != dd:
+                return None
+            blocks.append((r0, c0))
+        return sorted(blocks), sqc, dd[0], dd[1]
+
+    order = [c for c, _ in Counter(I.flatten().tolist()).most_common()]
+    parsed = None
+    for cand in order:
+        parsed = analyze(cand)
+        if parsed is not None:
+            bgc = cand
+            break
+    if parsed is None:
+        bgc = order[0]
+        parsed = ([], bgc, 1, 1)
+    blocks, sqc, di, dj = parsed
+
+    # where the input content lands inside the 3x canvas, per the rule
+    roff = (1 - di) * 2 * hi
+    coff = (1 - dj) * 2 * wi
+    # diagonal offset of the second big square, from the dot's corner
+    sr = 4 * (2 * di - 1)
+    sc = 4 * (2 * dj - 1)
+
     ops, sels = [], []
+    g = np.zeros((ho, wo), dtype=int)
+    g[:hi, :wi] = I
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-    nonbg = Counter([v for v in I.flatten().tolist() if v != bgc]).most_common()
-    sqc = nonbg[0][0]                       # 3 cells per block
-    dotc = nonbg[1][0] if len(nonbg) > 1 else sqc
-
-    # simulated working grid
-    G = np.zeros((ho, wo), dtype=int)
-    G[:hi, :wi] = I
-
-    # 1. expand canvas to 3h x 3w (input stays at top-left)
+    # 1. grow the canvas to 3h x 3w (full rectangle -> bbox selection)
     ops.append(33); sels.append([0, 0, ho - 1, wo - 1])
 
-    # 2. the newly exposed canvas is 0; make it background (skip when bgc already is 0)
+    # 2. lay the background base
     if bgc != 0:
-        ops.append(bgc); sels.append([hi, 0, ho - 1 - hi, wo - 1]); G[hi:, :] = bgc
-        ops.append(bgc); sels.append([0, wi, hi - 1, wo - 1 - wi]); G[:hi, wi:] = bgc
+        ops.append(int(bgc)); sels.append([0, 0, ho - 1, wo - 1])  # full canvas rectangle
+        g[:, :] = bgc
+    else:
+        rects = []
+        for (r, c) in blocks:
+            ra = r + roff - 2 * (1 - di)
+            ca = c + coff - 2 * (1 - dj)
+            rects.append((ra, ca))
+            rects.append((ra + sr, ca + sc))
+        covered = set()
+        for (ra, ca) in rects:
+            for a in range(4):
+                for b in range(4):
+                    covered.add((ra + a, ca + b))
+        leftover = sorted({(r, c) for r in range(hi) for c in range(wi)
+                           if I[r, c] != bgc} - covered)
+        if leftover:
+            ops.append(0); sels.append(sel_of(leftover))
+            for (r, c) in leftover:
+                g[r, c] = 0
 
-    dots = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == dotc]
-
-    for (rd, cd) in dots:
-        # dot's corner inside its own 2x2 (blocks are never 4-adjacent, so its sqc
-        # neighbours can only belong to this block)
-        dr = 1 if (rd - 1 >= 0 and I[rd - 1, cd] == sqc) else 0
-        dc = 1 if (cd - 1 >= 0 and I[rd, cd - 1] == sqc) else 0
-        i, j = rd - dr, cd - dc
-
-        # cells of this block that the transformation leaves empty
-        need = set()
-        for r in (i, i + 1):
-            for c in (j, j + 1):
-                if O[r, c] == bgc and G[r, c] != bgc:
-                    need.add((r, c))
-        if len(need) == 4:
-            ops.append(bgc); sels.append([i, j, 1, 1]); G[i:i + 2, j:j + 2] = bgc
-        elif need:
-            for r in (i, i + 1):
-                if (r, j) in need and (r, j + 1) in need:
-                    ops.append(bgc); sels.append([r, j, 0, 1])
-                    G[r, j:j + 2] = bgc
-                    need -= {(r, j), (r, j + 1)}
-            for c in (j, j + 1):
-                if (i, c) in need and (i + 1, c) in need:
-                    ops.append(bgc); sels.append([i, c, 1, 0])
-                    G[i:i + 2, c] = bgc
-                    need -= {(i, c), (i + 1, c)}
-            for (r, c) in sorted(need):
-                ops.append(bgc); sels.append([r, c, 0, 0]); G[r, c] = bgc
-
-        # the block's two 4x4 squares, at the destination corner of the canvas
-        sr, sc = 2 * dr - 1, 2 * dc - 1                       # diagonal the dot points to
-        ar = i + 1 - dr + (1 - dr) * 2 * hi                   # anti-corner, canvas coords
-        ac = j + 1 - dc + (1 - dc) * 2 * wi
-        for k in (0, 1):
-            ra, ca = ar + 4 * k * sr, ac + 4 * k * sc
-            rb, cb = ra + 3 * sr, ca + 3 * sc
-            r0, r1 = min(ra, rb), max(ra, rb)
-            c0, c1 = min(ca, cb), max(ca, cb)
-            if np.all(G[r0:r1 + 1, c0:c1 + 1] == sqc):        # already covered
+    # 3. every 2x2 seed grows into two 4x4 squares, diagonal along the dot's corner
+    for (r, c) in blocks:
+        ra = r + roff - 2 * (1 - di)
+        ca = c + coff - 2 * (1 - dj)
+        for (br, bc) in ((ra, ca), (ra + sr, ca + sc)):
+            cells = [(br + a, bc + b) for a in range(4) for b in range(4)
+                     if 0 <= br + a < ho and 0 <= bc + b < wo]
+            if not cells or all(g[y, x] == sqc for y, x in cells):
                 continue
-            ops.append(sqc); sels.append([r0, c0, r1 - r0, c1 - c0])
-            G[r0:r1 + 1, c0:c1 + 1] = sqc
+            ops.append(int(sqc)); sels.append(sel_of(cells))
+            for (y, x) in cells:
+                g[y, x] = sqc
 
     ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
@@ -252,7 +269,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

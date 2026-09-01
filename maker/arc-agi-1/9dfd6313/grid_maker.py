@@ -33,43 +33,57 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
 import numpy as np
+from collections import Counter
 
-# Discrete structural variants = mirror-line orientation (generator's lni 1..4).
-# 1: horizontal line -> hmirror(flipud)   2: vertical line -> vmirror(fliplr)
-# 3: main diagonal   -> dmirror(transpose) 4: anti-diagonal -> cmirror(anti-transpose)
-VARIANTS = [1, 2, 3, 4]
+# ---------------------------------------------------------------------------
+# Task 9dfd6313 : a d x d canvas (d odd) holds one monochrome "axis" line
+#   (middle row / middle column / main diagonal / anti diagonal) and random
+#   pixels on ONE side of it.  The output is the whole grid mirrored across
+#   that axis.  Which axis it is, is fully visible in the input: the axis is
+#   the only one of the four candidate lines that is monochrome (all four pass
+#   through the centre cell, and the line colour occurs exactly d times).
+# ---------------------------------------------------------------------------
+
+VARIANTS = [{"lni": 1}, {"lni": 2}, {"lni": 3}, {"lni": 4}]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc = random.choice(cols)
     linc = random.choice([c for c in cols if c != bgc])
-    n_ex = num_examples if num_examples else 4
+
+    n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
-        examples = list(VARIANTS)
-        examples += [random.choice(VARIANTS) for _ in range(n_ex - len(VARIANTS))]
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
         random.shuffle(examples)
     else:
-        examples = random.sample(VARIANTS, n_ex)
-    plan = [{"lni": v} for v in examples]
-    plan.append({"lni": random.choice(examples)})  # test case
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "linc": linc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, lni=None) -> dict:
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc=None, linc=None, lni=None) -> dict:
     cols = interval(0, 10, 1)
-    lim = (min(max_h, max_w) - 1) // 2
-    dh_ub = min(14, max(1, lim))
-    dh = unifint(diff_lb, diff_ub, (1, dh_ub))
-    d = 2 * dh + 1
-    remcols = remove(bgc, cols)
-    remcols = remove(linc, remcols)
-    gi = canvas(bgc, (d, d))
-    inds = asindices(gi)
+    if bgc is None:
+        bgc = choice(cols)
+    if linc is None:
+        linc = choice(remove(bgc, cols))
     if lni is None:
         lni = choice((1, 2, 3, 4))
+
+    dh_ub = max(1, min(14, (min(max_h, max_w) - 1) // 2))
+    dh = unifint(diff_lb, diff_ub, (1, dh_ub))
+    d = 2 * dh + 1
+
+    remcols = remove(bgc, cols)
+    remcols = remove(linc, remcols)
+
+    gi = canvas(bgc, (d, d))
+    inds = asindices(gi)
+
     if lni == 1:
         ln = connect((dh, 0), (dh, d - 1))
         mirrf = hmirror
@@ -86,6 +100,7 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, lni=None) -> dict:
         ln = connect((d - 1, 0), (0, d - 1))
         mirrf = cmirror
         cands = sfilter(inds, lambda ij: (ij[0] + ij[1]) > d)
+
     gi = fill(gi, linc, ln)
     mp = (d * (d - 1)) // 2
     numcols = unifint(diff_lb, diff_ub, (1, min(7, mp)))
@@ -94,38 +109,73 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, lni=None) -> dict:
     pixs = sample(totuple(cands), numpix)
     for pix in pixs:
         gi = fill(gi, choice(colsch), {pix})
+
     go = mirrf(gi)
     if choice((True, False)):
         gi, go = go, gi
-    return {"input": gi, "output": go}
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
+    """Everything below is measured from I only.
+
+    Find the monochrome axis line inside I (main diagonal / anti diagonal /
+    middle column / middle row), then mirror the whole grid across it:
+        main diagonal  -> transpose  = Rotate270(CW) + FlipH
+        anti diagonal  -> anti-transpose = Rotate270(CW) + FlipV
+        middle column  -> fliplr = FlipH
+        middle row     -> flipud = FlipV
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
-    sel = [0, 0, hi - 1, wi - 1]   # whole square grid (rectangular full-region: bbox ok)
+
+    d = min(hi, wi)
+    dh = (d - 1) // 2
+
+    counts = Counter(I.flatten().tolist())
+
+    candidates = [
+        ("dmirror", [(i, i) for i in range(d)]),
+        ("cmirror", [(i, d - 1 - i) for i in range(d)]),
+        ("vmirror", [(i, dh) for i in range(d)]),
+        ("hmirror", [(dh, j) for j in range(d)]),
+    ]
+
+    kind = None
+    # verifier's criterion: the line is monochrome AND its colour occurs
+    # exactly d times in the whole input (so it is a line, not background)
+    for name, cells in candidates:
+        vals = {int(I[r, c]) for (r, c) in cells}
+        if len(vals) == 1 and counts[next(iter(vals))] == len(cells):
+            kind = name
+            break
+    if kind is None:                       # fallback: just monochrome
+        for name, cells in candidates:
+            vals = {int(I[r, c]) for (r, c) in cells}
+            if len(vals) == 1:
+                kind = name
+                break
+    if kind is None:
+        kind = "hmirror"
+
+    # whole-grid selection: the intended cells ARE exactly this full rectangle
+    full = [0, 0, hi - 1, wi - 1]
+
     ops, sels = [], []
+    if kind == "hmirror":                  # mirror across the middle row
+        ops.append(27); sels.append(full)          # FlipV (flipud)
+    elif kind == "vmirror":                # mirror across the middle column
+        ops.append(26); sels.append(full)          # FlipH (fliplr)
+    elif kind == "dmirror":                # mirror across the main diagonal
+        ops.append(25); sels.append(full)          # Rotate270 = rot90 CW
+        ops.append(26); sels.append(full)          # FlipH  -> transpose
+    else:                                  # mirror across the anti diagonal
+        ops.append(25); sels.append(full)          # Rotate270 = rot90 CW
+        ops.append(27); sels.append(full)          # FlipV  -> anti-transpose
 
-    if np.array_equal(O, np.flipud(I)):
-        # hmirror  -> FlipV
-        ops = [27]; sels = [sel]
-    elif np.array_equal(O, np.fliplr(I)):
-        # vmirror  -> FlipH
-        ops = [26]; sels = [sel]
-    elif np.array_equal(O, np.transpose(I)):
-        # dmirror (transpose) = flipud(rot90(I,1)) -> Rotate90(CCW) then FlipV
-        ops = [24, 27]; sels = [sel, sel]
-    elif np.array_equal(O, I.T[::-1, ::-1]):
-        # cmirror (anti-transpose) = flipud(rot90(I,3)) -> Rotate270(CW) then FlipV
-        ops = [25, 27]; sels = [sel, sel]
-    else:
-        # fallback (should not occur for valid instances)
-        ops = [27]; sels = [sel]
-
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -169,7 +219,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

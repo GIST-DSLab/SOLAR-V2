@@ -33,14 +33,9 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-import numpy as np
-from collections import Counter, deque
-
-from maker.sel_helpers import sel_of
-
-
 def sample_colors(num_examples=None) -> dict:
+    # Generator samples only bgc (and per-object colors, which the rule ignores).
+    # Color 7 is reserved as the fill colour, so it can never be bgc.
     cols = [c for c in range(10) if c != 7]
     bgc = random.choice(cols)
     return {"bgc": bgc}
@@ -55,7 +50,7 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -
     ccols = sample(remcols, numcols)
     gi = canvas(bgc, (h, w))
     go = canvas(bgc, (h, w))
-    num = unifint(diff_lb, diff_ub, (1, (h * w) // 20))
+    num = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 20)))
     indss = asindices(gi)
     maxtrials = 4 * num
     tr = 0
@@ -95,48 +90,61 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -
 
 
 def derive_operations(I, O):
-    I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    ops, sels = [], []
+    import numpy as np
+    from collections import Counter, deque
+    from maker.sel_helpers import sel_of
 
+    I = np.asarray(I, dtype=int)
+    h, w = I.shape
+    ho, wo = np.asarray(O, dtype=int).shape
+
+    # Background: the canvas colour the generator paints first; it dominates the grid
+    # (objects cover at most a small fraction, their backdrops being mutually disjoint).
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    seen = np.zeros((hi, wi), dtype=bool)
-    comps = []
-    for r in range(hi):
-        for c in range(wi):
-            if seen[r, c] or I[r, c] == bgc:
+    # Rule (measured from I only): every same-coloured, diagonally-connected object
+    # has the cells of its bounding box that are NOT part of the object painted 7.
+    seen = np.zeros((h, w), dtype=bool)
+    objects = []
+    for r in range(h):
+        for c in range(w):
+            if I[r, c] == bgc or seen[r, c]:
                 continue
             col = I[r, c]
-            q = deque([(r, c)])
             seen[r, c] = True
+            q = deque([(r, c)])
             cells = []
             while q:
                 cr, cc = q.popleft()
                 cells.append((cr, cc))
                 for dr in (-1, 0, 1):
                     for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
                         nr, nc = cr + dr, cc + dc
-                        if 0 <= nr < hi and 0 <= nc < wi and not seen[nr, nc] and I[nr, nc] == col:
+                        if 0 <= nr < h and 0 <= nc < w and not seen[nr, nc] and I[nr, nc] == col:
                             seen[nr, nc] = True
                             q.append((nr, nc))
-            comps.append(cells)
+            objects.append(cells)
 
-    # each object's bounding box: cells not belonging to the object become 7
-    for cells in comps:
-        rs = [r for r, _ in cells]
-        cs = [c for _, c in cells]
-        body = set(cells)
-        delta = [(r, c) for r in range(min(rs), max(rs) + 1)
-                 for c in range(min(cs), max(cs) + 1) if (r, c) not in body]
-        delta = [(r, c) for (r, c) in delta if O[r, c] == 7 and I[r, c] != 7]
-        if delta:
-            ops.append(7)
-            sels.append(sel_of(delta))
+    ops, sels = [], []
+    for cells in objects:
+        cellset = set(cells)
+        r0 = min(p[0] for p in cells)
+        r1 = max(p[0] for p in cells)
+        c0 = min(p[1] for p in cells)
+        c1 = max(p[1] for p in cells)
+        delta = [(r, c)
+                 for r in range(r0, r1 + 1)
+                 for c in range(c0, c1 + 1)
+                 if (r, c) not in cellset]
+        if not delta:
+            continue  # solid rectangle: nothing to fill, emitting an op would be a no-op
+        ops.append(7)                 # Color7 on this object's bbox-minus-object cells
+        sels.append(sel_of(delta))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])   # full-grid bbox for Submit
     return ops, sels
 
 
@@ -180,7 +188,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

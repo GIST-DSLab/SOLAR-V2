@@ -37,25 +37,27 @@ import random
 import numpy as np
 from collections import Counter
 
-from dsl import *
-from utils import *
+from maker.sel_helpers import sel_of
 
 
+# The four halo colors are hardcoded by the rule (verifier constants):
+#   cell above a mark -> 2, below -> 8, left -> 7, right -> 6
+# The generator therefore excludes 2, 6, 7, 8 from the sampled colors.
 def sample_colors(num_examples=None) -> dict:
-    cols = difference(interval(0, 10, 1), (2, 6, 7, 8))
-    bgc, fgc = sample(cols, 2)
+    cols = [c for c in range(10) if c not in (2, 6, 7, 8)]
+    bgc, fgc = random.sample(cols, 2)
     return {"bgc": bgc, "fgc": fgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc=None, fgc=None) -> dict:
-    cols = difference(interval(0, 10, 1), (2, 6, 7, 8))
-    if bgc is None or fgc is None:
-        bgc, fgc = sample(cols, 2)
-    h = unifint(diff_lb, diff_ub, (4, max_h))
-    w = unifint(diff_lb, diff_ub, (4, max_w))
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc: int, fgc: int) -> dict:
+    hub = max(4, min(30, int(max_h)))
+    wub = max(4, min(30, int(max_w)))
+    h = unifint(diff_lb, diff_ub, (4, hub))
+    w = unifint(diff_lb, diff_ub, (4, wub))
     gi = canvas(bgc, (h, w))
     inds = totuple(asindices(gi))
-    num = unifint(diff_lb, diff_ub, (1, max(1, (h * w) // 5)))
+    num = unifint(diff_lb, diff_ub, (1, (h * w) // 5))
     res = set()
     for j in range(num):
         if len(inds) == 0:
@@ -74,29 +76,34 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc=None, f
 
 
 def derive_operations(I, O):
+    """Rule (read from I only): every foreground mark grows a 4-neighbour halo —
+    the cell above it becomes 2, below 8, to its left 7, to its right 6.
+    The generator spaces the marks so no two halo cells ever collide and no halo
+    cell ever lands on a mark, so the four passes are independent."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-
-    # I holds exactly two colors: a background canvas plus isolated dots.
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
+    ho, wo = O.shape
     ops, sels = [], []
 
-    # Each dot grows a 4-neighbour cross: up=2, left=7, right=6, down=8.
-    # Generator spacing guarantees the crosses never overlap each other or a dot.
-    for r in range(hi):
-        for c in range(wi):
-            if I[r, c] == bgc:
-                continue
-            for dr, dc, col in ((-1, 0, 2), (0, -1, 7), (0, 1, 6), (1, 0, 8)):
-                rr, cc = r + dr, c + dc
-                if 0 <= rr < hi and 0 <= cc < wi and O[rr, cc] != I[rr, cc]:
-                    ops.append(col)
-                    sels.append([rr, cc, 0, 0])
+    # Background = the colour the canvas was painted with; marks are sparse
+    # (at most h*w//5 of them), so the background is the majority colour of I.
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    marks = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != bgc]
+
+    # One pass per rule clause, in the order the rule reads.
+    for dr, dc, color in ((-1, 0, 2), (1, 0, 8), (0, -1, 7), (0, 1, 6)):
+        cells = []
+        for (r, c) in marks:
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < hi and 0 <= cc < wi:   # halo clipped at the grid edge
+                cells.append((rr, cc))
+        if cells:
+            ops.append(int(color))
+            sels.append(sel_of(cells))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -140,7 +147,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

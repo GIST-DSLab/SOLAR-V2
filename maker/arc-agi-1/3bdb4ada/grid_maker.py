@@ -33,124 +33,115 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-import numpy as np
-from collections import Counter
-from maker.sel_helpers import sel_of
-
-
 def sample_colors(num_examples=None) -> dict:
-    bgc = random.choice(range(10))
+    cols = list(range(10))
+    bgc = random.choice(cols)
+    # Object colours are irrelevant to the rule (it depends only on each
+    # rectangle's geometry), so only the background is fixed per episode.
     return {"bgc": bgc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
-    def unifint(lb, ub, bounds):
-        a, b = bounds
-        if b < a:
-            a, b = b, a
-        lo = a + int((b - a) * lb)
-        hi = a + int((b - a) * ub)
-        lo = max(a, min(b, lo))
-        hi = max(a, min(b, hi))
-        if hi < lo:
-            lo, hi = hi, lo
-        return random.randint(lo, hi)
-
-    cols = list(range(10))
-    h = unifint(diff_lb, diff_ub, (min(10, max_h), max_h))
-    w = unifint(diff_lb, diff_ub, (min(10, max_w), max_w))
-    remcols = [c for c in cols if c != bgc]
-
-    gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * w for _ in range(h)]
-
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
+    cols = interval(0, 10, 1)
+    hmax = min(30, max_h)
+    wmax = min(30, max_w)
+    hmin = min(10, hmax)
+    wmin = min(10, wmax)
+    h = unifint(diff_lb, diff_ub, (hmin, hmax))
+    w = unifint(diff_lb, diff_ub, (wmin, wmax))
+    remcols = remove(bgc, cols)
+    gi = canvas(bgc, (h, w))
+    go = canvas(bgc, (h, w))
     num = unifint(diff_lb, diff_ub, (1, 8))
-    free = set((i, j) for i in range(h) for j in range(w))
+    indss = asindices(gi)
     maxtrials = 4 * num
     tr = 0
     succ = 0
     while succ < num and tr <= maxtrials:
-        if len(remcols) == 0 or len(free) == 0:
+        if len(remcols) == 0 or len(indss) == 0:
             break
-        if random.choice((True, False)):
+        if choice((True, False)):
             oh = 3
             ow = unifint(diff_lb, diff_ub, (1, max(1, w // 2 - 1))) * 2 + 1
         else:
             ow = 3
             oh = unifint(diff_lb, diff_ub, (1, max(1, h // 2 - 1))) * 2 + 1
-        subs = [ij for ij in free if ij[0] < h - oh and ij[1] < w - ow]
+        subs = totuple(sfilter(indss, lambda ij: ij[0] < h - oh and ij[1] < w - ow))
         if len(subs) == 0:
             tr += 1
             continue
-        loci, locj = random.choice(sorted(subs))
-        bd = set((i, j) for i in range(loci, loci + oh) for j in range(locj, locj + ow))
-        col = random.choice(remcols)
-        if bd.issubset(free):
-            remcols.remove(col)
-            for (i, j) in bd:
-                gi[i][j] = col
-                go[i][j] = col
+        loci, locj = choice(subs)
+        obj = frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)})
+        bd = backdrop(obj)
+        col = choice(remcols)
+        if bd.issubset(indss):
+            remcols = remove(col, remcols)
+            gi = fill(gi, col, bd)
+            go = fill(go, col, bd)
             if oh == 3:
-                ln = [(loci + 1, j) for j in range(locj + 1, locj + ow, 2)]
+                ln = {(loci + 1, j) for j in range(locj + 1, locj + ow, 2)}
             else:
-                ln = [(i, locj + 1) for i in range(loci + 1, loci + oh, 2)]
-            for (i, j) in ln:
-                go[i][j] = bgc
+                ln = {(j, locj + 1) for j in range(loci + 1, loci + oh, 2)}
+            go = fill(go, bgc, ln)
             succ += 1
-            free -= bd
+            indss = indss - bd
         tr += 1
-
-    return {"input": gi, "output": go}
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    ho, wo = O.shape
+    import numpy as np
+    from collections import Counter
+    from maker.sel_helpers import sel_of
 
-    # background: cells that changed I->O are painted background color
-    diff = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != O[r, c]]
-    if diff:
-        bgc = int(O[diff[0][0], diff[0][1]])
+    I = np.asarray(I, dtype=int)
+    hi, wi = I.shape
+
+    # --- background: the one colour whose cells are NOT a solid rectangle ---
+    # (every placed object is a filled rectangle of a unique colour; only the
+    #  canvas colour is left over as a non-rectangular remainder)
+    non_rect = []
+    for col in np.unique(I):
+        cells = np.argwhere(I == col)
+        r0, c0 = cells.min(0)
+        r1, c1 = cells.max(0)
+        if len(cells) != (int(r1) - int(r0) + 1) * (int(c1) - int(c0) + 1):
+            non_rect.append((len(cells), int(col)))
+    if len(non_rect) == 1:
+        bgc = non_rect[0][1]
+    elif len(non_rect) > 1:
+        bgc = max(non_rect)[1]
     else:
         bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
+    # --- each non-background colour is one solid rectangle in I ---
+    objs = []
+    for col in np.unique(I):
+        col = int(col)
+        if col == bgc:
+            continue
+        cells = np.argwhere(I == col)
+        r0, c0 = cells.min(0)
+        r1, c1 = cells.max(0)
+        objs.append((int(r0), int(c0), int(r1), int(c1), col))
+    objs.sort()
+
     ops, sels = [], []
 
-    # each rectangle is a unique non-bgc color block; punch alternating holes
-    # along its middle row (height 3) or middle column (width 3)
-    cells_by_color = {}
-    for r in range(hi):
-        for c in range(wi):
-            v = int(I[r, c])
-            if v != bgc:
-                cells_by_color.setdefault(v, []).append((r, c))
-
-    objs = []
-    for col, cells in cells_by_color.items():
-        rs = [r for r, _ in cells]
-        cs = [c for _, c in cells]
-        r0, r1 = min(rs), max(rs)
-        c0, c1 = min(cs), max(cs)
-        oh, ow = r1 - r0 + 1, c1 - c0 + 1
-        if oh * ow != len(cells):
-            continue
-        if oh == 3:
-            line = [(r0 + 1, j) for j in range(c0 + 1, c0 + ow, 2)]
-        else:
-            line = [(i, c0 + 1) for i in range(r0 + 1, r0 + oh, 2)]
-        line = [(r, c) for (r, c) in line if O[r, c] == bgc and I[r, c] != bgc]
-        if line:
-            objs.append(((r0, c0), line))
-
-    for _, line in sorted(objs):
-        ops.append(int(bgc))
-        sels.append(sel_of(line))
+    # Rule: inside each rectangle, punch background-coloured holes at every cell
+    # whose row-offset AND column-offset from the rectangle's top-left are odd.
+    # (A 3-tall bar -> dashes along its middle row; a 3-wide bar -> dashes down
+    #  its middle column.)  One Color(bgc) op per rectangle.
+    for r0, c0, r1, c1, col in objs:
+        holes = [(r, c)
+                 for r in range(r0 + 1, r1 + 1, 2)
+                 for c in range(c0 + 1, c1 + 1, 2)]
+        if holes:
+            ops.append(int(bgc))
+            sels.append(sel_of(holes))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
@@ -194,7 +185,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

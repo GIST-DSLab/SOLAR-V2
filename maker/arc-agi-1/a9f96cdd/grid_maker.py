@@ -33,21 +33,25 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
 import numpy as np
 from collections import Counter
 
+from maker.sel_helpers import sel_of
+
+# colors the generator may use for bgc / fgc (3, 6, 7, 8 are reserved mark colors)
+_COLS = [0, 1, 2, 4, 5, 9]
+
 
 def sample_colors(num_examples=None) -> dict:
-    # generator samples bgc and fgc from {0..9} minus the four mark colors {3,6,7,8}
-    cols = [c for c in range(10) if c not in (3, 6, 7, 8)]
-    bgc = choice(cols)
-    fgc = choice(remove(bgc, cols))
+    bgc = random.choice(_COLS)
+    fgc = random.choice([c for c in _COLS if c != bgc])
     return {"bgc": bgc, "fgc": fgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, fgc: int) -> dict:
-    h = unifint(diff_lb, diff_ub, (3, max_h))
-    w = unifint(diff_lb, diff_ub, (3, max_w))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc) -> dict:
+    h = unifint(diff_lb, diff_ub, (3, max(3, max_h)))
+    w = unifint(diff_lb, diff_ub, (3, max(3, max_w)))
     gi = canvas(bgc, (h, w))
     go = canvas(bgc, (h, w))
     locs = asindices(gi)
@@ -67,58 +71,43 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, f
 
 
 def derive_operations(I, O):
-    """
-    Rule read off I/O: I is a plain background with isolated single-cell dots of one
-    rare color.  Each dot vanishes (back to background) and its four DIAGONAL
-    neighbours get marked.  Which colour goes on which diagonal is MEASURED from the
-    I/O pair (never assumed), then applied dot by dot.
-    """
+    """Rule (measured from I only): the grid holds a background colour plus isolated
+    single-cell dots of one other colour.  Each dot is replaced by an X of diagonal
+    marks - 3 up-left, 6 up-right, 8 down-left, 7 down-right (constants named by the
+    rule, not read from O) - and the dot cell itself is repainted background.
+    Marks falling off the grid are simply not drawn.
+    O is used only for its shape."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
+    ho, wo = O.shape
 
-    # --- roles from I alone -------------------------------------------------
-    cnt = Counter(I.flatten().tolist())
-    bgc = cnt.most_common(1)[0][0]                       # canvas colour
-    others = [c for c in cnt if c != bgc]
-    if not others:
-        return [34], [[0, 0, hi - 1, wi - 1]]
-    fgc = min(others, key=lambda c: cnt[c])              # rarest colour = the dots
-
-    dots = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == fgc]
-
-    # --- measure the diagonal-offset -> mark-colour correspondence from I/O --
-    DIAGS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]
-    votes = {d: Counter() for d in DIAGS}
-    for (r, c) in dots:
-        for d in DIAGS:
-            rr, cc = r + d[0], c + d[1]
-            if 0 <= rr < hi and 0 <= cc < wi:
-                votes[d][int(O[rr, cc])] += 1
-    mark = {d: votes[d].most_common(1)[0][0] for d in DIAGS if votes[d]}
-
-    # --- apply the measured rule, one whole dot at a time --------------------
-    G = I.copy()
     ops, sels = [], []
+
+    # background = the colour the generator paints the canvas with = the dominant one;
+    # the dots are the (sparse) minority colour.  Only two colours ever occur in I.
+    cnt = Counter(I.flatten().tolist())
+    bgc = cnt.most_common(1)[0][0]
+
+    # every dot, as its own object, in reading order
+    dots = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != bgc]
+
+    # rule-given mark colours, by diagonal offset
+    marks = (((-1, -1), 3), ((-1, 1), 6), ((1, -1), 8), ((1, 1), 7))
+
     for (r, c) in dots:
-        for d in DIAGS:                                  # the dot's four arms
-            if d not in mark:
-                continue
-            rr, cc = r + d[0], c + d[1]
-            if not (0 <= rr < hi and 0 <= cc < wi):
-                continue                                 # arm falls off the canvas
-            col = mark[d]
-            if G[rr, cc] != col:
+        # draw this dot's X ...
+        for (dr, dc), col in marks:
+            rr, cc = r + dr, c + dc
+            if 0 <= rr < hi and 0 <= cc < wi:
                 ops.append(int(col))
-                sels.append([rr, cc, 0, 0])
-                G[rr, cc] = col
-        if G[r, c] != bgc:                               # the dot itself is consumed
-            ops.append(int(bgc))
-            sels.append([r, c, 0, 0])
-            G[r, c] = bgc
+                sels.append(sel_of([(rr, cc)]))
+        # ... then remove the dot that generated it
+        ops.append(int(bgc))
+        sels.append(sel_of([(r, c)]))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -162,7 +151,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

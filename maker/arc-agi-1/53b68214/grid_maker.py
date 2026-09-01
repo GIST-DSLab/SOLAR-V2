@@ -33,168 +33,228 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
+import random
 from collections import Counter
 
+import numpy as np
 
+from maker.sel_helpers import sel_of
+
+# The rule of this task: the input shows the top rows of a motif that repeats
+# down the grid with a constant (dr, dc) step; the answer canvas is always 10
+# rows tall and as wide as the input.
+H_OUT = 10
+
+VARIANTS = [{"mirror": False}, {"mirror": True}]
+
+
+# --------------------------------------------------------------------------- #
+# episode-level colors / structural plan
+# --------------------------------------------------------------------------- #
 def sample_colors(num_examples=None) -> dict:
-    # Rule = "extend the repeating object downward to 10 rows".
-    # It depends only on the object's pattern/period, not on which colors it uses,
-    # so only the background needs to be fixed episode-wide.
-    bgc = choice(interval(0, 10, 1))
-    return {"bgc": bgc}
+    bgc = random.choice(range(10))
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(examples)
+    else:
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
+    return {"bgc": bgc, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
-    cols = interval(0, 10, 1)
-    hub = max(2, min(6, max_h))
-    wub = max(8, min(30, max_w))
-    while True:
-        h = unifint(diff_lb, diff_ub, (2, hub))
-        w = unifint(diff_lb, diff_ub, (8, wub))
-        remcols = remove(bgc, cols)
-        ncols = unifint(diff_lb, diff_ub, (1, 9))
-        ccols = sample(remcols, ncols)
-        oh = unifint(diff_lb, diff_ub, (1, h // 2))
-        ow = unifint(diff_lb, diff_ub, (1, w // 2 - 1))
-        bounds = asindices(canvas(-1, (oh, ow)))
-        ncells = unifint(diff_lb, diff_ub, (1, oh * ow))
-        obj = sample(totuple(bounds), ncells)
-        obj = {(choice(ccols), ij) for ij in obj}
-        obj = normalize(obj)
-        oh, ow = shape(obj)
-        locj = randint(0, w // 2)
-        plcd = shift(obj, (0, locj))
-        go = canvas(bgc, (10, w))
-        hoffs = randint(0, ow // 2 + 1)
-        for k in range(10 // oh + 1):
-            go = paint(go, shift(plcd, (k * oh, k * hoffs)))
-        if len(palette(go[h:])) > 1:
+# --------------------------------------------------------------------------- #
+# helpers shared by generate() (self-validation) and derive_operations()
+# --------------------------------------------------------------------------- #
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        b = a
+    ilb = int(round(a + (b - a) * diff_lb))
+    iub = int(round(a + (b - a) * diff_ub))
+    if iub < ilb:
+        ilb, iub = iub, ilb
+    ilb = max(a, min(b, ilb))
+    iub = max(a, min(b, iub))
+    return random.randint(ilb, iub)
+
+
+def _bg_color(I):
+    return int(Counter(np.asarray(I, dtype=int).flatten().tolist()).most_common(1)[0][0])
+
+
+def _fg_cells(I, bgc):
+    I = np.asarray(I, dtype=int)
+    h, w = I.shape
+    return {(r, c): int(I[r, c]) for r in range(h) for c in range(w) if int(I[r, c]) != bgc}
+
+
+def _detect_step(cells):
+    """Periodicity vector of the motif, measured on the INPUT only.
+
+    Same criterion as the task rule: among all shifts (di, dj) whose overlap
+    with the pattern is colour-consistent and non-empty, take the one with the
+    biggest overlap (tie-break on di*dj, then di, then dj)."""
+    best = None
+    for di in range(1, 6):
+        for dj in range(-10, 10):
+            ov = 0
+            ok = True
+            for (r, c), col in cells.items():
+                t = (r + di, c + dj)
+                if t in cells:
+                    ov += 1
+                    if cells[t] != col:
+                        ok = False
+                        break
+            if ok and ov > 0:
+                key = (ov, di * dj, di, dj)
+                if best is None or key > best:
+                    best = key
+    if best is None:
+        return None
+    return best[2], best[3]
+
+
+def _plan(I):
+    """(bgc, dr, dc, motif band, h, w) — everything measured from I."""
+    I = np.asarray(I, dtype=int)
+    h, w = I.shape
+    bgc = _bg_color(I)
+    cells = _fg_cells(I, bgc)
+    if not cells:
+        return None
+    step = _detect_step(cells)
+    if step is None:
+        return None
+    dr, dc = step
+    if dr >= h:
+        return None
+    band0 = {(r, c): col for (r, c), col in cells.items() if r < dr}
+    if not band0:
+        return None
+    return bgc, dr, dc, band0, h, w
+
+
+def _band_cells(band0, dr, dc, k, h, w):
+    """The k-th repetition of the motif, restricted to the newly added rows."""
+    out = {}
+    for (r, c), col in band0.items():
+        rr, cc = r + k * dr, c + k * dc
+        if h <= rr < H_OUT and 0 <= cc < w:
+            out[(rr, cc)] = col
+    return out
+
+
+def _render(I):
+    p = _plan(I)
+    if p is None:
+        return None
+    bgc, dr, dc, band0, h, w = p
+    out = np.full((H_OUT, w), bgc, dtype=int)
+    out[:h] = np.asarray(I, dtype=int)
+    for k in range(1, H_OUT):
+        if k * dr >= H_OUT:
             break
-    gi = go[:h]
-    if choice((True, False)):
-        gi = vmirror(gi)
-        go = vmirror(go)
-    return {'input': gi, 'output': go}
+        for (rr, cc), col in _band_cells(band0, dr, dc, k, h, w).items():
+            out[rr, cc] = col
+    return out
 
 
+# --------------------------------------------------------------------------- #
+# generator
+# --------------------------------------------------------------------------- #
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, mirror=None) -> dict:
+    if mirror is None:
+        mirror = random.choice([True, False])
+    remcols = [c for c in range(10) if c != bgc]
+    w_ub = max(8, min(30, int(max_w)))
+    h_ub = max(2, min(6, int(max_h)))
+
+    while True:
+        h = _unifint(diff_lb, diff_ub, (2, h_ub))
+        w = _unifint(diff_lb, diff_ub, (8, w_ub))
+        ncols = _unifint(diff_lb, diff_ub, (1, 9))
+        ccols = random.sample(remcols, ncols)
+        oh = _unifint(diff_lb, diff_ub, (1, max(1, h // 2)))
+        ow = _unifint(diff_lb, diff_ub, (1, max(1, w // 2 - 1)))
+        bounds = [(i, j) for i in range(oh) for j in range(ow)]
+        ncells = _unifint(diff_lb, diff_ub, (1, oh * ow))
+        picked = random.sample(bounds, ncells)
+        obj = {ij: random.choice(ccols) for ij in picked}
+        mi = min(i for i, j in obj)
+        mj = min(j for i, j in obj)
+        obj = {(i - mi, j - mj): c for (i, j), c in obj.items()}
+        oh = max(i for i, j in obj) + 1
+        ow = max(j for i, j in obj) + 1
+
+        locj = random.randint(0, w // 2)
+        hoffs = random.randint(0, ow // 2 + 1)
+        go = [[bgc] * w for _ in range(H_OUT)]
+        for k in range(H_OUT // oh + 1):
+            for (i, j), col in obj.items():
+                r = i + k * oh
+                c = j + locj + k * hoffs
+                if 0 <= r < H_OUT and 0 <= c < w:
+                    go[r][c] = col
+
+        if len(set(v for row in go[h:] for v in row)) < 2:
+            continue
+
+        gi = [row[:] for row in go[:h]]
+        if mirror:
+            gi = [row[::-1] for row in gi]
+            go = [row[::-1] for row in go]
+
+        # keep only instances whose continuation is unambiguously readable
+        # from the input alone
+        pred = _render(gi)
+        if pred is None or not np.array_equal(pred, np.asarray(go, dtype=int)):
+            continue
+
+        return {"input": gi, "output": go}
+
+
+# --------------------------------------------------------------------------- #
+# trajectory
+# --------------------------------------------------------------------------- #
 def derive_operations(I, O):
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    ho, wo = O.shape
+    h, w = I.shape
 
-    # Background = the color the generator paints the canvas with before placing objects.
-    # The object stays strictly under half the width, so bgc is the strict majority in I.
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    # --- Measure the repetition of the object from I ---------------------------
-    # I is the top rows of a strip in which one object is stamped repeatedly with a
-    # constant step (dr, dc). I always contains at least two full periods, so the
-    # step is measurable from I alone.
-    def build(dr, dc):
-        unit = [(r, c, int(I[r, c]))
-                for r in range(min(dr, hi)) for c in range(wi) if I[r, c] != bgc]
-        G = np.full((ho, wo), bgc, dtype=int)
-        copies = []
-        k = 0
-        while k * dr < ho:
-            cells = []
-            for (ur, uc, v) in unit:
-                r, c = ur + k * dr, uc + k * dc
-                if 0 <= r < ho and 0 <= c < wo:
-                    G[r, c] = v
-                    cells.append((r, c, v))
-            copies.append(cells)
-            k += 1
-        ubb = None
-        if unit:
-            ubb = (min(u[0] for u in unit), max(u[0] for u in unit),
-                   min(u[1] for u in unit), max(u[1] for u in unit))
-        return G, copies, unit, ubb
-
-    cands = sorted((dr, abs(dc), dc) for dr in range(1, hi) for dc in range(-(wi - 1), wi))
-    found = None
-    for dr, _, dc in cands:
-        ok = True
-        for r in range(hi - dr):
-            for c in range(wi):
-                cc = c + dc
-                if 0 <= cc < wi and I[r + dr, cc] != I[r, c]:
-                    ok = False
-                    break
-            if not ok:
-                break
-        if not ok:
-            continue
-        G, copies, unit, ubb = build(dr, dc)
-        if unit and np.array_equal(G, O):
-            found = (dr, dc, copies, unit, ubb)
-            break
+    bgc, dr, dc, band0, _, _ = _plan(I)
 
     ops, sels = [], []
 
-    # 1. Grow the canvas from h rows to 10 rows (the input keeps rows 0..hi-1).
+    # 1. grow the canvas to the rule's 10 rows (full rectangle -> bbox is exact)
     ops.append(33)
-    sels.append([0, 0, ho - 1, wo - 1])
-    # 2. The grown area arrives as zeros; make it background (skip when bgc is already 0).
-    if bgc != 0 and ho > hi:
+    sels.append([0, 0, H_OUT - 1, w - 1])
+
+    # 2. lay the background over the newly added rows (full rectangle)
+    if bgc != 0 and h < H_OUT:
         ops.append(int(bgc))
-        sels.append([hi, 0, ho - 1 - hi, wo - 1])
+        sels.append([h, 0, H_OUT - 1 - h, w - 1])
 
-    def paint_copy_cells(cells):
-        new = sorted([(r, c, v) for (r, c, v) in cells if r >= hi])
-        i = 0
-        while i < len(new):
-            r, c, v = new[i]
-            j = i + 1
-            while (j < len(new) and new[j][0] == r
-                   and new[j][1] == new[j - 1][1] + 1 and new[j][2] == v):
-                j += 1
-            ops.append(int(v))
-            sels.append([r, c, 0, new[j - 1][1] - c])
-            i = j
-
-    if found is None:
-        # Defensive fallback: stamp the below-input region region-by-region.
-        rows = [[(r, c, int(O[r, c])) for c in range(wo) if O[r, c] != bgc]
-                for r in range(hi, ho)]
-        for cells in rows:
-            paint_copy_cells(cells)
-    else:
-        dr, dc, copies, unit, ubb = found
-        ur0, ur1, uc0, uc1 = ubb
-        fg_cols = set(I.flatten().tolist()) - {bgc}
-        zero_is_fg = 0 in fg_cols
-
-        if not zero_is_fg:
-            # 3. Each further stamp is the first stamp translated by k*(dr, dc):
-            #    copy it out of the input once and paste it at each new position.
-            last_rect = None
-            for k in range(1, len(copies)):
-                sr0 = max(ur0, hi - k * dr)
-                sr1 = min(ur1, ho - 1 - k * dr)
-                sc0 = max(uc0, -k * dc)
-                sc1 = min(uc1, wo - 1 - k * dc)
-                if sr0 > sr1 or sc0 > sc1:
-                    continue
-                if not any(sr0 <= ur <= sr1 and sc0 <= uc <= sc1 for (ur, uc, _) in unit):
-                    continue
-                rect = (sr0, sc0, sr1, sc1)
-                if rect != last_rect:
-                    ops.append(28)
-                    sels.append([sr0, sc0, sr1 - sr0, sc1 - sc0])
-                    last_rect = rect
-                ops.append(30)
-                sels.append([sr0 + k * dr, sc0 + k * dc, 0, 0])
-        else:
-            # 0 is object content here, so Copy/Paste would drop it:
-            # stamp each further copy explicitly, one whole copy at a time.
-            for k in range(1, len(copies)):
-                paint_copy_cells(copies[k])
+    # 3. continue the repetition: one copy of the motif per step, drawn colour
+    #    by colour, in the order the copies march down the grid
+    for k in range(1, H_OUT):
+        if k * dr >= H_OUT:
+            break
+        cells = _band_cells(band0, dr, dc, k, h, w)
+        if not cells:
+            continue
+        bycol = {}
+        for rc, col in cells.items():
+            bycol.setdefault(col, []).append(rc)
+        for col in bycol:
+            bycol[col].sort()
+        for col in sorted(bycol, key=lambda cc: bycol[cc][0]):
+            ops.append(int(col))
+            sels.append(sel_of(bycol[col]))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, H_OUT - 1, w - 1])
     return ops, sels
 
 
@@ -238,7 +298,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

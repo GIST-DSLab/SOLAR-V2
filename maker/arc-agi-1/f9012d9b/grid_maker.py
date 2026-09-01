@@ -38,269 +38,237 @@ import numpy as np
 
 
 def sample_colors(num_examples=None) -> dict:
-    # The generator draws a palette `ccols` at random and paints every tile cell
-    # with a random member of it.  That palette is the only randomly sampled
-    # colour material, so it is fixed once per episode.  0 is hard-coded (it is
-    # the colour of the punched-out gap) and is therefore NOT sampled here.
-    nc = random.randint(2, 9)
-    ccols = random.sample(range(1, 10), nc)
+    # The rule (periodic-pattern inpainting + crop) does not depend on which
+    # colours the wallpaper uses, only on its periodicity. Still, fix the
+    # palette once per episode so every instance shares a colour scheme.
+    # 0 is hardcoded in the task as the "blanked out" marker, so it is not sampled.
+    nc = random.randint(1, 9)
+    ccols = random.sample(list(range(1, 10)), nc)
     return {"ccols": ccols}
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, ccols=None, **kwargs) -> dict:
-    """Periodic wallpaper with a rectangular gap punched out; output = the gap's
-    hidden content.  The hard-coded 30 bounds are replaced by max_h / max_w.
-
-    Extra constraint w.r.t. the original generator: the gap is re-drawn until the
-    missing content can actually be carried into place by reflections of bands
-    whose sources lie outside the gap (checked by calling derive_operations).
-    This only rejects gaps so large / badly placed that no intact periodic twin
-    of them exists anywhere in the grid."""
+    if ccols is None:
+        ccols = random.sample(list(range(1, 10)), random.randint(1, 9))
 
     def unifint(lb, ub, bounds):
         a, b = bounds
-        b = max(a, b)
-        lo = min(max(a, a + int((b - a) * lb)), b)
-        hi = min(max(a, a + int((b - a) * ub)), b)
-        if hi < lo:
-            lo, hi = hi, lo
-        return random.randint(lo, hi)
+        return random.randint(int(a + (b - a) * lb), int(a + (b - a) * ub))
 
-    def dihedral(a, t):
-        if t == 0:
-            return a
-        if t == 1:
-            return np.rot90(a, 1)
-        if t == 2:
-            return np.rot90(a, 2)
-        if t == 3:
-            return np.rot90(a, 3)
-        if t == 4:
-            return np.fliplr(a)
-        if t == 5:
-            return np.flipud(a)
-        if t == 6:
-            return a.T
-        return np.rot90(a.T, 2)
+    def dmirror(g):
+        return [list(r) for r in zip(*g)]
 
-    if not ccols:
-        ccols = random.sample(range(1, 10), random.randint(2, 9))
-    ccols = list(ccols)
+    def vmirror(g):
+        return [list(r)[::-1] for r in g]
 
-    last = None
-    for _outer in range(60):
-        hp = unifint(diff_lb, diff_ub, (2, max(2, min(10, max_h // 3))))
-        wp = unifint(diff_lb, diff_ub, (2, max(2, min(10, max_w // 3))))
-        tile = [[random.choice(ccols) for _ in range(wp)] for _ in range(hp)]
-        numhp = unifint(diff_lb, diff_ub, (3, max(3, max_h // hp)))
-        numwp = unifint(diff_lb, diff_ub, (3, max(3, max_w // wp)))
-        H, W = numhp * hp, numwp * wp
-        full = np.array([[tile[r % hp][c % wp] for c in range(W)] for r in range(H)],
-                        dtype=int)
-        full = full[:H - random.randint(0, hp), :W - random.randint(0, wp)]
-        h, w = full.shape
-        if h - hp - 1 < 1 or w - wp - 1 < 1:
-            continue
+    def hmirror(g):
+        return [list(r) for r in g[::-1]]
 
-        for _inner in range(80):
-            sgh = unifint(diff_lb, diff_ub, (1, h - hp - 1))
-            sgw = unifint(diff_lb, diff_ub, (1, w - wp - 1))
-            loci = random.randint(0, h - sgh)
-            locj = random.randint(0, w - sgw)
-            go = full[loci:loci + sgh, locj:locj + sgw].copy()
-            gi = full.copy()
-            gi[loci:loci + sgh, locj:locj + sgw] = 0
-            last = (gi, go, h, w)
-            try:
-                ops, _sels = derive_operations(gi, go)
-            except Exception:
-                continue
-            if 26 in ops or 27 in ops:
-                last = (gi, go, h, w)
+    def rot180(g):
+        return vmirror(hmirror(g))
+
+    def rot90(g):      # CW
+        return dmirror(hmirror(g))
+
+    def rot270(g):     # CCW
+        return hmirror(dmirror(g))
+
+    def cmirror(g):
+        return dmirror(rot180(g))
+
+    MFS = [(lambda g: [list(r) for r in g], False), (rot90, True),
+           (rot180, False), (rot270, True), (dmirror, True),
+           (vmirror, False), (hmirror, False), (cmirror, True)]
+
+    mxh = min(int(max_h), 30)
+    mxw = min(int(max_w), 30)
+
+    def periods(g):
+        h = len(g)
+        w = len(g[0])
+        pv = h
+        for p in range(1, h):
+            ok = True
+            for r in range(h - p):
+                rowa, rowb = g[r], g[r + p]
+                for c in range(w):
+                    if rowa[c] != 0 and rowb[c] != 0 and rowa[c] != rowb[c]:
+                        ok = False
+                        break
+                if not ok:
+                    break
+            if ok:
+                pv = p
                 break
-        else:
-            continue
-        break
+        ph = w
+        for p in range(1, w):
+            ok = True
+            for row in g:
+                for c in range(w - p):
+                    if row[c] != 0 and row[c + p] != 0 and row[c] != row[c + p]:
+                        ok = False
+                        break
+                if not ok:
+                    break
+            if ok:
+                ph = p
+                break
+        return pv, ph
 
-    gi, go, h, w = last
-    ts = [0, 2, 4, 5]
-    if w <= max_h and h <= max_w:
-        ts += [1, 3, 6, 7]
-    t = random.choice(ts)
-    gi, go = dihedral(gi, t), dihedral(go, t)
-    return {
-        "input": tuple(tuple(int(v) for v in row) for row in gi),
-        "output": tuple(tuple(int(v) for v in row) for row in go),
-    }
+    def reconstruct(g):
+        """Fill the blanked rectangle of g with period-shifted patches of g; return the patch."""
+        h, w = len(g), len(g[0])
+        zs = [(r, c) for r in range(h) for c in range(w) if g[r][c] == 0]
+        if not zs:
+            return None
+        r0 = min(z[0] for z in zs)
+        r1 = max(z[0] for z in zs)
+        c0 = min(z[1] for z in zs)
+        c1 = max(z[1] for z in zs)
+        pv, ph = periods(g)
+        work = [list(row) for row in g]
+        remaining = {(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)}
+        drs = [k * pv for k in range(-(h // pv + 1), h // pv + 2)]
+        dcs = [m * ph for m in range(-(w // ph + 1), w // ph + 2)]
+        while remaining:
+            best = None
+            for dr in drs:
+                for dc in dcs:
+                    if dr == 0 and dc == 0:
+                        continue
+                    sr0, sr1 = max(0, r0 - dr), min(h - 1, r1 - dr)
+                    sc0, sc1 = max(0, c0 - dc), min(w - 1, c1 - dc)
+                    if sr0 > sr1 or sc0 > sc1:
+                        continue
+                    gain = [(r, c) for (r, c) in remaining
+                            if sr0 <= r - dr <= sr1 and sc0 <= c - dc <= sc1
+                            and g[r - dr][c - dc] != 0]
+                    if not gain:
+                        continue
+                    key = (-len(gain), abs(dr) + abs(dc), abs(dr), abs(dc))
+                    if best is None or key < best[0]:
+                        best = (key, dr, dc, gain)
+            if best is None:
+                return None
+            _, dr, dc, gain = best
+            for (r, c) in gain:
+                work[r][c] = g[r - dr][c - dc]
+            remaining -= set(gain)
+        return [row[c0:c1 + 1] for row in work[r0:r1 + 1]]
+
+    for _ in range(200):
+        mf, transposes = random.choice(MFS)
+        # the final mirror/rotation may swap the axes: build within the budget
+        # that ends up on each axis after it is applied
+        bh, bw = (mxw, mxh) if transposes else (mxh, mxw)
+        hp = unifint(diff_lb, diff_ub, (2, max(2, min(10, bh // 3))))
+        wp = unifint(diff_lb, diff_ub, (2, max(2, min(10, bw // 3))))
+        pat = [[random.choice(ccols) for _ in range(wp)] for _ in range(hp)]
+        numhp = unifint(diff_lb, diff_ub, (3, max(3, bh // hp)))
+        numwp = unifint(diff_lb, diff_ub, (3, max(3, bw // wp)))
+        gi = [[pat[r % hp][c % wp] for c in range(wp * numwp)]
+              for r in range(hp * numhp)]
+        hcropfac = random.randint(0, hp)
+        if hcropfac:
+            gi = gi[:len(gi) - hcropfac]
+        wcropfac = random.randint(0, wp)
+        if wcropfac:
+            gi = [row[:len(row) - wcropfac] for row in gi]
+        h, w = len(gi), len(gi[0])
+        if h > bh or w > bw or h - hp - 1 < 1 or w - wp - 1 < 1:
+            continue
+        sgh = unifint(diff_lb, diff_ub, (1, h - hp - 1))
+        sgw = unifint(diff_lb, diff_ub, (1, w - wp - 1))
+        loci = min(random.randint(0, h - sgh), h - sgh)
+        locj = min(random.randint(0, w - sgw), w - sgw)
+        go = [row[locj:locj + sgw] for row in gi[loci:loci + sgh]]
+        for r in range(loci, loci + sgh):
+            for c in range(locj, locj + sgw):
+                gi[r][c] = 0
+        gi = [list(r) for r in mf(gi)]
+        go = [list(r) for r in mf(go)]
+        # keep only instances whose hidden patch is actually recoverable from
+        # the visible pattern alone
+        if reconstruct(gi) != go:
+            continue
+        return {"input": gi, "output": go}
+    raise RuntimeError("generation failed")
 
 
 def derive_operations(I, O):
-    """The grid is a wallpaper: it repeats with period ph down and pw across.
-    A rectangular gap was punched out of it; the answer is what belonged there.
-
-    The missing block has an exact twin one whole period away.  A twin is carried
-    onto the gap by REFLECTION: reflecting the band running from the gap to its
-    twin swaps the two (equal size, sitting at the two ends of the band), and a
-    second reflection of the freshly filled block undoes the mirror the first one
-    imposed -- two parallel reflections compose into exactly the one-period
-    translation the wallpaper is built from.  Whatever lies strictly between gap
-    and twin is reversed by the band reflection and is put back by reflecting
-    that interior in place.  When one twin cannot cover the whole gap, the gap is
-    filled band by band the same way.  Finally the completed gap rectangle is
-    cropped out: that is the answer.
-
-    Every selection is a FULL RECTANGLE -- a band / block that is reflected or
-    cropped in its entirety, background included -- so the [r, c, h-1, w-1] bbox
-    form is exactly the set of cells intended.
-    """
+    # Rule: the input is a wallpaper tiling with one rectangle blanked to 0.
+    # Restore that rectangle from period-shifted copies of the visible pattern,
+    # then crop to it. Everything below is measured from I only; O is never read.
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    h, w = I.shape
-    ho, wo = O.shape
+    hi, wi = I.shape
+    nz = I != 0
 
-    zr, zc = np.where(I == 0)
-    R0, R1 = int(zr.min()), int(zr.max())
-    C0, C1 = int(zc.min()), int(zc.max())
+    # --- the occluded rectangle: the only 0 cells in the input ---
+    zs = np.argwhere(I == 0)
+    r0, c0 = int(zs[:, 0].min()), int(zs[:, 1].min())
+    r1, c1 = int(zs[:, 0].max()), int(zs[:, 1].max())
+    hh, hw = r1 - r0 + 1, c1 - c0 + 1
 
-    def period(M, axis):
-        # smallest shift along `axis` under which every pair of visible cells agrees
-        n = M.shape[axis]
+    # --- periods of the wallpaper, measured on the visible cells of I ---
+    def period(axis):
+        n = hi if axis == 0 else wi
         for p in range(1, n):
-            if axis == 1:
-                A, B = M[:, :n - p], M[:, p:]
+            if axis == 0:
+                a, b = I[:n - p, :], I[p:, :]
+                m = nz[:n - p, :] & nz[p:, :]
             else:
-                A, B = M[:n - p, :], M[p:, :]
-            m = (A != 0) & (B != 0)
-            if m.any() and bool(np.all(A[m] == B[m])):
+                a, b = I[:, :n - p], I[:, p:]
+                m = nz[:, :n - p] & nz[:, p:]
+            if bool(np.all(a[m] == b[m])):
                 return p
-        return None
+        return n
 
-    def plan(M, a0, a1, b0, b1, per):
-        """Fill rows a0..a1 (cols b0..b1) of M by reflections; `per` = row period.
-        Returns (list of rectangles (row, nrows) to FlipV, resulting grid)."""
-        if not per:
-            return None
-        G = M.copy()
-        nr_all = G.shape[0]
-        rects = []
-        segs = [(a0, a1)]
-        for _round in range(16):
-            if not segs:
-                break
-            pick = None
-            for si in range(len(segs)):
-                a, b = segs[si]
-                cands = [(a, t1) for t1 in range(b, a - 1, -1)]
-                cands += [(t0, b) for t0 in range(a + 1, b + 1)]
-                for (t0, t1) in cands:
-                    n = t1 - t0 + 1
-                    for k in range(1, nr_all // per + 2):
-                        e = k * per
-                        for s in (1, -1):
-                            s0, s1 = t0 + s * e, t1 + s * e
-                            if s0 < 0 or s1 >= nr_all:
-                                continue
-                            if not (s1 < a0 or s0 > a1):
-                                continue                     # twin must sit outside the gap
-                            if (G[s0:s1 + 1, b0:b1 + 1] == 0).any():
-                                continue                     # twin must be intact right now
-                            lo, hi = min(t0, s0), max(t1, s1)
-                            m0, m1 = lo + n, hi - n          # band interior
-                            if m1 >= m0 and (G[m0:m1 + 1, b0:b1 + 1] == 0).any():
-                                continue                     # interior must be intact to be restorable
-                            pick = (si, t0, t1, n, lo, hi, m0, m1)
-                            break
-                        if pick:
-                            break
-                    if pick:
-                        break
-                if pick:
-                    break
-            if pick is None:
-                return None
-            si, t0, t1, n, lo, hi, m0, m1 = pick
-            todo = [(lo, hi - lo + 1)]                       # 1. reflect the band: twin lands on the gap
-            if n > 1:
-                todo.append((t0, n))                         # 2. un-mirror the block just filled
-            if m1 > m0:
-                todo.append((m0, m1 - m0 + 1))               # 3. put the band's interior back
-            for (r, nr) in todo:
-                sub = G[r:r + nr, b0:b1 + 1]
-                new = np.flipud(sub)
-                if not np.array_equal(sub, new):             # skip anything that would change nothing
-                    G[r:r + nr, b0:b1 + 1] = new
-                    rects.append((r, nr))
-            a, b = segs[si]
-            nxt = []
-            if a <= t0 - 1:
-                nxt.append((a, t0 - 1))
-            if t1 + 1 <= b:
-                nxt.append((t1 + 1, b))
-            segs = segs[:si] + nxt + segs[si + 1:]
-        if segs:
-            return None
-        return rects, G
-
-    ph, pw = period(I, 0), period(I, 1)
-
-    best = None
-    pv = plan(I, R0, R1, C0, C1, ph)
-    if pv is not None and np.array_equal(pv[1][R0:R1 + 1, C0:C1 + 1], O):
-        best = ('v', pv[0])
-    phz = plan(I.T, C0, C1, R0, R1, pw)                      # same planner, transposed view
-    if phz is not None and np.array_equal(phz[1].T[R0:R1 + 1, C0:C1 + 1], O):
-        if best is None or len(phz[0]) < len(best[1]):
-            best = ('h', phz[0])
+    pv = period(0)
+    ph = period(1)
 
     ops, sels = [], []
-    if best is not None:
-        mode, rects = best
-        for (r, nr) in rects:
-            if mode == 'v':
-                # whole band, rows r..r+nr-1 across the gap's columns
-                ops.append(27)
-                sels.append([r, C0, nr - 1, C1 - C0])
-            else:
-                # whole band, cols r..r+nr-1 across the gap's rows
-                ops.append(26)
-                sels.append([R0, r, R1 - R0, nr - 1])
-    else:
-        # No twin can be reflected in (gap too large / cornered): grow the
-        # wallpaper into the gap one period at a time with transparent pastes.
-        G = I.copy()
-        sph, spw = ph or 1, pw or 1
-        steps = [(0, spw), (0, -spw), (sph, 0), (-sph, 0)]
-        for _ in range(80):
-            if not (G == 0).any():
-                break
-            moved = False
-            for dr, dc in steps:
-                if not (G == 0).any():
-                    break
-                sr0, sr1 = max(0, -dr), h - 1 - max(0, dr)
-                sc0, sc1 = max(0, -dc), w - 1 - max(0, dc)
-                if sr1 < sr0 or sc1 < sc0:
-                    continue
-                src = G[sr0:sr1 + 1, sc0:sc1 + 1]
-                dr0, dc0 = sr0 + dr, sc0 + dc
-                new = G.copy()
-                reg = new[dr0:dr0 + src.shape[0], dc0:dc0 + src.shape[1]]
-                m = src != 0
-                reg[m] = src[m]
-                if np.array_equal(new, G):
-                    continue
-                ops += [29, 30]
-                sels += [[sr0, sc0, sr1 - sr0, sc1 - sc0], [dr0, dc0, 0, 0]]
-                G = new
-                moved = True
-            if not moved:
-                break
 
-    # crop to the rectangle the gap occupied -- it now holds the recovered pattern
+    # --- fill the hole with patches of pattern taken a whole number of periods
+    #     away, greedily, until no blank cell of the hole is left ---
+    remaining = {(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)}
+    drs = [k * pv for k in range(-(hi // pv + 1), hi // pv + 2)]
+    dcs = [m * ph for m in range(-(wi // ph + 1), wi // ph + 2)]
+    while remaining:
+        best = None
+        for dr in drs:
+            for dc in dcs:
+                if dr == 0 and dc == 0:
+                    continue
+                sr0, sr1 = max(0, r0 - dr), min(hi - 1, r1 - dr)
+                sc0, sc1 = max(0, c0 - dc), min(wi - 1, c1 - dc)
+                if sr0 > sr1 or sc0 > sc1:
+                    continue
+                gain = [(r, c) for (r, c) in remaining
+                        if sr0 <= r - dr <= sr1 and sc0 <= c - dc <= sc1
+                        and I[r - dr, c - dc] != 0]
+                if not gain:
+                    continue
+                key = (-len(gain), abs(dr) + abs(dc), abs(dr), abs(dc))
+                if best is None or key < best[0]:
+                    best = (key, dr, dc, gain, (sr0, sc0, sr1, sc1))
+        if best is None:
+            break
+        _, dr, dc, gain, (sr0, sc0, sr1, sc1) = best
+        # full rectangle: the patch of intact pattern one whole period away
+        ops.append(28)
+        sels.append([sr0, sc0, sr1 - sr0, sc1 - sc0])
+        # paste it onto the matching part of the hole (blank cells of the patch
+        # write nothing, so an occluded source leaves those cells for later)
+        ops.append(30)
+        sels.append([sr0 + dr, sc0 + dc, 0, 0])
+        remaining -= set(gain)
+
+    # --- the answer is the restored rectangle ---
+    # full rectangle: exactly the occluded region
     ops.append(33)
-    sels.append([R0, C0, R1 - R0, C1 - C0])
+    sels.append([r0, c0, hh - 1, hw - 1])
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, hh - 1, hw - 1])
     return ops, sels
 
 

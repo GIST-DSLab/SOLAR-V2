@@ -33,72 +33,113 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+import numpy as np
+
+
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        b = a
+    lo = a + int((b - a) * diff_lb)
+    hi = a + int((b - a) * diff_ub)
+    lo = max(a, min(lo, b))
+    hi = max(lo, min(hi, b))
+    return random.randint(lo, hi)
+
+
 def sample_colors(num_examples=None) -> dict:
+    # Only the canvas/background colour matters for the rule; the object colours
+    # are arbitrary and simply carried through the downscale/upscale.
     cols = list(range(10))
-    bgc = choice(cols)
+    bgc = random.choice(cols)
     return {"bgc": bgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
-    cols = interval(0, 10, 1)
+def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
+    cols = list(range(10))
+    remcols = [c for c in cols if c != bgc]
+
+    # output is 4h x 4w, input is 2h x 2w  -> output is the binding constraint
     h_ub = max(2, min(7, max_h // 4))
     w_ub = max(2, min(7, max_w // 4))
-    h = unifint(diff_lb, diff_ub, (2, h_ub))
-    w = unifint(diff_lb, diff_ub, (2, w_ub))
-    nc = unifint(diff_lb, diff_ub, (0, (h * w) // 2 - 1))
-    remcols = remove(bgc, cols)
-    go = canvas(bgc, (h, w))
-    gi = canvas(bgc, (h * 2, w * 2))
-    inds = totuple(asindices(go))
-    locs = sample(inds, nc)
-    objo = frozenset({(choice(remcols), ij) for ij in locs})
-    f = lambda cij: (cij[0], double(cij[1]))
-    obji = shift(apply(f, objo), (1, 1))
-    gi = paint(gi, obji)
-    go = paint(go, objo)
-    go = upscale(go, 4)
-    return {'input': gi, 'output': go}
+    h = _unifint(diff_lb, diff_ub, (2, h_ub))
+    w = _unifint(diff_lb, diff_ub, (2, w_ub))
+    nc = _unifint(diff_lb, diff_ub, (0, max(0, (h * w) // 2 - 1)))
+
+    # small grid (h x w) holding the objects
+    small = [[bgc for _ in range(w)] for _ in range(h)]
+    inds = [(i, j) for i in range(h) for j in range(w)]
+    nc = min(nc, len(inds))
+    locs = random.sample(inds, nc)
+    for (i, j) in locs:
+        small[i][j] = random.choice(remcols)
+
+    # input: 2h x 2w canvas, object cell (i, j) drawn at (2i + 1, 2j + 1)
+    gi = [[bgc for _ in range(2 * w)] for _ in range(2 * h)]
+    for (i, j) in locs:
+        gi[2 * i + 1][2 * j + 1] = small[i][j]
+
+    # output: small grid upscaled by 4  -> 4h x 4w
+    go = [[bgc for _ in range(4 * w)] for _ in range(4 * h)]
+    for i in range(h):
+        for j in range(w):
+            v = small[i][j]
+            if v == bgc:
+                continue
+            for r in range(4):
+                for c in range(4):
+                    go[4 * i + r][4 * j + c] = v
+
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
-    import numpy as np
-    from collections import Counter
+    """
+    Rule (read from I only):
+      I is a 2h x 2w canvas of background colour; every object pixel sits at an
+      odd row and odd column, i.e. pixel (2i+1, 2j+1) is object cell (i, j) of an
+      h x w lattice.  The answer is that h x w lattice upscaled by 4 -> 4h x 4w,
+      so object cell (i, j) becomes the 4x4 block at rows 4i..4i+3, cols 4j..4j+3.
+    Everything below is measured from I; O is never inspected.
+    """
+    from maker.sel_helpers import sel_of
 
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
+    h, w = hi // 2, wi // 2
+    ho, wo = 4 * h, 4 * w
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-
-    # Rule read off I->O: every isolated non-bgc pixel of I at (r, c) reappears in O
-    # as a solid 4x4 block whose top-left is (2r-2, 2c-2); canvas doubles; nothing else survives.
-    pixels = [(r, c, int(I[r, c]))
-              for r in range(hi) for c in range(wi) if I[r, c] != bgc]
+    # the canvas colour: corner (0,0) is an even/even cell, always background
+    bgc = int(I[0, 0])
 
     ops, sels = [], []
 
-    # Canvas doubles to (2*hi, 2*wi).
+    # 1) grow the canvas to the upscaled size (full rectangle -> bbox selection)
     ops.append(33)
     sels.append([0, 0, ho - 1, wo - 1])
 
-    if bgc != 0:
-        # Resize left the new area at 0; the whole canvas must become background
-        # before the scaled blocks are placed on top.
-        ops.append(bgc)
-        sels.append([0, 0, ho - 1, wo - 1])
-    else:
-        # Zero padding already IS background; only the original pixels are stale.
-        for (r, c, _v) in pixels:
-            if O[r, c] != 0:
-                continue  # a block will overwrite this cell anyway
-            ops.append(0)
-            sels.append([r, c, 0, 0])
+    # state after the resize: I's non-zero cells still sit in the top-left,
+    # the newly added area is 0.
+    cur = np.zeros((ho, wo), dtype=int)
+    cur[:hi, :wi] = I
 
-    # Place each pixel's 4x4 block at its scaled position.
-    for (r, c, v) in pixels:
-        ops.append(v)
-        sels.append([2 * r - 2, 2 * c - 2, 3, 3])
+    # 2) lay the background base over the whole new canvas (clears the leftover
+    #    single pixels and paints the padding).  Skipped only when the canvas
+    #    already is entirely bgc, where the op would change nothing.
+    if bool(np.any(cur != bgc)):
+        ops.append(bgc)
+        sels.append(sel_of([(r, c) for r in range(ho) for c in range(wo)]))
+
+    # 3) draw each object as its own 4x4 block, lattice cell by lattice cell
+    for i in range(h):
+        for j in range(w):
+            v = int(I[2 * i + 1, 2 * j + 1])
+            if v == bgc:
+                continue
+            cells = [(4 * i + r, 4 * j + c) for r in range(4) for c in range(4)]
+            ops.append(v)
+            sels.append(sel_of(cells))
 
     ops.append(34)
     sels.append([0, 0, ho - 1, wo - 1])
@@ -145,7 +186,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

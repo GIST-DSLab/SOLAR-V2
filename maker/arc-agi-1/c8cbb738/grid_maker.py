@@ -34,45 +34,38 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-from collections import Counter
-
 import numpy as np
-
 from maker.sel_helpers import sel_of
 
 
+# ----------------------------------------------------------------------------
+# 1. episode-level colours
+#    The rule is colour independent (objects are identified structurally: the
+#    4-corner marker defines the frame, every other colour group is a piece of
+#    the ring).  Only the background and the corner/frame colour are fixed.
+# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    """Episode-level colors: background + ordered foreground palette.
-
-    palette[0] is the 'frame' colour (the 4 corner cells) — fixed across the whole
-    episode so the rule stays readable.  Colour 0 is kept out of the foreground
-    palette: ARCLE's object ops (Move) only grab NONZERO cells, so a 0-coloured
-    object could never be translated.
-    """
     cols = list(range(10))
     bgc = random.choice(cols)
-    palette = [c for c in cols if c != bgc and c != 0]
-    random.shuffle(palette)
-    return {"bgc": bgc, "palette": palette}
+    sc = random.choice([c for c in cols if c != bgc])
+    return {"bgc": bgc, "sc": sc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int = None, palette=None) -> dict:
-    if bgc is None:
-        bgc = random.choice(list(range(10)))
-    if palette is None:
-        palette = [c for c in range(10) if c != bgc and c != 0]
-        random.shuffle(palette)
-
+# ----------------------------------------------------------------------------
+# 2. generator (RE-ARC c8cbb738 with max_h / max_w bounds and injected colours)
+# ----------------------------------------------------------------------------
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, sc) -> dict:
+    cols = interval(0, 10, 1)
     gh_ub = max(3, min(10, max_h // 2))
     gw_ub = max(3, min(10, max_w // 2))
     gh = unifint(diff_lb, diff_ub, (3, gh_ub))
     gw = unifint(diff_lb, diff_ub, (3, gw_ub))
-    h = unifint(diff_lb, diff_ub, (min(gh * 2, max_h), max_h))
-    w = unifint(diff_lb, diff_ub, (min(gw * 2, max_w), max_w))
+    h = unifint(diff_lb, diff_ub, (gh * 2, max(gh * 2, max_h)))
+    w = unifint(diff_lb, diff_ub, (gw * 2, max(gw * 2, max_w)))
 
-    ncols = unifint(diff_lb, diff_ub, (1, min(9, len(palette))))
-    ccols = list(palette[:ncols])
+    remcols = remove(sc, remove(bgc, cols))
+    ncols = unifint(diff_lb, diff_ub, (0, 8))
+    ccols = list(sample(remcols, ncols)) if ncols > 0 else []
 
     gi = canvas(bgc, (h, w))
     go = canvas(bgc, (gh, gw))
@@ -81,12 +74,11 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     crns = corners(ring)
     remring = ring - crns
     nrr = len(remring)
-    sc = ccols[0]
+
     go = fill(go, sc, crns)
     loci = randint(0, h - gh)
     locj = randint(0, w - gw)
     gi = fill(gi, sc, shift(crns, (loci, locj)))
-    ccols = ccols[1:]
 
     bL = connect((0, 0), (gh - 1, 0))
     bR = connect((0, gw - 1), (gh - 1, gw - 1))
@@ -97,8 +89,8 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     for c in ccols:
         if len(remring) < 3:
             break
-        nc = unifint(diff_lb, diff_ub, (3, max(3, min(len(remring), nrr // len(ccols)))))
-        obj = set(sample(totuple(remring), nc))
+        nc = unifint(diff_lb, diff_ub, (3, max(3, min(len(remring), nrr // max(1, len(ccols))))))
+        obj = set(sample(totuple(remring), min(nc, len(remring))))
         flag = False
         for b1, b2 in validpairs:
             if len(obj & b1) > 0 and len(obj & b2) > 0:
@@ -120,178 +112,174 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     return {'input': gi, 'output': go}
 
 
+# ----------------------------------------------------------------------------
+# 3. derive_operations
+#
+#    Everything below is measured from I only:
+#      * bgc            = dominant colour of I
+#      * (gh, gw)       = max height / max width over the colour groups
+#      * frame origin   = bbox of the colour group that is exactly the 4 corners
+#                         of a gh x gw rectangle (the ring's corner marker)
+#      * each other colour group is a fragment of the ring: its normalized shape
+#        is placed at the offset inside the gh x gw frame that maximises the
+#        number of its cells lying on the frame's border (ties broken by the
+#        smaller manhattan distance of the shape's centre to the frame centre).
+#    The pieces are then physically slid (Move) into the frame, and the frame is
+#    cropped out.  O is never inspected.
+# ----------------------------------------------------------------------------
 def derive_operations(I, O):
-    """Every colour-object slides into the frame (the gh x gw rectangle marked by the
-    4 corner cells), then the canvas is cropped down to that frame."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
+
+    # --- background: dominant colour of the input canvas ---------------------
+    counts = {}
+    for v in I.reshape(-1).tolist():
+        counts[int(v)] = counts.get(int(v), 0) + 1
+    bgc = max(counts.items(), key=lambda kv: kv[1])[0]
+
+    # --- colour groups (fgpartition) -----------------------------------------
+    groups = {}
+    for r in range(hi):
+        for c in range(wi):
+            v = int(I[r, c])
+            if v != bgc:
+                groups.setdefault(v, []).append((r, c))
+
     ops, sels = [], []
+    if not groups:
+        ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
+        return ops, sels
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # --- frame size = maximal group height / width ---------------------------
+    gh = max(max(r for r, _ in cs) - min(r for r, _ in cs) + 1 for cs in groups.values())
+    gw = max(max(c for _, c in cs) - min(c for _, c in cs) + 1 for cs in groups.values())
 
-    def cells_of(G, col):
-        return [(int(r), int(c)) for r, c in zip(*np.where(G == col))]
-
-    def bbox(cells):
-        rs = [r for r, _ in cells]
-        cs = [c for _, c in cells]
-        return min(rs), min(cs), max(rs) - min(rs) + 1, max(cs) - min(cs) + 1
-
-    icols = [int(v) for v in np.unique(I) if int(v) != bgc]
-    iobj = {c: cells_of(I, c) for c in icols}
-
-    # ---- locate the frame: exactly 4 cells sitting on the corners of an ho x wo box
-    R0 = C0 = None
-    for col in icols:
-        cells = iobj[col]
-        if len(cells) != 4:
-            continue
-        r0, c0, hh, ww = bbox(cells)
-        if hh != ho or ww != wo:
-            continue
-        if set(cells) == {(r0, c0), (r0, c0 + ww - 1), (r0 + hh - 1, c0), (r0 + hh - 1, c0 + ww - 1)}:
-            R0, C0 = r0, c0
+    # --- the corner marker: 4 cells = exact corners of a gh x gw rectangle ----
+    frame_color, fr, fc = None, 0, 0
+    for col, cs in groups.items():
+        rs = [r for r, _ in cs]
+        cls = [c for _, c in cs]
+        r0, r1, c0, c1 = min(rs), max(rs), min(cls), max(cls)
+        if (r1 - r0 + 1) == gh and (c1 - c0 + 1) == gw and len(cs) == 4 and \
+           set(cs) == {(r0, c0), (r0, c1), (r1, c0), (r1, c1)}:
+            frame_color, fr, fc = col, r0, c0
             break
-    if R0 is None:
-        for col in icols:
-            cells = iobj[col]
-            r0, c0, hh, ww = bbox(cells)
-            if len(cells) == 4 and set(cells) == {(r0, c0), (r0, c0 + ww - 1),
-                                                  (r0 + hh - 1, c0), (r0 + hh - 1, c0 + ww - 1)}:
-                R0, C0 = r0, c0
-                break
-    if R0 is None:
-        R0, C0 = 0, 0
-    R0 = max(0, min(R0, hi - ho))
-    C0 = max(0, min(C0, wi - wo))
+    if frame_color is None:                      # defensive fallback
+        col = sorted(groups)[0]
+        cs = groups[col]
+        frame_color = col
+        fr, fc = min(r for r, _ in cs), min(c for _, c in cs)
 
-    def in_win(p):
-        return R0 <= p[0] < R0 + ho and C0 <= p[1] < C0 + wo
+    # --- border cells of the gh x gw frame, and its centre --------------------
+    border = set()
+    for j in range(gw):
+        border.add((0, j)); border.add((gh - 1, j))
+    for i in range(gh):
+        border.add((i, 0)); border.add((i, gw - 1))
+    ctr_r, ctr_c = gh // 2, gw // 2
+    weight = 2 * max(gh, gw)
 
-    # ---- where each colour has to end up (absolute coords inside the frame)
-    dest = {}
-    for col in icols:
-        ocells = cells_of(O, col)
-        if not ocells:
+    def placement(cells):
+        rs = [r for r, _ in cells]
+        cls = [c for _, c in cells]
+        r0, c0 = min(rs), min(cls)
+        norm = [(r - r0, c - c0) for r, c in cells]
+        oh = max(a for a, _ in norm) + 1
+        ow = max(b for _, b in norm) + 1
+        best, best_score = (0, 0), None
+        for i in range(gh):
+            for j in range(gw):
+                inter = 0
+                for a, b in norm:
+                    if (a + i, b + j) in border:
+                        inter += 1
+                dist = abs(i + oh // 2 - ctr_r) + abs(j + ow // 2 - ctr_c)
+                score = weight * inter - dist
+                if best_score is None or score > best_score:
+                    best_score, best = score, (i, j)
+        return best, norm, (r0, c0)
+
+    frame_rect = {(r, c) for r in range(fr, fr + gh) for c in range(fc, fc + gw)}
+
+    items = []
+    for col in sorted(groups):
+        if col == frame_color:
             continue
-        orr = min(r for r, _ in ocells)
-        occ = min(c for _, c in ocells)
-        dest[col] = (R0 + orr, C0 + occ)
+        cells = groups[col]
+        (i, j), norm, (r0, c0) = placement(cells)
+        dst = [(fr + i + a, fc + j + b) for a, b in norm]
+        if set(dst) == set(cells):
+            continue                                    # already in place
+        items.append({
+            "color": col,
+            "src": sorted(cells),
+            "dst": sorted(dst),
+            "d": (fr + i - r0, fc + j - c0),
+        })
 
-    grid = I.copy()
-    cur = {c: list(v) for c, v in iobj.items()}
-
-    # ---- colours that do not survive into the frame: clear the ones lying inside it
-    for col in icols:
-        if col in dest:
-            continue
-        rem = [p for p in cur[col] if in_win(p)]
-        if rem:
-            ops.append(int(bgc))
-            sels.append(sel_of(sorted(rem)))
-            for (r, c) in rem:
-                grid[r, c] = bgc
-            cur[col] = [p for p in cur[col] if not in_win(p)]
-
-    def delta(col):
-        r0 = min(r for r, _ in cur[col])
-        c0 = min(c for _, c in cur[col])
-        return dest[col][0] - r0, dest[col][1] - c0
-
-    def do_move(col, dr, dc):
-        if dr == 0 and dc == 0:
-            return
-        src = list(cur[col])
-        tgt = [(r + dr, c + dc) for r, c in src]
-        if col == 0:
-            # ARCLE's object ops only grab nonzero cells -> a 0-coloured object
-            # cannot be translated; paint it at its destination instead.
-            ops.append(0)
-            sels.append(sel_of(sorted(tgt)))
-        else:
-            seq = [21 if dr > 0 else 20] * abs(dr) + [22 if dc > 0 else 23] * abs(dc)
-            for k, op in enumerate(seq):
-                ops.append(op)
-                # first step GRABS the object; later steps keep the same grab (empty sel)
-                sels.append(sel_of(sorted(src)) if k == 0 else sel_of([]))
-        for (r, c) in src:
-            grid[r, c] = 0
-        for (r, c) in tgt:
-            grid[r, c] = col
-        cur[col] = tgt
-        # only the vacated footprint reads 0 (ARCLE restored the path); repair the part
-        # of it that lies inside the frame -- the rest is discarded by the final crop.
-        hole = sorted(p for p in (set(src) - set(tgt)) if in_win(p))
+    # ---------------- emission helpers ---------------------------------------
+    def emit_move(o):
+        dr, dc = o["d"]
+        cur = list(o["src"])
+        grabbed = False
+        for step in range(abs(dr)):
+            ops.append(20 if dr < 0 else 21)
+            sels.append(sel_of(cur) if not grabbed else sel_of([]))
+            grabbed = True
+            cur = [(r + (-1 if dr < 0 else 1), c) for r, c in cur]
+        for step in range(abs(dc)):
+            ops.append(23 if dc < 0 else 22)
+            sels.append(sel_of(cur) if not grabbed else sel_of([]))
+            grabbed = True
+            cur = [(r, c + (-1 if dc < 0 else 1)) for r, c in cur]
+        # the grab zeroed the source footprint: restore the frame's background
+        hole = sorted((set(o["src"]) - set(o["dst"])) & frame_rect)
         if bgc != 0 and hole:
-            ops.append(int(bgc))
-            sels.append(sel_of(hole))
-            for (r, c) in hole:
-                grid[r, c] = bgc
+            ops.append(bgc); sels.append(sel_of(hole))
 
-    def blocked(col):
-        dr, dc = delta(col)
-        src = set(cur[col])
-        return any(grid[r + dr, c + dc] != bgc and (r + dr, c + dc) not in src for r, c in src)
+    def emit_paint(o):
+        # colour 0 pieces cannot be carried by Move (the object buffer keeps
+        # only non-zero cells), so they are drawn at the destination instead
+        ops.append(o["color"]); sels.append(sel_of(o["dst"]))
+        rest = sorted((set(o["src"]) - set(o["dst"])) & frame_rect)
+        if rest:
+            ops.append(bgc); sels.append(sel_of(rest))
 
-    pending = [c for c in icols if c in dest and cur.get(c)]
-    guard = 0
-    while pending and guard < 200:
-        guard += 1
-        progressed = False
-        for col in list(pending):
-            dr, dc = delta(col)
-            if dr == 0 and dc == 0:
-                pending.remove(col)
-                progressed = True
-                continue
-            if not blocked(col):
-                do_move(col, dr, dc)
-                pending.remove(col)
-                progressed = True
-        if progressed or not pending:
-            continue
-        # rare deadlock: park a blocking object on free background outside the frame
-        tcol = pending[0]
-        dr, dc = delta(tcol)
-        src = set(cur[tcol])
-        blockers = []
-        for (r, c) in src:
-            p = (r + dr, c + dc)
-            v = int(grid[p[0], p[1]])
-            if v != bgc and p not in src and v in pending and v not in blockers:
-                blockers.append(v)
-        parked = False
-        for b in blockers:
-            bc = cur[b]
-            br, bcc, bh, bw = bbox(bc)
-            norm = [(r - br, c - bcc) for r, c in bc]
-            for rr in range(hi - bh + 1):
-                for cc in range(wi - bw + 1):
-                    if (rr, cc) == (br, bcc):
-                        continue
-                    cand = [(rr + a, cc + bb) for a, bb in norm]
-                    if any(in_win(p) for p in cand):
-                        continue
-                    if any(grid[p[0], p[1]] != bgc for p in cand):
-                        continue
-                    do_move(b, rr - br, cc - bcc)
-                    parked = True
-                    break
-                if parked:
-                    break
-            if parked:
+    # ---------------- order the pieces so none is overwritten -----------------
+    pending = list(items)
+    deferred = []
+    while pending:
+        chosen = None
+        for idx, o in enumerate(pending):
+            others = set()
+            for k, p in enumerate(pending):
+                if k != idx:
+                    others |= set(p["src"])
+            if not (set(o["dst"]) & others):
+                chosen = idx
                 break
-        if not parked:
-            do_move(tcol, dr, dc)
-            pending.remove(tcol)
+        if chosen is None:
+            # cyclic blockage: lift this piece out of the way first, draw later
+            o = pending.pop(0)
+            clear = sorted(set(o["src"]) & frame_rect)
+            if clear:
+                ops.append(bgc); sels.append(sel_of(clear))
+            deferred.append(o)
+        else:
+            o = pending.pop(chosen)
+            if o["color"] == 0:
+                emit_paint(o)
+            else:
+                emit_move(o)
 
-    # ---- crop down to the frame (full rectangle: whole window, background included)
-    ops.append(33)
-    sels.append([R0, C0, ho - 1, wo - 1])
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    for o in deferred:
+        ops.append(o["color"]); sels.append(sel_of(o["dst"]))
+
+    # ---------------- crop the completed frame -------------------------------
+    # full rectangle on purpose: the whole gh x gw frame region, background included
+    ops.append(33); sels.append([fr, fc, gh - 1, gw - 1])
+    ops.append(34); sels.append([0, 0, gh - 1, gw - 1])
     return ops, sels
 
 
@@ -335,7 +323,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

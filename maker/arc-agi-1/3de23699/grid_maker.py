@@ -33,18 +33,26 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import numpy as np
+import random
+from collections import Counter
+from maker.sel_helpers import sel_of
+
+
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc = random.choice(cols)
     ccol = random.choice([c for c in cols if c != bgc])
-    ncol = random.choice([c for c in cols if c not in (bgc, ccol)])
+    ncol = random.choice([c for c in cols if c != bgc and c != ccol])
     return {"bgc": bgc, "ccol": ccol, "ncol": ncol}
 
 
 def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
              bgc: int, ccol: int, ncol: int) -> dict:
-    h = unifint(diff_lb, diff_ub, (5, max(5, max_h)))
-    w = unifint(diff_lb, diff_ub, (5, max(5, max_w)))
+    mh = max(5, int(max_h))
+    mw = max(5, int(max_w))
+    h = unifint(diff_lb, diff_ub, (5, mh))
+    w = unifint(diff_lb, diff_ub, (5, mw))
     c = canvas(bgc, (h, w))
     hi = unifint(diff_lb, diff_ub, (4, h))
     wi = unifint(diff_lb, diff_ub, (4, w))
@@ -64,79 +72,65 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
 
 
 def derive_operations(I, O):
-    import numpy as np
+    """
+    Rule (read entirely from I):
+      * The canvas is one background colour; four marker cells of a second colour
+        sit at the corners of an axis-aligned rectangle (>=4x4); scattered cells of
+        a third "noise" colour lie strictly inside that rectangle's inner area.
+      * The answer is the rectangle's interior (border trimmed), with the noise
+        cells repainted to the corner-marker colour.
+    Steps:
+      1. Colour<ccol> on the exact noise cells (recolour, not a rectangle).
+      2. CropGrid to the rectangle's interior  -> this bbox IS exactly the region
+         meant, background included, so the [r,c,h,w] form is correct here.
+      3. Submit.
+    Nothing below inspects O.
+    """
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    ho, wo = O.shape
+    h, w = I.shape
 
-    # ---- Rule from I vs O --------------------------------------------------
-    # I holds a rectangle marked ONLY by its 4 corner cells (colour ccol);
-    # its strict interior is sprinkled with cells of a scatter colour ncol.
-    # O is that interior, with the scatter repainted to the corner colour.
-    # => find the corner colour: exactly 4 cells, exactly the 4 corners of a
-    #    (ho+2) x (wo+2) box, and interior-with-scatter-recoloured == O.
-    r0 = c0 = ccol = ncol = None
-    for col in [int(v) for v in np.unique(I)]:
-        pos = np.argwhere(I == col)
-        if len(pos) != 4:
-            continue
-        rs = sorted({int(p[0]) for p in pos})
-        cs = sorted({int(p[1]) for p in pos})
-        if len(rs) != 2 or len(cs) != 2:
-            continue
-        if rs[1] - rs[0] + 1 != ho + 2 or cs[1] - cs[0] + 1 != wo + 2:
-            continue
-        if {(int(p[0]), int(p[1])) for p in pos} != {(rs[0], cs[0]), (rs[0], cs[1]),
-                                                     (rs[1], cs[0]), (rs[1], cs[1])}:
-            continue
-        rr, cc = rs[0] + 1, cs[0] + 1
-        reg = I[rr:rr + ho, cc:cc + wo]
-        diff = reg != O
-        if diff.any():
-            src = {int(v) for v in reg[diff]}
-            dst = {int(v) for v in O[diff]}
-            if len(src) != 1 or dst != {col}:
-                continue
-            cand_ncol = src.pop()
-        else:
-            cand_ncol = None
-        r0, c0, ccol, ncol = rr, cc, col, cand_ncol
-        break
+    # --- background: the grid perimeter is always majority background,
+    #     since at most the 4 rectangle corners can sit on it and noise never does.
+    border = []
+    for cc in range(w):
+        border.append(int(I[0, cc]))
+        border.append(int(I[h - 1, cc]))
+    for rr in range(1, h - 1):
+        border.append(int(I[rr, 0]))
+        border.append(int(I[rr, w - 1]))
+    bgc = Counter(border).most_common(1)[0][0]
+
+    # --- all non-background cells; their bbox is exactly the marker rectangle
+    cells = [(r, c) for r in range(h) for c in range(w) if int(I[r, c]) != bgc]
+    if not cells:
+        return [34], [[0, 0, h - 1, w - 1]]
+
+    r0 = min(r for r, _ in cells)
+    r1 = max(r for r, _ in cells)
+    c0 = min(c for _, c in cells)
+    c1 = max(c for _, c in cells)
+
+    ccol = int(I[r0, c0])          # the rectangle corner marker colour
+
+    ir0, ic0 = r0 + 1, c0 + 1      # interior (trimmed) region
+    ir1, ic1 = r1 - 1, c1 - 1
+    if ir1 < ir0 or ic1 < ic0:
+        return [34], [[0, 0, h - 1, w - 1]]
 
     ops, sels = [], []
 
-    # 1. Crop the canvas down to the box interior (the corner markers fall away).
+    # 1. repaint the noise cells inside the rectangle to the corner colour
+    noise = [(r, c) for (r, c) in cells
+             if ir0 <= r <= ir1 and ic0 <= c <= ic1 and int(I[r, c]) != ccol]
+    if noise:
+        ops.append(int(ccol))
+        sels.append(sel_of(sorted(noise)))
+
+    # 2. crop the canvas down to the rectangle's interior (whole rectangle, bg included)
     ops.append(33)
-    sels.append([r0, c0, ho - 1, wo - 1])
+    sels.append([ir0, ic0, ir1 - ir0, ic1 - ic0])
 
-    # 2. Repaint each scatter blob (connected region of ncol) to the corner
-    #    colour, one FloodFill per whole blob -- largest blob first.
-    if ncol is not None:
-        reg = I[r0:r0 + ho, c0:c0 + wo]
-        seen = [[False] * wo for _ in range(ho)]
-        blobs = []
-        for r in range(ho):
-            for c in range(wo):
-                if seen[r][c] or reg[r, c] != ncol:
-                    continue
-                stack, cells = [(r, c)], []
-                seen[r][c] = True
-                while stack:
-                    y, x = stack.pop()
-                    cells.append((y, x))
-                    for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                        ny, nx = y + dy, x + dx
-                        if 0 <= ny < ho and 0 <= nx < wo and not seen[ny][nx] \
-                                and reg[ny, nx] == ncol:
-                            seen[ny][nx] = True
-                            stack.append((ny, nx))
-                blobs.append(cells)
-        blobs.sort(key=lambda b: (-len(b), b[0][0], b[0][1]))
-        for cells in blobs:
-            sr, sc = cells[0]
-            ops.append(10 + int(ccol))
-            sels.append([sr, sc, 0, 0])
-
+    ho, wo = ir1 - ir0 + 1, ic1 - ic0 + 1
     ops.append(34)
     sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
@@ -182,7 +176,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
