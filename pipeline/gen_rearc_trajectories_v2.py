@@ -436,7 +436,107 @@ class _PlannedCases:
         self._g["choice"] = self._choice
         return False
 
-def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0):
+
+ASSIGNED = re.compile(r"^\s*([A-Za-z_]\w*)\s*=\s*(?:randint|unifint)\(")
+
+
+def _maker_plan(gm_mod):
+    """The quantities this task's maker plans, one entry per pair.
+
+    Some kinds are not chosen from a set but drawn as a number -- how many red
+    blocks, how many colours -- and there is no `choice` to intercept. Which
+    numbers those are cannot be read off their names: instrumenting randint and
+    unifint and keeping every draw whose name reads as a count fires on 347 of
+    400 generators, because re-arc draws a quantity of noise or objects almost
+    everywhere and nearly all of them are difficulty knobs.
+
+    What separates a kind from a knob is that the maker planned it. The plan
+    arrives keyed by name -- nred, ncorns, numlins -- so the condition is that
+    the plan names it and the generator has a draw assigned to the same name.
+    That is eight tasks, and it is the same move as taking the colour roles
+    from sample_colors instead of guessing them.
+    """
+    fn = getattr(gm_mod, "sample_colors", None)
+    if fn is None:
+        return None
+    try:
+        import inspect as _i
+        got = fn(num_examples=3) if "num_examples" in _i.signature(fn).parameters else fn()
+    except Exception:
+        return None
+    if not isinstance(got, dict):
+        return None
+    plan = got.get("instance_plan")
+    if not plan or not all(isinstance(e, dict) for e in plan):
+        return None
+    keys = {k for e in plan for k, v in e.items() if isinstance(v, int)}
+    return (plan, keys) if keys else None
+
+
+class _PlannedCounts:
+    """Hand the generator the quantity the maker planned for this pair.
+
+    Only for names the plan itself mentions, so a difficulty knob the maker did
+    not plan is left to the generator. The plan already states a value per pair
+    and repeats one of them for the test, so nothing here invents a range or
+    cycles a subset of one.
+    """
+
+    def __init__(self, genfn, plan, keys):
+        self.genfn = genfn
+        self.plan = plan
+        self.keys = keys
+        self.index = 0
+
+    def _planned(self):
+        if not self.plan:
+            return None
+        return self.plan[min(self.index, len(self.plan) - 1)]
+
+    def __enter__(self):
+        self._g = self.genfn.__globals__
+        self._randint = self._g.get("randint")
+        self._unifint = self._g.get("unifint")
+        outer = self
+
+        def named():
+            site = _caller_site()
+            if site is None:
+                return None
+            m = ASSIGNED.match(linecache.getline(*site))
+            return m.group(1) if m else None
+
+        def randint(a, b):
+            n = named()
+            if n in outer.keys:
+                want = (outer._planned() or {}).get(n)
+                if isinstance(want, int) and a <= want <= b:
+                    return want
+            return outer._randint(a, b)
+
+        def unifint(lb, ub, rng):
+            n = named()
+            if n in outer.keys:
+                want = (outer._planned() or {}).get(n)
+                if isinstance(want, int) and rng[0] <= want <= rng[1]:
+                    return want
+            return outer._unifint(lb, ub, rng)
+
+        if self._randint is not None:
+            self._g["randint"] = randint
+        if self._unifint is not None:
+            self._g["unifint"] = unifint
+        return self
+
+    def __exit__(self, *exc):
+        if self._randint is not None:
+            self._g["randint"] = self._randint
+        if self._unifint is not None:
+            self._g["unifint"] = self._unifint
+        return False
+
+def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0,
+                  plan=None):
     """One episode's pairs, all drawn under the same colour assignment."""
     pool, tries = [], 0
     if perm is None:
@@ -462,16 +562,23 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0):
     deadline = _time.monotonic() + slack
     cases = _PlannedCases(genfn, need - 1)
     cases.__enter__()
+    counts = _PlannedCounts(genfn, *plan) if plan else None
+    if counts is not None:
+        counts.__enter__()
     try:
         while len(pool) < need and tries < budget and _time.monotonic() < deadline:
             tries += 1
             cases.index = len(pool)       # the examples first, then the test
+            if counts is not None:
+                counts.index = len(pool)
             lb = _random.random() * 0.8
             pr = _gen_capped(genfn, lb, min(1.0, lb + 0.3), max_hw,
                              vfn=vfn, retries=retries, deadline=deadline)
             if pr is not None:
                 pool.append(pr)
     finally:
+        if counts is not None:
+            counts.__exit__()
         cases.__exit__()
         if ctx is not None:
             ctx.__exit__()
@@ -503,11 +610,12 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     # drawn again.
     got = _maker_palette(gm_mod)
     perm, roles = got if got else (None, 0)
+    plan = _maker_plan(gm_mod)
     holds = perm is not None
     first = None
     if holds:
         first = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=True,
-                              perm=perm, roles=roles)
+                              perm=perm, roles=roles, plan=plan)
         if first is None:
             holds = False
     # A bound on the task as well as on each episode. 31aa019c can spend its ten
@@ -524,7 +632,8 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
             fresh = _maker_palette(gm_mod) if holds else None
             pool = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=holds,
                                  perm=fresh[0] if fresh else None,
-                                 roles=fresh[1] if fresh else 0)
+                                 roles=fresh[1] if fresh else 0,
+                                 plan=_maker_plan(gm_mod))
         if pool is None:
             continue
         ex, (I, O) = pool[:n_examples], pool[n_examples]
