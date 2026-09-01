@@ -231,6 +231,44 @@ def concept_ops(task: str, vconcepts: dict) -> tuple[str | None, set[int]]:
     return ("/".join(names) if names else None), ops
 
 
+def scrambles(O, rng):
+    """The same answer with its arrangement, and then its colours, disturbed.
+
+    Two questions, because one of them alone is answerable by accident. Moving
+    O's cells leaves its colour multiset untouched, so a route that reads *which
+    colours are in the answer* -- fill with the one that is in O and not in I --
+    survives that and looks independent. Recolouring leaves the arrangement
+    untouched, so a route that reads where something sits survives the other.
+    A maker that returns the same operations under both took neither.
+    """
+    flat = O.reshape(-1).copy()
+    rng.shuffle(flat)
+    moved = flat.reshape(O.shape)
+    perm = rng.permutation(10)
+    recoloured = perm[O]
+    return moved, recoloured
+
+
+def depends_on_O(derive, pairs, rng):
+    """The share of pairs whose route changes when the answer is disturbed."""
+    tried = changed = 0
+    for I, O in pairs:
+        try:
+            base = derive(I.tolist(), O.tolist())
+        except Exception:
+            continue
+        tried += 1
+        for alt in scrambles(O, rng):
+            try:
+                if derive(I.tolist(), alt.tolist()) != base:
+                    changed += 1
+                    break
+            except Exception:
+                changed += 1
+                break
+    return changed / tried if tried else 0.0
+
+
 def copy_pairs(pairs):
     """(I, O_other) pairs where landing on O_other would be decisive.
 
@@ -267,6 +305,7 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int]) -> dict:
                 idle += 1
         else:
             missed.append(i)
+    dep = depends_on_O(derive, pairs[:8], np.random.default_rng(0))
     copied = 0
     for I, P in cpairs:
         g, _, _ = replay(derive, I, P)
@@ -277,6 +316,7 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int]) -> dict:
             "route": routed / solved if solved else 0.0,
             "copy": copied / len(cpairs) if cpairs else 0.0,
             "idle": idle / solved if solved else 0.0,
+            "dep": dep,
             "solved": solved, "routed": routed, "idled": idle, "missed": missed,
             "copied": copied, "trials": len(cpairs),
             "measured_route": bool(want)}
@@ -386,8 +426,10 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
     # without doing anything, so route is a preference among candidates that
     # have already passed, never a condition on its own.
     idle0 = base["idle"] if base else 0.0
+    dep0 = base["dep"] if base else 1.0
     good = {k: v for k, v in ok.items()
-            if v["copy"] <= 1e-9 and v["idle"] <= idle0 + 1e-9 and v["idle"] <= 1e-9}
+            if v["copy"] <= 1e-9 and v["idle"] <= idle0 + 1e-9 and v["idle"] <= 1e-9
+            and v["dep"] <= dep0 + 1e-9}
     if not good:
         # A candidate whose geometry cancels is not an improvement even when
         # the incumbent's does too; if nothing is clean, say so.
@@ -401,6 +443,13 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
     # whether an operation appears. 0a938d79 was kept over a version that
     # solves every instance because it scored higher on route, which is the
     # wrong way round.
+    # A route that does not read the answer is preferred to one that does, and
+    # ahead of coverage: thirty makers were regenerated to derive from the input
+    # alone and every one of them had to be applied by hand, because nothing in
+    # this rule could see the difference. Their operations got shorter doing it
+    # -- d364b489 from 374 to 5 -- so it is not a cost being traded away.
+    dp = min(v["dep"] for v in good.values())
+    good = {k: v for k, v in good.items() if v["dep"] <= dp + 1e-9}
     sv = max(v["solve"] for v in good.values())
     good = {k: v for k, v in good.items() if v["solve"] >= sv - 1e-9}
     hi = max(v["route"] for v in good.values())
@@ -418,15 +467,20 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
         if base["copy"] > 1e-9:
             why.append(f"the incumbent draws another instance's output on "
                        f"{base['copy']:.0%} of the pairs it was handed")
+        if base["dep"] > 1e-9:
+            why.append(f"the incumbent's route changes on {base['dep']:.0%} of pairs "
+                       f"when the answer is disturbed, so it is reading it")
         if base["idle"] > 1e-9:
             why.append(f"the incumbent's geometry cancels out on "
                        f"{base['idle']:.0%} of its solutions")
         if base["solve"] < s0 - 1e-9:
             why.append(f"the incumbent solves {base['solve']:.0%} against {s0:.0%}")
     lead = "; ".join(why) or "it is preferred on the concept"
-    return k, (f"{lead}. This one solves, keeps its parameters off O, performs "
-               f"the geometry it contains, and carries the concept on {hi:.0%} "
-               f"of its solutions")
+    got = top[k]
+    return k, (f"{lead}. This one solves, never draws another instance's output, "
+               f"performs the geometry it contains, does not change its route "
+               f"when the answer is disturbed ({got['dep']:.0%}), and carries the "
+               f"concept on {hi:.0%} of its solutions")
 
 
 def main() -> None:
@@ -480,7 +534,7 @@ def main() -> None:
         recs.append(rec)
         s = "  ".join(
             f"{c}:{scores[c]['solve']:.2f}/{scores[c]['route']:.2f}/"
-            f"{scores[c]['copy']:.2f}/{scores[c]['idle']:.2f}"
+            f"{scores[c]['copy']:.2f}/{scores[c]['idle']:.2f}/{scores[c]['dep']:.2f}"
             if scores[c].get("loaded") else f"{c}:-" for c in args.candidates)
         print(f"{t}  {s}   -> {win or 'none of them'}", flush=True)
         if args.apply and win is not None and win != incumbent:
