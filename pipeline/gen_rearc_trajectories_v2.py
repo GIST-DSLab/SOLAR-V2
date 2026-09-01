@@ -363,7 +363,21 @@ def _is_case_pool(seq):
         return items
     if all(callable(x) for x in items):
         return items
-    if all(isinstance(x, tuple) and 1 <= len(x) <= 3 for x in items):
+    # d4469b4b keeps its kinds as (colour, grid) pairs -- colabc = ((2, A),
+    # (1, B), (3, C)), A, B and C being the three shapes those colours stand
+    # for. That has to be told from a coordinate, which is also a short tuple:
+    # 137eaa0f chooses a dot's location out of a handful of free cells, and
+    # holding *that* to a walk over options pinned the dots and narrowed the
+    # very thing its examples were meant to vary -- it went from missing on 2
+    # episodes in 10 to 6. A coordinate is integers all the way down; a case
+    # table has a grid in it.
+    def _is_case_row(x):
+        return (isinstance(x, tuple) and len(x) == 2
+                and isinstance(x[0], int) and not isinstance(x[0], bool)
+                and isinstance(x[1], tuple) and bool(x[1])
+                and all(isinstance(r, tuple) for r in x[1]))
+
+    if all(_is_case_row(x) for x in items):
         return items
     return None
 
