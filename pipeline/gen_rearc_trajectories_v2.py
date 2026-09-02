@@ -156,6 +156,14 @@ def _get_generator(tid):
         return None
     return getattr(_GENERATORS, f"generate_{tid}", None)
 
+# Set to a _PlannedCases while one is active. The once-per-instance rule needs
+# to know when a new draw starts, and the only place that knows is the loop that
+# calls the generator -- wrapping genfn to announce it would add a frame, and
+# both the colour hold and the planner read the call site by walking out of this
+# file, so a frame added here is a call site misread there.
+_DRAWING = None
+
+
 def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80, deadline=None):
     """re-arc generate, resampled until the grid fits max_hw (the only size modification)
     and — when vfn is given (re-arc-style gate) — until verify reproduces it, per pair."""
@@ -170,6 +178,8 @@ def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80, deadline=None):
         if held is not None:
             held.taken = 0             # the roles are re-assigned per instance
             held.rounds = 0            # and a generator may retry a few times
+        if _DRAWING is not None:
+            _DRAWING.instance()
         try:
             d = genfn(lb, ub)
         except Exception:
@@ -411,6 +421,14 @@ class _PlannedCases:
         self.n_examples = n_examples
         self.index = 0                    # which pair of the episode is being drawn
         self.seen = {}                    # call site -> the options it offered
+        self.fired = set()                # sites already used for this instance
+        self.dead = set()                 # sites reached twice: coins, not kinds
+
+    def instance(self):
+        """A new instance is starting; forget which sites have fired."""
+        self.fired = set()
+
+
 
     def __enter__(self):
         self._g = self.genfn.__globals__
@@ -421,7 +439,13 @@ class _PlannedCases:
             items = _is_case_pool(seq)
             if items is not None:
                 key = _caller_site()
-                if key is not None:
+                if key is not None and key in outer.fired:
+                    # A kind is settled once for the instance. A site reached
+                    # twice in one draw is a coin inside a loop, and holding
+                    # one is what stops the loop turning.
+                    outer.dead.add(key)
+                if key is not None and key not in outer.dead:
+                    outer.fired.add(key)
                     opts = outer.seen.setdefault(key, items)
                     i = outer.index
                     if i < outer.n_examples:
@@ -560,15 +584,25 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0,
     # rejected instance -- so a long fallback does not rescue the episode, it
     # only delays the draw. Fifteen episodes are drawn and ten are needed.
     deadline = _time.monotonic() + slack
-    cases = _PlannedCases(genfn, need - 1)
-    cases.__enter__()
+    # Only where the maker planned something. This is the one intervention that
+    # fired on shape alone -- the colour hold asks the maker which colours are
+    # roles, the count extension asks the plan which numbers it names, and this
+    # took any `choice((True, False))` it saw. 72ca375d has no instance_plan at
+    # all and hung a whole draw: its coin is flipped inside a `while True`,
+    # holding it stopped the loop's exit condition from ever coming true, and
+    # no retry budget helps because control never returns to one.
+    cases = _PlannedCases(genfn, need - 1) if plan else None
+    if cases is not None:
+        cases.__enter__()
+        globals()["_DRAWING"] = cases
     counts = _PlannedCounts(genfn, *plan) if plan else None
     if counts is not None:
         counts.__enter__()
     try:
         while len(pool) < need and tries < budget and _time.monotonic() < deadline:
             tries += 1
-            cases.index = len(pool)       # the examples first, then the test
+            if cases is not None:
+                cases.index = len(pool)   # the examples first, then the test
             if counts is not None:
                 counts.index = len(pool)
             lb = _random.random() * 0.8
@@ -579,7 +613,9 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0,
     finally:
         if counts is not None:
             counts.__exit__()
-        cases.__exit__()
+        if cases is not None:
+            cases.__exit__()
+            globals()["_DRAWING"] = None
         if ctx is not None:
             ctx.__exit__()
     return pool if len(pool) >= need else None
