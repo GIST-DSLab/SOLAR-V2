@@ -379,8 +379,16 @@ once; choose the test dict from the example dicts so the episode is learnable. U
 dict entry with multiple fields when dimensions interact — do not invent separate parallel
 plans that can become desynchronized.
 
-### 3. derive_operations(I, O) -> tuple[list[int], list[list[int]]]
+### 3. derive_operations(I, O, examples=None) -> tuple[list[int], list[list[int]]]
 Returns (ops, sels) — the ARCLE operation sequence transforming I into O.
+- `examples` is the episode's demonstrations: a list of (input, output) pairs, the
+  same ones a solver is shown before being asked about I. Take the third parameter
+  and use them wherever the rule has a convention that I alone does not fix — which
+  colour the rule fills with, which colour marks a thing — because that is where a
+  solver reads it from. Reading it out of O instead is reading the answer.
+- A two-argument `derive_operations(I, O)` still works and is right when the rule
+  needs nothing beyond I. Take `examples` only when you would otherwise have to look
+  at O for it.
 - Last op MUST be Submit = 34
 - len(ops) == len(sels)
 - EVERY selection is a MASK: the exact set of cells the op must act on. Emit it with
@@ -505,9 +513,10 @@ exact crop coordinates (they differ for CW vs CCW).
    for your own bookkeeping. If the object doesn't reappear elsewhere in O, don't reach
    for Move at all — pick the next-lower op that actually matches what happens.
 
-   `derive_operations(I, O)` only receives I and O — bgc is NOT passed in. Infer it from
-   task structure: what does the generator treat as background (a fixed color it paints
-   the canvas with before placing objects)? That's usually reliable. `most_common(1)` on
+   bgc is NOT passed in. Infer it from task structure: what does the generator treat as
+   background (a fixed color it paints the canvas with before placing objects)? That's
+   usually reliable, and where it is not, the demonstrations settle it — every example
+   input is drawn on the same background as I. `most_common(1)` on
    I's colors (`Counter(I.flatten().tolist())`) is a REASONABLE FALLBACK ONLY — it breaks
    whenever background isn't the majority color (foreground-heavy grids, stripes/checkerboards,
    near-50/50 color splits). Don't reach for it as the default; use it only when you can't

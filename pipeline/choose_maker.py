@@ -32,6 +32,7 @@ import argparse
 import ast
 import collections
 import importlib.util
+import inspect
 import json
 import random
 import shutil
@@ -151,13 +152,31 @@ def load_derive(maker_path: Path):
         return None
 
 
-def replay(derive, I, O_shown):
+
+def call_derive(derive, I, O, examples=None):
+    """derive_operations, given the episode's demonstrations when it takes them.
+
+    Mirrors gen_rearc_trajectories_v2.call_derive: a maker that reads the rule's
+    colour convention off three demonstrations is doing what a solver does, and
+    a maker handed only the test pair had to read it off the answer instead.
+    Two-argument makers are called exactly as before.
+    """
+    try:
+        n = len(inspect.signature(derive).parameters)
+    except (TypeError, ValueError):
+        n = 2
+    if n >= 3 and examples is not None:
+        return derive(I, O, examples)
+    return derive(I, O)
+
+
+def replay(derive, I, O_shown, examples=None):
     """The ops the maker returns for (I, O_shown), and the grid they produce."""
     env = gym.make("ARCLE/O2ARCv2Env-v0", render_mode=None,
                    data_loader=_One(I, O_shown), max_grid_size=MAX_GRID_DIM,
                    colors=10, max_episode_steps=None, max_trial=1)
     try:
-        ops, sels = derive(I.tolist(), O_shown.tolist())
+        ops, sels = call_derive(derive, I.tolist(), O_shown.tolist(), examples)
         obs, _ = env.reset(options={"prob_index": 0, "adaptation": False})
         for op, sel in zip(ops, sels):
             obs, _, _, _, _ = env.step(
@@ -250,17 +269,26 @@ def scrambles(O, rng):
 
 
 def depends_on_O(derive, pairs, rng):
-    """The share of pairs whose route changes when the answer is disturbed."""
+    """The share of pairs whose route changes when the *test's* answer is disturbed.
+
+    Only the test's. A maker that takes the episode's demonstrations reads their
+    outputs legitimately -- that is where the rule's colour convention lives, and
+    reading it there is what a solver does. What it must not do is take anything
+    from the answer to the pair it is deriving, so that is the grid disturbed and
+    the demonstrations are handed over untouched.
+    """
     tried = changed = 0
-    for I, O in pairs:
+    for i, (I, O) in enumerate(pairs):
+        shown = [(a.tolist(), b.tolist())
+                 for j, (a, b) in enumerate(pairs) if j != i][:3]
         try:
-            base = derive(I.tolist(), O.tolist())
+            base = call_derive(derive, I.tolist(), O.tolist(), shown)
         except Exception:
             continue
         tried += 1
         for alt in scrambles(O, rng):
             try:
-                if derive(I.tolist(), alt.tolist()) != base:
+                if call_derive(derive, I.tolist(), alt.tolist(), shown) != base:
                     changed += 1
                     break
             except Exception:
@@ -296,7 +324,9 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int]) -> dict:
     solved = routed = idle = 0
     missed = []
     for i, (I, O) in enumerate(pairs):
-        g, ops, sels = replay(derive, I, O)
+        shown = [(a.tolist(), b.tolist())
+                 for j, (a, b) in enumerate(pairs) if j != i][:3]
+        g, ops, sels = replay(derive, I, O, shown)
         if g is not None and g.shape == O.shape and bool((g == O).all()):
             solved += 1
             if want and set(ops) & want:

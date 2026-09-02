@@ -620,6 +620,31 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0,
             ctx.__exit__()
     return pool if len(pool) >= need else None
 
+
+def call_derive(derive, I, O, examples=None):
+    """derive_operations, given the episode's demonstrations when it takes them.
+
+    A maker used to see one pair and nothing else, which is a harder problem
+    than the task it is written for: an ARC solver reads the rule off three
+    demonstrations and applies it to a fourth input. A colour convention -- the
+    fill in 41e4d17e, the line in 6430c8c4 -- lives in the demonstrations and
+    nowhere in the test's input, so a maker with only the test pair could reach
+    it only by reading the answer. Several did exactly that, and the reading was
+    the contract's doing as much as the maker's.
+
+    Makers that still take two arguments are called as before, so nothing has
+    to be rewritten to keep working.
+    """
+    import inspect as _inspect
+    try:
+        n = len(_inspect.signature(derive).parameters)
+    except (TypeError, ValueError):
+        n = 2
+    if n >= 3 and examples is not None:
+        return derive(I, O, examples)
+    return derive(I, O)
+
+
 def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     """Instances from re-arc generate_<task> (size-capped) + maker's derive_operations.
     With --verify_filter, every pair is resampled until verify reproduces it (re-arc style)."""
@@ -673,8 +698,9 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
         if pool is None:
             continue
         ex, (I, O) = pool[:n_examples], pool[n_examples]
+        shown = [(a.tolist(), b.tolist()) for a, b in ex]
         try:
-            ops, sels = derive(I.tolist(), O.tolist())
+            ops, sels = call_derive(derive, I.tolist(), O.tolist(), shown)
         except Exception:
             continue
         ei = [p[0].astype(np.uint8) for p in ex]
