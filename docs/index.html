@@ -454,6 +454,17 @@ const SUBSETS = {
   "re-arc": {label:"RE-ARC", repo:DS, data:"arc_agi1",
              prepo:EXTRA, preview:"preview",
              tasks:400, episodes:10, blurb:"Augmented ARC-AGI-1 training set"},
+  /* The same 400 tasks drawn from the makers as they stand now, beside the
+     released draw rather than in place of it. What differs is the makers: none
+     of these reads the answer to the pair it is deriving, where the released
+     draw has nine that do and forty-eight that read a colour out of it, and
+     these solve every instance their generator produces where the released
+     draw misses on twenty-four tasks. Kept as its own tab so the two can be
+     read against each other before either replaces the other. */
+  "candidate": {label:"Candidate draw", tab:"Candidate", repo:EXTRA,
+                data:"arc_agi1_candidate", prepo:EXTRA,
+                preview:"preview_candidate", tasks:400, episodes:10,
+                blurb:"The same tasks, drawn from makers that do not read the answer"},
   "handcraft": {label:"Handcraft", repo:EXTRA, data:"handcraft",
                 prepo:EXTRA, preview:"preview_handcraft",
                 tasks:10, episodes:10, blurb:"Hand-written half-variant makers over 9 tasks"},

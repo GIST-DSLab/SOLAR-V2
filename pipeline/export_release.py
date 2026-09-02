@@ -80,6 +80,19 @@ SUBSETS = {
                 "--num_samples 15 --rand_seed 0 --max_grid_dim 30 30 "
                 "--rearc_generate --verify_filter --data_folder <out>",
     ),
+    # The same 400 tasks drawn from the makers as they stand, exported beside
+    # the release rather than over it so the two can be read against each other.
+    "arc_agi1_candidate": dict(
+        root=DATA_ROOT / "ARC_rearc_draw13" / "whole",
+        makers="maker/arc-agi-1",
+        episodes=10,
+        label="arc-agi-1",
+        manifest=DATA_ROOT / "best_manifest.json",
+        note="400 ARC-AGI-1 training tasks, makers that do not read the answer",
+        rollout="python gen_rearc_trajectories_v2.py --subfolder arc-agi-1 "
+                "--num_samples 15 --rand_seed 0 --max_grid_dim 30 30 "
+                "--rearc_generate --verify_filter --data_folder <out>",
+    ),
     "handcraft": dict(
         # A control, not new coverage: all 9 base task ids are already in
         # arc_agi1, so hand-written and LLM-written makers meet on the same tasks.
