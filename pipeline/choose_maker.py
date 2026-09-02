@@ -95,6 +95,44 @@ class _One(Loader):
         return [([a], [b], [a], [b], {"id": "0"})]
 
 
+def episodes_from_draw(root: str, task: str, limit: int = 10):
+    """Episodes as the rollout wrote them: three demonstrations and a test.
+
+    Read rather than rebuilt. A maker may now read its episode's
+    demonstrations, so it has to be judged on demonstrations that share the
+    episode's palette -- and the rollout already builds those, holding one
+    colour assignment across the four pairs. Rebuilding them here meant
+    reproducing that hold, and it kept coming apart: every maker deletes
+    `generators` from sys.modules as it imports, so the module object the hold
+    patched was not the one the draw went on to call. Four makers were marked
+    down to a third of their coverage by demonstrations that shared nothing
+    with their test, and all four solve every episode in a real draw.
+
+    The instances are the generator's own and do not depend on which maker
+    produced the file, so a draw made with one maker set scores another.
+    """
+    import glob as _glob
+    hits = _glob.glob(f"{root}/whole/test.{task}.*")
+    if not hits:
+        return None
+    out = []
+    for f in sorted(_glob.glob(hits[0] + "/*.json"))[:limit]:
+        try:
+            d = json.loads(Path(f).read_text())
+        except Exception:
+            continue
+        def crop(g, dim):
+            h, w = dim
+            return [r[:w] for r in g[:h]]
+        ex = [(crop(d["ex_in"][i], d["ex_in_grid_dim"][i]),
+               crop(d["ex_out"][i], d["ex_out_grid_dim"][i]))
+              for i in range(len(d["ex_in"]))]
+        I = np.asarray(crop(d["in_grid"], d["grid_dim"][0]), int)
+        O = np.asarray(crop(d["out_grid"], d["grid_dim"][-1]), int)
+        out.append(([(np.asarray(a, int), np.asarray(b, int)) for a, b in ex], (I, O)))
+    return out or None
+
+
 def draw(task: str, n: int, seeds) -> list | None:
     """Instances as the rollout draws them: generator, size cap, verifier.
 
@@ -315,17 +353,29 @@ def copy_pairs(pairs):
     return out
 
 
-def score(task: str, maker_path: Path, pairs, cpairs, want: set[int]) -> dict:
-    """solve / route / copy for one candidate on a fixed set of instances."""
+def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
+          eps=None) -> dict:
+    """solve / route / copy for one candidate on a fixed set of instances.
+
+    `eps` are episodes -- (demonstrations, test) -- and when they are given the
+    test of each is what gets solved, with its own demonstrations handed over.
+    Falling back to loose pairs keeps the older measures working, but a maker
+    that reads the demonstrations has to be judged on real ones.
+    """
     derive = load_derive(maker_path)
     if derive is None:
         return {"loaded": False}
+    if eps:
+        pairs = [t for _, t in eps]
+        shows = [[(a.tolist(), b.tolist()) for a, b in ex] for ex, _ in eps]
+    else:
+        shows = None
     n = len(pairs)
     solved = routed = idle = 0
     missed = []
     for i, (I, O) in enumerate(pairs):
-        shown = [(a.tolist(), b.tolist())
-                 for j, (a, b) in enumerate(pairs) if j != i][:3]
+        shown = shows[i] if shows else [
+            (a.tolist(), b.tolist()) for j, (a, b) in enumerate(pairs) if j != i][:3]
         g, ops, sels = replay(derive, I, O, shown)
         if g is not None and g.shape == O.shape and bool((g == O).all()):
             solved += 1
@@ -522,6 +572,9 @@ def main() -> None:
     ap.add_argument("--rand_seed", type=int, nargs="+", default=[0, 4242, 90210],
                     help="instances are pooled over these seeds")
     ap.add_argument("--rearc_root", default=str(SOLAR_ROOT / "re-arc"))
+    ap.add_argument("--episodes_root", default=None,
+                    help="a rollout directory whose episodes supply each test's "
+                         "demonstrations; needed to judge a maker that reads them")
     ap.add_argument("--out", default="choose_maker.json")
     ap.add_argument("--findings", default=None,
                     help="write the tasks with no acceptable candidate as "
@@ -550,8 +603,15 @@ def main() -> None:
         scores = {}
         for cand in args.candidates:
             p = root / cand / t / "grid_maker.py"
-            scores[cand] = (score(t, p, pairs, cpairs, want)
-                            if p.exists() else {"loaded": False})
+            if not p.exists():
+                scores[cand] = {"loaded": False}
+                continue
+            # Episodes are drawn per candidate: the palette a maker asks for is
+            # its own, and its demonstrations have to be the ones it would be
+            # shown rather than another maker's.
+            eps = (episodes_from_draw(args.episodes_root, t)
+                   if args.episodes_root else None)
+            scores[cand] = score(t, p, pairs, cpairs, want, eps=eps)
         win, why = pick(scores, incumbent, args.candidates)
         rec = {"task_id": t, "concept": cname, "instances": len(pairs),
                "winner": win, "reason": why,

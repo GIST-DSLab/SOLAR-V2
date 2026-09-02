@@ -35,40 +35,60 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from maker.sel_helpers import sel_of
+from collections import Counter
 
-VARIANTS = [{"mirrored": False}, {"mirrored": True}]
+try:
+    from maker.sel_helpers import sel_of
+except Exception:  # pragma: no cover
+    def sel_of(cells):
+        return {"cells": [(int(r), int(c)) for r, c in cells]}
+
+
+# ----------------------------------------------------------------------------- #
+# 1. sample_colors
+# ----------------------------------------------------------------------------- #
+_VARIANTS = [{"mirror": False}, {"mirror": True}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = [c for c in range(10) if c != 3]
-    bgc, linc, acol, bcol = random.sample(cols, 4)
+    cols = [c for c in range(10) if c != 3]          # 3 is reserved for the marks
+    bgc = random.choice(cols)
+    rem = [c for c in cols if c != bgc]
+    linc = random.choice(rem)
+    rem = [c for c in rem if c != linc]
+    acol = random.choice(rem)
+    rem = [c for c in rem if c != acol]
+    bcol = random.choice(rem)
+
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+    if n_ex >= len(_VARIANTS):
+        examples = [dict(v) for v in _VARIANTS]
+        examples += [dict(random.choice(_VARIANTS)) for _ in range(n_ex - len(_VARIANTS))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+        examples = [dict(v) for v in random.sample(_VARIANTS, max(1, n_ex))]
     plan = examples + [dict(random.choice(examples))]
+
     return {"bgc": bgc, "linc": linc, "acol": acol, "bcol": bcol,
             "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, acol, bcol,
-             mirrored=None) -> dict:
-    if mirrored is None:
-        mirrored = choice((True, False))
+# ----------------------------------------------------------------------------- #
+# 2. generate
+# ----------------------------------------------------------------------------- #
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, acol, bcol, mirror=None) -> dict:
+    if mirror is None:
+        mirror = choice((True, False))
 
-    if mirrored:
-        # input becomes (2w+1) x h after dmirror
-        h_ub = min(30, max_w)
-        w_ub = min(14, (max_h - 1) // 2)
+    # the assembled input is (h, 2w+1); after dmirror it is (2w+1, h)
+    if mirror:
+        h_cap = max_w
+        w_cap = (max_h - 1) // 2
     else:
-        h_ub = min(30, max_h)
-        w_ub = min(14, (max_w - 1) // 2)
-    h_ub = max(2, h_ub)
-    w_ub = max(2, w_ub)
+        h_cap = max_h
+        w_cap = (max_w - 1) // 2
+    h_ub = max(2, min(30, h_cap))
+    w_ub = max(2, min(14, w_cap))
 
     h = unifint(diff_lb, diff_ub, (2, h_ub))
     w = unifint(diff_lb, diff_ub, (2, w_ub))
@@ -88,51 +108,121 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, acol, bcol,
     bset = sample(inds, numb)
     A = fill(c, acol, aset)
     B = fill(c, bcol, bset)
+
     gi = hconcat(hconcat(A, bar), B)
     res = (set(inds) - set(aset)) - set(bset)
     go = fill(c, 3, res)
 
-    if mirrored:
+    if mirror:
         gi = dmirror(gi)
         go = dmirror(go)
 
     return {'input': gi, 'output': go}
 
 
-def derive_operations(I, O):
+# ----------------------------------------------------------------------------- #
+# 3. derive_operations
+# ----------------------------------------------------------------------------- #
+def _split_halves(g):
+    """Split an input grid on its single-colour separator line.
+
+    Returns (first_half, second_half, orientation).  Orientation 'h' means the
+    separator is a full row (halves are top/bottom), 'v' means it is a full
+    column (halves are left/right).  Both facts are read from the INPUT only.
+    """
+    g = np.asarray(g, dtype=int)
+    h, w = g.shape
+    # a full uniform row can only be the separator bar (the bar colour never
+    # occurs inside either half, so no half row can be uniform across the bar)
+    if h % 2 == 1 and h >= 3 and len(set(g[h // 2].tolist())) == 1:
+        k = h // 2
+        return g[:k, :], g[k + 1:, :], 'h'
+    if w % 2 == 1 and w >= 3 and len(set(g[:, w // 2].tolist())) == 1:
+        k = w // 2
+        return g[:, :k], g[:, k + 1:], 'v'
+    # defensive fallback (should not trigger for this task)
+    if w % 2 == 1:
+        k = w // 2
+        return g[:, :k], g[:, k + 1:], 'v'
+    k = h // 2
+    return g[:k, :], g[k + 1:, :], 'h'
+
+
+def _bg_of(first, second, whole):
+    """The background is the one colour the two halves have in common."""
+    common = set(first.flatten().tolist()) & set(second.flatten().tolist())
+    if len(common) == 1:
+        return int(next(iter(common)))
+    if common:
+        cnt = Counter(np.asarray(whole).flatten().tolist())
+        return int(max(common, key=lambda c: cnt.get(c, 0)))
+    return int(Counter(np.asarray(whole).flatten().tolist()).most_common(1)[0][0])
+
+
+def _mark_colour_from_examples(examples):
+    """The colour the rule paints the shared-background cells with.
+
+    It is a convention of the task, not something the input shows, so it is
+    read from the demonstrations (each demo output holds exactly its own
+    background plus this colour).  Never read from the O being derived.
+    """
+    votes = []
+    for ex in (examples or []):
+        if isinstance(ex, dict):
+            Ie, Oe = ex.get('input'), ex.get('output')
+        else:
+            try:
+                Ie, Oe = ex[0], ex[1]
+            except Exception:
+                continue
+        if Ie is None or Oe is None:
+            continue
+        try:
+            Ie = np.asarray(Ie, dtype=int)
+            Oe = np.asarray(Oe, dtype=int)
+            fa, fb, _ = _split_halves(Ie)
+            bg_e = _bg_of(fa, fb, Ie)
+            others = set(Oe.flatten().tolist()) - {bg_e}
+            if len(others) == 1:
+                votes.append(int(next(iter(others))))
+        except Exception:
+            continue
+    if votes:
+        return Counter(votes).most_common(1)[0][0]
+    return 3
+
+
+def derive_operations(I, O, examples=None):
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    ho, wo = O.shape
 
-    # background = the only non-3 color present in O
-    rest = [v for v in set(O.flatten().tolist()) if v != 3]
-    bgc = rest[0]
+    first, second, _orient = _split_halves(I)
+    bgc = _bg_of(first, second, I)
+    mark = _mark_colour_from_examples(examples)
 
-    # first half is always at the top-left of I; second half sits past the bar
-    A = I[:ho, :wo]
-    if ho == hi:                      # vertical bar at column wo
-        B = I[:ho, wo + 1:wo + 1 + wo]
-    else:                             # horizontal bar at row ho
-        B = I[ho + 1:ho + 1 + ho, :wo]
+    kh, kw = first.shape                       # the kept half sits at the top-left
+
+    # cells that are background in BOTH halves -> get the mark colour
+    inter = [(r, c) for r in range(kh) for c in range(kw)
+             if first[r, c] == bgc and second[r, c] == bgc]
+    # the first half's own marks -> erased back to background
+    marks = [(r, c) for r in range(kh) for c in range(kw) if first[r, c] != bgc]
 
     ops, sels = [], []
 
-    # 1. shrink canvas to the first half (full rectangle -> bbox is exact)
-    ops.append(33); sels.append([0, 0, ho - 1, wo - 1])
+    if inter:
+        ops.append(int(mark))
+        sels.append(sel_of(inter))
 
-    # 2. erase the first half's marks -> background
-    erase = [(r, c) for r in range(ho) for c in range(wo) if A[r, c] != bgc]
-    if erase:
-        ops.append(int(bgc)); sels.append(sel_of(erase))
+    if marks:
+        ops.append(int(bgc))
+        sels.append(sel_of(marks))
 
-    # 3. paint 3 where BOTH halves are empty
-    both = [(r, c) for r in range(ho) for c in range(wo)
-            if A[r, c] == bgc and B[r, c] == bgc]
-    if both:
-        ops.append(3); sels.append(sel_of(both))
+    # keep only the first half (full rectangle -> bbox selection is exact)
+    ops.append(33)
+    sels.append([0, 0, kh - 1, kw - 1])
 
-    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34)
+    sels.append([0, 0, kh - 1, kw - 1])
     return ops, sels
 
 
@@ -176,7 +266,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

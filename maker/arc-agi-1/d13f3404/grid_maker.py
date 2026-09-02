@@ -34,88 +34,142 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-from random import sample, choice
-
 import numpy as np
 from collections import Counter
 
-from dsl import *
-from utils import *
-
-from maker.sel_helpers import sel_of
-
 
 def sample_colors(num_examples=None) -> dict:
-    # Rule is presence/pattern based (each colored cell shoots a down-right diagonal ray);
-    # only background must be fixed across the episode. Foreground colors vary per cell.
-    cols = list(range(10))
-    bgc = random.choice(cols)
+    # The only colour the generator fixes for the whole task is the background.
+    # Each dot's colour is read off the input itself (the ray keeps the dot's colour),
+    # so foreground colours may stay random per instance.
+    bgc = random.choice(list(range(10)))
     return {"bgc": bgc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, **color_kwargs) -> dict:
-    cols = interval(0, 10, 1)
-    # original bounds (3,15); output is 2x, so cap so 2*h<=max_h, 2*w<=max_w
-    hmax = max(3, min(15, max_h // 2))
-    wmax = max(3, min(15, max_w // 2))
-    h = unifint(diff_lb, diff_ub, (3, hmax))
-    w = unifint(diff_lb, diff_ub, (3, wmax))
-    vopts = {(ii, 0) for ii in interval(0, h, 1)}
-    hopts = {(0, jj) for jj in interval(1, w, 1)}
-    opts = tuple(vopts | hopts)
-    num = unifint(diff_lb, diff_ub, (1, len(opts)))
-    locs = sample(opts, num)
-    remcols = remove(bgc, cols)
-    gi = canvas(bgc, (h, w))
-    go = canvas(bgc, (h * 2, w * 2))
-    inds = asindices(gi)
-    for loc in locs:
-        ln = tuple(shoot(loc, (1, 1)) & inds)
-        locc = choice(ln)
-        col = choice(remcols)
-        gi = fill(gi, col, {locc})
-        go = fill(go, col, shoot(locc, (1, 1)))
-    return {"input": gi, "output": go}
+def generate(diff_lb, diff_ub, max_h, max_w, bgc) -> dict:
+    try:
+        _u = unifint  # noqa: F821  (re-arc helper, if available)
+    except NameError:
+        def _u(dl, du, bnds):
+            a, b = bnds
+            lo = a + int((b - a) * dl)
+            hi = a + int((b - a) * du)
+            lo = max(a, min(b, lo))
+            hi = max(a, min(b, hi))
+            if hi < lo:
+                lo, hi = hi, lo
+            return random.randint(lo, hi)
+
+    # output is 2h x 2w, so the input side is capped at half the canvas budget
+    h_ub = max(3, min(15, max_h // 2))
+    w_ub = max(3, min(15, max_w // 2))
+    h = _u(diff_lb, diff_ub, (3, h_ub))
+    w = _u(diff_lb, diff_ub, (3, w_ub))
+
+    gi = [[bgc] * w for _ in range(h)]
+    go = [[bgc] * (2 * w) for _ in range(2 * h)]
+
+    # one starting point per diagonal: left column + top row (so no two dots share a diagonal)
+    opts = [(i, 0) for i in range(h)] + [(0, j) for j in range(1, w)]
+    num = _u(diff_lb, diff_ub, (1, len(opts)))
+    num = max(1, min(len(opts), num))
+    locs = random.sample(opts, num)
+
+    remcols = [c for c in range(10) if c != bgc]
+
+    for (r0, c0) in locs:
+        ln = []
+        rr, cc = r0, c0
+        while rr < h and cc < w:
+            ln.append((rr, cc))
+            rr += 1
+            cc += 1
+        lr, lc = random.choice(ln)
+        col = random.choice(remcols)
+        gi[lr][lc] = col
+        rr, cc = lr, lc
+        while rr < 2 * h and cc < 2 * w:
+            go[rr][cc] = col
+            rr += 1
+            cc += 1
+
+    return {
+        "input": tuple(tuple(row) for row in gi),
+        "output": tuple(tuple(row) for row in go),
+    }
 
 
-def derive_operations(I, O):
+def derive_operations(I, O, examples=None):
+    """
+    Rule (measured from I only):
+      canvas doubles to (2h, 2w) on a background canvas; every non-background dot
+      shoots a diagonal ray of its own colour down-right to the canvas edge.
+    O is never inspected.  The background colour -- the one convention the input
+    alone does not pin down when a grid is tiny -- is read from the demonstrations.
+    """
+    try:
+        from maker.sel_helpers import sel_of
+    except Exception:
+        def sel_of(cells):
+            return {"cells": [(int(r), int(c)) for r, c in cells]}
+
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
-    ho, wo = O.shape
+    h, w = I.shape
+    H, W = 2 * h, 2 * w
 
-    # background is overwhelming majority in O (sparse diagonal rays over bgc canvas)
-    bgc = Counter(O.flatten().tolist()).most_common(1)[0][0]
-
-    ops = []
-    sels = []
-
-    # 1. expand canvas to 2h x 2w (transparent copy keeps I's nonzero cells top-left)
-    ops.append(33)
-    sels.append([0, 0, ho - 1, wo - 1])
-
-    # 2. lay bgc base over whole canvas (skip when bgc==0: zero-padding already IS bgc)
-    if bgc != 0:
-        ops.append(int(bgc))
-        sels.append([0, 0, ho - 1, wo - 1])
-
-    # 3. each non-bg input cell shoots a down-right (+1,+1) diagonal ray of its color.
-    #    Diagonals r-c are unique per source cell, so rays never overlap.
-    for r in range(hi):
-        for c in range(wi):
-            col = int(I[r, c])
-            if col == bgc:
+    # --- background colour: majority vote over the demonstration inputs + I ---
+    grids = []
+    if examples:
+        for pair in examples:
+            try:
+                gi = np.asarray(pair[0], dtype=int)
+            except Exception:
                 continue
-            cells = []
-            k = 0
-            while r + k < ho and c + k < wo:
-                cells.append((r + k, c + k))
-                k += 1
+            if gi.ndim == 2 and gi.size:
+                grids.append(gi)
+    grids.append(I)
+    votes = Counter()
+    totals = Counter()
+    for g in grids:
+        c = Counter(g.flatten().tolist())
+        votes[c.most_common(1)[0][0]] += 1
+        totals.update(c)
+    top_vote = max(votes.values())
+    tied = [col for col, v in votes.items() if v == top_vote]
+    bgc = max(tied, key=lambda col: totals[col])
+
+    ops, sels = [], []
+
+    # 1) grow the canvas to 2h x 2w (whole-rectangle bbox, background included)
+    ops.append(33)
+    sels.append([0, 0, H - 1, W - 1])
+
+    # 2) lay the background over the freshly added area (all zeros right now).
+    #    Skip when bgc == 0: the padding already IS the background.
+    if bgc != 0:
+        # bottom band: rows h..2h-1, full width (exact rectangle intended)
+        ops.append(int(bgc))
+        sels.append([h, 0, h - 1, W - 1])
+        # top-right block: rows 0..h-1, cols w..2w-1 (exact rectangle intended)
+        ops.append(int(bgc))
+        sels.append([0, w, h - 1, w - 1])
+
+    # 3) draw one ray per dot, each ray as a single object
+    dots = [(r, c, int(I[r, c]))
+            for r in range(h) for c in range(w) if int(I[r, c]) != bgc]
+    for (r, c, col) in dots:
+        cells = []
+        rr, cc = r + 1, c + 1
+        while rr < H and cc < W:
+            cells.append((rr, cc))
+            rr += 1
+            cc += 1
+        if cells:
             ops.append(col)
             sels.append(sel_of(cells))
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, H - 1, W - 1])
     return ops, sels
 
 
@@ -159,7 +213,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

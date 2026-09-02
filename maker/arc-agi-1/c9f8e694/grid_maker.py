@@ -35,154 +35,184 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from collections import deque
 
-ROTS = ["identity", "rot90", "rot180", "rot270"]
+try:
+    from maker.sel_helpers import sel_of
+except Exception:  # pragma: no cover - fallback for standalone use
+    def sel_of(cells):
+        return {"cells": [[int(r), int(c)] for (r, c) in cells]}
+
+
+# ---------------------------------------------------------------- 1. colors --
+
+# The only structural degree of freedom is the final rotation, which decides
+# WHERE the key-line lives (left column / top row / right column / bottom row).
+VARIANTS = [{"rot": 0}, {"rot": 1}, {"rot": 2}, {"rot": 3}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    # bgc is hardcoded 0 in the generator -> not a color role.
-    # sqc (the block color that gets recolored) IS sampled -> fix it per episode.
-    # gil key-strip colors are arbitrary per row; the rule only uses their
-    # positions/presence, so they stay free.
+    # sqc (the colour of the rectangles) is sampled by the generator -> fix it
+    # for the whole episode.  bgc is hardcoded to 0 in the generator, and the
+    # key-line colours are pure content (the rule copies whatever is there).
     sqc = random.choice(list(range(1, 10)))
-
-    variants = [{"rotname": r} for r in ROTS]
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(variants):
-        examples = [dict(v) for v in variants]
-        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(variants, n_ex)]
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
     return {"sqc": sqc, "instance_plan": plan}
 
 
+# -------------------------------------------------------------- 2. generate --
+
 def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             sqc: int, rotname: str = None) -> dict:
-    if rotname is None:
-        rotname = random.choice(ROTS)
-    rotf = {"identity": identity, "rot90": rot90,
-            "rot180": rot180, "rot270": rot270}[rotname]
-    swap = rotname in ("rot90", "rot270")
-
-    hub = min(30, max_w if swap else max_h)
-    wub = min(30, max_h if swap else max_w)
-    hub = max(5, hub)
-    wub = max(5, wub)
-
+             sqc=None, rot=None) -> dict:
     cols = interval(1, 10, 1)
-    h = unifint(diff_lb, diff_ub, (5, hub))
-    w = unifint(diff_lb, diff_ub, (5, wub))
+    if sqc is None:
+        sqc = random.choice(cols)
+    if rot is None:
+        rot = random.choice([0, 1, 2, 3])
+
+    # a 90/270 rotation swaps the axes, so bound the pre-rotation dims accordingly
+    hb = max_h if rot % 2 == 0 else max_w
+    wb = max_w if rot % 2 == 0 else max_h
+    hb = max(5, min(30, int(hb)))
+    wb = max(5, min(30, int(wb)))
+
     bgc = 0
     remcols = remove(bgc, cols)
     remcols = remove(sqc, remcols)
-    nsq = unifint(diff_lb, diff_ub, (1, 8))
-    gir = canvas(bgc, (h, w - 1))
-    gil = tuple((choice(remcols),) for j in range(h))
-    inds = asindices(gir)
-    succ = 0
-    fails = 0
-    maxfails = nsq * 5
-    while succ < nsq and fails < maxfails:
-        loci = randint(0, h - 3)
-        locj = randint(0, w - 3)
-        lock = randint(loci + 1, min(loci + max(1, 2 * h // 3), h - 1))
-        locl = randint(locj + 1, min(locj + max(1, 2 * w // 3), w - 1))
-        bd = backdrop(frozenset({(loci, locj), (lock, locl)}))
-        if bd.issubset(inds):
-            gir = fill(gir, sqc, bd)
-            succ += 1
-        else:
-            fails += 1
+
+    while True:
+        h = unifint(diff_lb, diff_ub, (5, hb))
+        w = unifint(diff_lb, diff_ub, (5, wb))
+        nsq = unifint(diff_lb, diff_ub, (1, 8))
+        gir = canvas(bgc, (h, w - 1))
+        gil = tuple((random.choice(remcols),) for j in range(h))
+        inds = asindices(gir)
+        succ = 0
+        fails = 0
+        maxfails = nsq * 5
+        while succ < nsq and fails < maxfails:
+            loci = random.randint(0, h - 3)
+            locj = random.randint(0, w - 3)
+            lock = random.randint(loci + 1, min(loci + max(1, 2 * h // 3), h - 1))
+            locl = random.randint(locj + 1, min(locj + max(1, 2 * w // 3), w - 1))
+            bd = backdrop(frozenset({(loci, locj), (lock, locl)}))
+            if bd.issubset(inds):
+                gir = fill(gir, sqc, bd)
+                succ += 1
+            else:
+                fails += 1
+        if succ > 0:
+            break
+
     locs = ofcolor(gir, sqc)
     gil = tuple(e if idx in apply(first, locs) else (bgc,) for idx, e in enumerate(gil))
     fullobj = toobject(locs, hupscale(gil, w))
     gi = hconcat(gil, gir)
     giro = paint(gir, fullobj)
     go = hconcat(gil, giro)
-    gi = rotf(gi)
-    go = rotf(go)
-    return {'input': gi, 'output': go}
+    rotf = (identity, rot90, rot180, rot270)[rot]
+    return {'input': rotf(gi), 'output': rotf(go)}
 
 
-def derive_operations(I, O):
+# ------------------------------------------------------------ 3. operations --
+
+def _sqc_from_examples(examples):
+    """The block colour is fixed for the episode and never survives into an
+    output (the key colours are drawn from a palette that excludes it), so it is
+    the colour present in every demo input and absent from every demo output."""
+    if not examples:
+        return None
+    cand = set(range(1, 10))
+    for pair in examples:
+        try:
+            ei = np.asarray(pair[0], dtype=int)
+            eo = np.asarray(pair[1], dtype=int)
+        except Exception:
+            return None
+        cand &= (set(np.unique(ei).tolist()) - set(np.unique(eo).tolist()))
+        if not cand:
+            return None
+    if len(cand) == 1:
+        return cand.pop()
+    return None
+
+
+def _check_line(I, kind, idx, sqc_hint):
+    """Is this border line the key-line?  `rest[i]` is the perpendicular
+    line belonging to key entry i."""
+    if kind == 'col':
+        key = I[:, idx]
+        rest = np.delete(I, idx, axis=1)
+    else:
+        key = I[idx, :]
+        rest = np.delete(I, idx, axis=0).T
+
+    vals = set(np.unique(rest).tolist()) - {0}
+    if len(vals) != 1:
+        return None
+    sqc = vals.pop()
+    if sqc_hint is not None and sqc != sqc_hint:
+        return None
+    if not key.any():
+        return None
+    if sqc in set(key.tolist()):
+        return None
+    # a key entry is coloured exactly when its perpendicular line carries blocks
+    for i in range(len(key)):
+        if bool(key[i] != 0) != bool((rest[i] == sqc).any()):
+            return None
+    return sqc, np.array(key, dtype=int)
+
+
+def _find_key(I, sqc_hint):
+    h, w = I.shape
+    cands = [('col', 0), ('col', w - 1), ('row', 0), ('row', h - 1)]
+    for hint in (sqc_hint, None):
+        for kind, idx in cands:
+            res = _check_line(I, kind, idx, hint)
+            if res is not None:
+                sqc, key = res
+                return kind, idx, key, sqc
+    return None
+
+
+def derive_operations(I, O, examples=None):
+    """Every block cell takes the colour of the key-line entry sitting on its
+    own row (key = a column) or its own column (key = a row).  Everything below
+    is measured from I and from the demonstrations; O is never inspected."""
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
+    h, w = I.shape
+
     ops, sels = [], []
 
-    # --- Rule read off I ---------------------------------------------------
-    # I holds one block colour (sqc) painting solid rectangles, plus a "key
-    # strip" on one grid edge holding one colour per line of the grid.
-    # Every block cell takes the key colour of the line it lies on.
-    gone = set(I.flatten().tolist()) - set(O.flatten().tolist())
-    if not gone:                      # no blocks were placed: nothing to do
-        ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
-        return ops, sels
-    sqc = gone.pop()
+    sqc_hint = _sqc_from_examples(examples)
+    found = _find_key(I, sqc_hint)
 
-    # The key strip is the edge line carrying >=2 cells that are neither
-    # background nor block colour (a perpendicular edge can only clip it once).
-    edges = [
-        ("col", 0,      [(r, 0) for r in range(hi)]),
-        ("col", wi - 1, [(r, wi - 1) for r in range(hi)]),
-        ("row", 0,      [(0, c) for c in range(wi)]),
-        ("row", hi - 1, [(hi - 1, c) for c in range(wi)]),
-    ]
-    kind, idx, best = None, None, -1
-    for k, i, cells in edges:
-        n = sum(1 for (r, c) in cells if I[r, c] != 0 and I[r, c] != sqc)
-        if n >= 2 and n > best:
-            kind, idx, best = k, i, n
-    if kind is None:
-        ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
-        return ops, sels
-    row_based = (kind == "col")       # strip is a column -> colour varies by row
-
-    # --- Blocks as objects -------------------------------------------------
-    cellset = {(r, c) for r in range(hi) for c in range(wi) if I[r, c] == sqc}
-    comps, seen = [], set()
-    for start in sorted(cellset):
-        if start in seen:
-            continue
-        q = deque([start]); seen.add(start); comp = []
-        while q:
-            r, c = q.popleft(); comp.append((r, c))
-            for nb in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-                if nb in cellset and nb not in seen:
-                    seen.add(nb); q.append(nb)
-        comps.append(comp)
-
-    def runs_of(vals):
-        vals = sorted(vals)
-        out, s, p = [], vals[0], vals[0]
-        for v in vals[1:]:
-            if v == p + 1:
-                p = v
+    if found is not None:
+        kind, key_idx, key, sqc = found
+        # walk along the key-line, recolouring one stripe of blocks per entry
+        for i in range(len(key)):
+            col = int(key[i])
+            if col == 0:
+                continue
+            if kind == 'col':
+                cells = [(i, c) for c in range(w) if c != key_idx and I[i, c] == sqc]
             else:
-                out.append((s, p)); s = v; p = v
-        out.append((s, p))
-        return out
+                cells = [(r, i) for r in range(h) if r != key_idx and I[r, i] == sqc]
+            if not cells:
+                continue
+            ops.append(col)            # Color<key colour> on that stripe's block cells
+            sels.append(sel_of(cells))
 
-    # One object at a time; inside it, stripe by stripe, using the key colour
-    # measured from the strip in I.
-    for comp in comps:
-        lines = {}
-        for (r, c) in comp:
-            k = r if row_based else c
-            lines.setdefault(k, []).append(c if row_based else r)
-        for k in sorted(lines):
-            key = int(I[k, idx]) if row_based else int(I[idx, k])
-            for a, b in runs_of(lines[k]):
-                ops.append(key)
-                if row_based:
-                    sels.append([k, a, 0, b - a])
-                else:
-                    sels.append([a, k, b - a, 0])
-
-    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
+    ops.append(34)
+    sels.append([0, 0, h - 1, w - 1])
     return ops, sels
 
 
@@ -226,7 +256,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
