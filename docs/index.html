@@ -435,7 +435,13 @@ footer .legal{max-width:1440px;margin:32px auto 0;font-size:12px;line-height:1;
 const PALETTE = ["#000000","#0074D9","#FF4136","#2ECC40","#FFDC00","#AAAAAA",
                  "#F012BE","#FF851B","#7FDBFF","#870C25","#F0F0F0"];
 const DS    = "dbsgh797210/SOLAR";          // the release: arc_agi1, nothing else
-const EXTRA = "dbsgh797210/SOLAR-extras";   // the control subset and the thumbnails
+/* The cards moved to DS. SOLAR-extras carries five hundred per-task JSON shards
+   that belong to no config, so adding one sends the dataset server through all
+   of them -- it sat locked for two days and took the released subset's cards
+   down with it, because a subset whose trajectories are fine still cannot draw
+   a task list. Eleven parquet files in DS index in minutes. EXTRA still serves
+   the handcraft control and its cards. */
+const EXTRA = "dbsgh797210/SOLAR-extras";   // the control subset
 /* The family subsets are per-task JSON shards, not an HF config — the viewer
    lazy-loads one shard per task. They used to sit beside this page, which put
    161 MB of data back into a repository whose whole point was not to carry any.
@@ -452,7 +458,7 @@ const SUBSETS = {
   // repo/prepo because these no longer share one dataset: SOLAR holds the release
   // and nothing else, so the control subset and every thumbnail live in -extras.
   "re-arc": {label:"RE-ARC", repo:DS, data:"arc_agi1",
-             prepo:EXTRA, preview:"preview",
+             prepo:DS, preview:"preview",
              tasks:400, episodes:10, blurb:"Augmented ARC-AGI-1 training set"},
   /* The same 400 tasks drawn from the makers as they stand now, beside the
      released draw rather than in place of it. What differs is the makers: none
@@ -461,8 +467,8 @@ const SUBSETS = {
      these solve every instance their generator produces where the released
      draw misses on twenty-four tasks. Kept as its own tab so the two can be
      read against each other before either replaces the other. */
-  "candidate": {label:"Candidate draw", tab:"Candidate", repo:EXTRA,
-                data:"arc_agi1_candidate", prepo:EXTRA,
+  "candidate": {label:"Candidate draw", tab:"Candidate", repo:DS,
+                data:"arc_agi1_candidate", prepo:DS,
                 preview:"preview_candidate", tasks:400, episodes:10,
                 blurb:"The same tasks, drawn from makers that do not read the answer"},
   "handcraft": {label:"Handcraft", repo:EXTRA, data:"handcraft",
