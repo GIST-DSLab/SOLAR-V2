@@ -57,6 +57,7 @@ CODE_MEANING = {
     "FAILS_REARC_INSTANCE":      "derive_operations did not solve instances drawn from the task's own RE-ARC generator and confirmed by its verifier — the rule it implements covers what your generate() samples, not what the task's generator produces",
     # emitted by probe_generator.py
     "GENERATOR_RULE_MISMATCH":   "the instances generate() produces do not follow the rule the task's RE-ARC generator implements: the verifier maps the same input to a different output. Re-read the generator and make generate() sample from its rule, and derive_operations solve that rule",
+    "ROUTE_USES_COORDINATE_DEVICE": "the route reaches the target but one of its operations is there to put the coordinates somewhere convenient rather than to carry out the rule — a flip so that a later selection lands elsewhere, or a turn whose effect is invisible because the region is symmetric",
     "CONCEPT_NOT_LEGIBLE":       "the answer and rule are right but the ops hide the rule — a valid but opaque route (growing-bbox doubling, or redraw where an object-unit Move of the object's exact shape is the concept). Re-derive so the concept is visible: select the object's true shape and Move it, or stamp the base unit at each period offset",
 }
 

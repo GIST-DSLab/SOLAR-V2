@@ -35,19 +35,21 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from maker.sel_helpers import sel_of
 
-# The only discrete structural variant this task has is the global rotation the
-# generator applies to both grids (identity / rot90 / rot180 / rot270).
+
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
+
+
+# discrete structural variant: the whole figure is rotated by rotf (4 cases).
+# The apex corner is what a solver must localize, so every rotation must be seen.
 VARIANTS = [{"rot": 0}, {"rot": 1}, {"rot": 2}, {"rot": 3}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    # background is hardcoded 0 in the generator -> not a sampled role.
-    # The palette the nested-L colors are drawn from is sampled -> fix it per episode.
-    numc = random.randint(2, 9)
-    ccols = random.sample(list(range(1, 10)), numc)
-
+    # Background is hardcoded 0 in the generator; band colours are sampled freely and
+    # the rule depends only on the band *sequence*, not on which colours they are.
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -55,129 +57,129 @@ def sample_colors(num_examples=None) -> dict:
         random.shuffle(examples)
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]   # test orientation was shown
-    return {"ccols": ccols, "instance_plan": plan}
+    plan = examples + [dict(random.choice(examples))]
+    return {"instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, ccols=None, rot=None) -> dict:
-    if ccols is None:
-        ccols = random.sample(list(range(1, 10)), random.randint(2, 9))
+def generate(diff_lb, diff_ub, max_h, max_w, rot=None, **kwargs) -> dict:
     if rot is None:
-        rot = random.choice(VARIANTS)["rot"]
+        rot = random.choice([0, 1, 2, 3])
 
-    dub = max(2, min(15, max_h // 2, max_w // 2))
-    try:
-        d = unifint(diff_lb, diff_ub, (2, dub))
-        numocc = unifint(diff_lb, diff_ub, (1, d))
-    except NameError:
-        d = random.randint(2, dub)
-        numocc = random.randint(1, d)
+    dmax = min(15, max_h // 2, max_w // 2)
+    if dmax < 2:
+        dmax = 2
+    d = _unifint(diff_lb, diff_ub, (2, dmax))
 
+    cols = list(range(1, 10))
+    numc = _unifint(diff_lb, diff_ub, (2, 9))
+    ccols = random.sample(cols, numc)
+    numocc = _unifint(diff_lb, diff_ub, (1, d))
     arr = [random.choice(ccols) for _ in range(numocc)]
     while len(set(arr)) == 1:
         arr = [random.choice(ccols) for _ in range(d)]
     n = len(arr)
 
-    # cell (r, c) belongs to the nested L of index max(r, c)
-    gi = [[arr[max(r, c)] if max(r, c) < n else 0 for c in range(d)] for r in range(d)]
-    go = [[arr[max(r, c) % n] for c in range(2 * d)] for r in range(2 * d)]
+    gi = [[0] * d for _ in range(d)]
+    for j, col in enumerate(arr):
+        for c in range(j + 1):
+            gi[j][c] = col
+        for r in range(j + 1):
+            gi[r][j] = col
 
-    for _ in range(rot):                      # rot CW quarter turns on both grids
-        gi = [list(x) for x in zip(*gi[::-1])]
-        go = [list(x) for x in zip(*go[::-1])]
+    D = 2 * d
+    go = [[0] * D for _ in range(D)]
+    for j in range(D):
+        col = arr[j % n]
+        for c in range(j + 1):
+            go[j][c] = col
+        for r in range(j + 1):
+            go[r][j] = col
 
-    gi = tuple(tuple(int(v) for v in row) for row in gi)
-    go = tuple(tuple(int(v) for v in row) for row in go)
+    for _ in range(rot % 4):
+        gi = [list(r) for r in zip(*gi[::-1])]
+        go = [list(r) for r in zip(*go[::-1])]
+
     return {"input": gi, "output": go}
 
 
 def derive_operations(I, O):
+    from maker.sel_helpers import sel_of
+
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     d = I.shape[0]
-    N = O.shape[0]                      # N == 2 * d
 
-    def canon_n(G):
-        """n if G is the canonical orientation (nested Ls anchored at top-left), else None."""
-        nz = np.argwhere(G != 0)
-        if nz.size == 0:
-            return None
-        r0, c0 = nz.min(axis=0)
-        r1, c1 = nz.max(axis=0)
-        if r0 != 0 or c0 != 0 or r1 != c1:
-            return None
-        n = int(r1) + 1
-        for r in range(G.shape[0]):
-            for c in range(G.shape[1]):
-                m = max(r, c)
-                want = G[m, m] if m < n else 0
-                if G[r, c] != want:
-                    return None
-        return n
+    # ---- measure everything from I ----
+    nz = np.argwhere(I != 0)
+    r0, c0 = int(nz[:, 0].min()), int(nz[:, 1].min())
+    r1, c1 = int(nz[:, 0].max()), int(nz[:, 1].max())
+    n = max(r1 - r0 + 1, c1 - c0 + 1)   # side of the nested-L square in I
 
-    k, n = None, None
-    for kk in range(4):
-        nn = canon_n(np.rot90(I, kk))
-        if nn is not None:
-            k, n = kk, nn
-            break
-    if k is None:                        # defensive fallback
-        nz = np.argwhere(I != 0)
-        r0, c0 = nz.min(axis=0)
-        r1, c1 = nz.max(axis=0)
-        k, n = 0, int(max(r1 - r0, c1 - c0)) + 1
+    def ring_cells(R, C, sr, sc, j, lim):
+        cells = []
+        for k in range(j + 1):
+            cells.append((R + sr * j, C + sc * k))
+            if k != j:
+                cells.append((R + sr * k, C + sc * j))
+        return [(r, c) for (r, c) in cells if 0 <= r < lim and 0 <= c < lim]
+
+    # apex = the grid corner from which I's nonzero cells form constant Chebyshev rings
+    apex = None
+    for (R, C) in [(0, 0), (0, d - 1), (d - 1, 0), (d - 1, d - 1)]:
+        sr = 1 if R == 0 else -1
+        sc = 1 if C == 0 else -1
+        ok = True
+        for j in range(n):
+            cells = ring_cells(R, C, sr, sc, j, d)
+            vals = {int(I[r, c]) for (r, c) in cells}
+            if len(vals) != 1 or 0 in vals:
+                ok = False
+                break
+        if ok:
+            # everything outside the n-square must be empty
+            mask = np.zeros((d, d), dtype=bool)
+            for j in range(n):
+                for (r, c) in ring_cells(R, C, sr, sc, j, d):
+                    mask[r, c] = True
+            if np.all(I[~mask] == 0):
+                apex = (R, C, sr, sc)
+                break
+    if apex is None:
+        R = 0 if r0 == 0 else d - 1
+        C = 0 if c0 == 0 else d - 1
+        apex = (R, C, 1 if R == 0 else -1, 1 if C == 0 else -1)
+    Ri, Ci, sr, sc = apex
+
+    # band colour sequence read outward from the apex (period n)
+    arr = [int(I[Ri + sr * j, Ci + sc * j]) for j in range(n)]
+
+    # ---- output geometry derived from I: side doubles, apex corner preserved ----
+    D = 2 * d
+    Ro = 0 if Ri == 0 else D - 1
+    Co = 0 if Ci == 0 else D - 1
 
     ops, sels = [], []
-    full_i = [0, 0, d - 1, d - 1]        # bbox == the whole input canvas (rotating everything)
-    full_o = [0, 0, N - 1, N - 1]        # bbox == the whole output canvas
 
-    # 1. Turn the pattern into its canonical orientation (Ls anchored at top-left).
-    if k == 1:
-        ops.append(24); sels.append(full_i)                    # CCW
-    elif k == 2:
-        ops.append(24); sels.append(full_i)
-        ops.append(24); sels.append(full_i)
-    elif k == 3:
-        ops.append(25); sels.append(full_i)                    # CW
+    # 1. expand the canvas to 2d x 2d (whole rectangle -> bbox selection is exact)
+    ops.append(33)
+    sels.append([0, 0, D - 1, D - 1])
 
-    # 2. Double the canvas.
-    ops.append(33); sels.append(full_o)
+    # simulate: ResizeGrid transparently copies I to the top-left of the new canvas
+    G = np.zeros((D, D), dtype=int)
+    G[:d, :d] = I
 
-    # 3. Replicate the colour sequence along the top row (period n).
-    ops.append(29); sels.append([0, 0, 0, n - 1])              # CopyO the n-colour sequence
-    c = n
-    while c < N:
-        ops.append(30); sels.append([0, c, 0, 0])
-        c += n
+    # 2. draw the nested L-bands outward from the apex, repeating arr with period n
+    for j in range(D):
+        col = arr[j % n]
+        cells = ring_cells(Ro, Co, sr, sc, j, D)
+        if all(G[r, c] == col for (r, c) in cells):
+            continue                      # this band already holds its colour
+        ops.append(col)
+        sels.append(sel_of(cells))
+        for (r, c) in cells:
+            G[r, c] = col
 
-    # 4. Replicate that periodic row down the whole canvas.
-    ops.append(29); sels.append([0, 0, 0, N - 1])              # CopyO the full periodic row
-    for r in range(1, N):
-        ops.append(30); sels.append([r, 0, 0, 0])
-
-    # 5. Keep only the upper triangle (c >= r); clear the strictly lower one to background 0
-    #    so the mirrored copy can be pasted into it.
-    lower = [(r, cc) for r in range(N) for cc in range(r)]
-    ops.append(0); sels.append(sel_of(lower))
-
-    # 6. The pattern is symmetric about the main diagonal: copy the upper triangle,
-    #    mirror the canvas diagonally (CCW rotate + vertical flip == transpose),
-    #    then paste the upper triangle back on top of the mirrored half.
-    ops.append(29); sels.append(full_o)                        # clipboard = upper triangle
-    ops.append(24); sels.append(full_o)
-    ops.append(27); sels.append(full_o)
-    ops.append(30); sels.append([0, 0, 0, 0])
-
-    # 7. Restore the original orientation.
-    if k == 1:
-        ops.append(25); sels.append(full_o)
-    elif k == 2:
-        ops.append(25); sels.append(full_o)
-        ops.append(25); sels.append(full_o)
-    elif k == 3:
-        ops.append(24); sels.append(full_o)
-
-    ops.append(34); sels.append(full_o)
+    ops.append(34)
+    sels.append([0, 0, D - 1, D - 1])
     return ops, sels
 
 
@@ -221,7 +223,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

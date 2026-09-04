@@ -35,38 +35,15 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-
-try:
-    from maker.sel_helpers import sel_of
-except Exception:  # pragma: no cover — documented mask format fallback
-    def sel_of(cells):
-        uniq = sorted({(int(r), int(c)) for r, c in cells})
-        return {"cells": [[r, c] for r, c in uniq]}
-
-
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    lo = int(a + (b - a) * diff_lb)
-    hi = int(a + (b - a) * diff_ub)
-    lo = max(a, min(lo, b))
-    hi = max(a, min(hi, b))
-    if hi < lo:
-        lo, hi = hi, lo
-    return random.randint(lo, hi)
-
-
-# The one discrete structural variant: the generator's coin flip mirrors the whole
-# instance diagonally, so the bars run as rows or as columns.  Both must be shown.
-VARIANTS = [{"mirrored": False}, {"mirrored": True}]
+from collections import Counter
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc, sqc = random.sample(cols, 2)          # background and marker-square colour
-    barcols = [c for c in cols if c not in (bgc, sqc)]
-    random.shuffle(barcols)                    # the palette the bars are drawn from
+    bgc = random.choice(cols)
+    sqc = random.choice([c for c in cols if c != bgc])
+    # discrete structural variant: bars run as rows (mirror=False) or as columns (mirror=True)
+    VARIANTS = [{"mirror": False}, {"mirror": True}]
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -75,135 +52,98 @@ def sample_colors(num_examples=None) -> dict:
     else:
         examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "sqc": sqc, "barcols": barcols, "instance_plan": plan}
+    return {"bgc": bgc, "sqc": sqc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, sqc, barcols, mirrored=None):
-    """RE-ARC generate_8e1813be with the colours fixed per episode.
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc: int, sqc: int, mirror=None) -> dict:
+    if mirror is None:
+        mirror = choice((True, False))
+    cols = interval(0, 10, 1)
+    remcols = remove(bgc, remove(sqc, cols))
 
-    Kept from the original: nbars in 3..8, one full-width bar per colour, hmarg
-    background rows spliced in among them, an nbars x nbars square isolated by a
-    background ring, and the optional diagonal mirror.  Changed: 30 -> max_h/max_w,
-    and w starts at 2*nbars+2 with locj placed so that nbars consecutive columns
-    stay clear of the square — i.e. every bar is readable end to end somewhere,
-    which is what the original leaves to chance at its smallest widths.
-    """
-    if mirrored is None:
-        mirrored = random.choice([True, False])
+    # h2 = nbars + hmarg rows, w cols before the optional dmirror (which transposes)
+    hlim = min(30, max_w if mirror else max_h)
+    wlim = min(30, max_h if mirror else max_w)
 
-    # dimensions of the grid BEFORE the optional mirror (bars are rows there)
-    H = min(30, max_w if mirrored else max_h)      # bound for h2 = nbars + hmarg
-    W = min(30, max_h if mirrored else max_w)      # bound for the bar length w
-    nb_ub = min(8, len(barcols), H // 3, (W - 2) // 2)
-    if nb_ub < 3:
-        raise ValueError("grid bounds too small for this task")
-    nbars = _unifint(diff_lb, diff_ub, (3, nb_ub))
-    ccols = random.sample(list(barcols), nbars)
+    nb_ub = min(8, hlim // 3, wlim - 3)
+    nb_ub = max(3, nb_ub)
+    nbars = unifint(diff_lb, diff_ub, (3, nb_ub))
+    ccols = sample(remcols, nbars)
+    w = unifint(diff_lb, diff_ub, (nbars + 3, max(nbars + 3, wlim)))
+    hmarg_ub = max(2 * nbars, min(30 - nbars, hlim - nbars))
+    hmarg = unifint(diff_lb, diff_ub, (2 * nbars, hmarg_ub))
 
-    w = _unifint(diff_lb, diff_ub, (2 * nbars + 2, W))
-    hmarg = _unifint(diff_lb, diff_ub, (2 * nbars, H - nbars))
+    ccols = list(ccols)
+    go = tuple(repeat(col, nbars) for col in ccols)
+    gi = tuple(repeat(col, w) for col in ccols)
+    r = repeat(bgc, w)
+    for k in range(hmarg):
+        idx = randint(0, len(go) - 1)
+        gi = gi[:idx] + (r,) + gi[idx:]
     h2 = nbars + hmarg
-
-    gi = [[c] * w for c in ccols]
-    bgrow = [bgc] * w
-    for _ in range(hmarg):
-        idx = random.randint(0, nbars - 1)         # as in the original
-        gi = gi[:idx] + [list(bgrow)] + gi[idx:]
-
-    loci = random.randint(1, h2 - nbars - 2)
-    locj = random.choice([j for j in range(1, w - nbars - 1)
-                          if (j - 1 >= nbars or w - j - nbars - 1 >= nbars)])
-    for i in range(loci, loci + nbars):            # the square
-        for j in range(locj, locj + nbars):
-            gi[i][j] = sqc
-    for i in range(loci - 1, loci + nbars + 1):    # its background ring
-        for j in range(locj - 1, locj + nbars + 1):
-            if i in (loci - 1, loci + nbars) or j in (locj - 1, locj + nbars):
-                gi[i][j] = bgc
-
-    go = [[c] * nbars for c in ccols]
-    if mirrored:
-        gi = [list(r) for r in zip(*gi)]
-        go = [list(r) for r in zip(*go)]
-    return {"input": tuple(tuple(r) for r in gi),
-            "output": tuple(tuple(r) for r in go)}
+    oh, ow = nbars, nbars
+    loci = randint(1, h2 - oh - 2)
+    locj = randint(1, w - ow - 2)
+    sq = backdrop(frozenset({(loci, locj), (loci + oh - 1, locj + ow - 1)}))
+    gi = fill(gi, sqc, sq)
+    gi = fill(gi, bgc, outbox(sq))
+    if mirror:
+        gi = dmirror(gi)
+        go = dmirror(go)
+    return {'input': gi, 'output': go}
 
 
 def derive_operations(I, O):
-    """Squeeze the bars together, then keep that block.  Everything is read off I.
-
-    Read from I alone: a bar is a colour whose cells all lie in one row (or all in
-    one column) — the square and the background span many of both.  Their count n
-    is the answer's side, their orientation says whether the bars are rows or
-    columns, their order along the grid is their order in the answer, and n
-    consecutive lines across which every bar is unbroken (the square hides pieces
-    of the ones it crosses) is the strip the answer is cut from.
-
-    Each bar then has to travel from where it is to its own slot — bar k to line k.
-    That move is done as a REFLECTION: mirroring the strip segment between slot k
-    and bar k carries the bar onto slot k, and carries nothing else, because the
-    bars before k are already parked outside the segment and the bars after k are
-    still beyond its far end.  A reflection is also the only rigid motion that can
-    carry a BLACK bar: ARCLE's Move keeps only non-zero cells of a selection, so a
-    colour-0 bar cannot be dragged, while FlipH/FlipV mirror the whole region and
-    leave its zeros as zeros.  Bars the square cut into are repaired first, in
-    their own colour, on their own line — the only cells this ever paints.
-    Finally the n x n block is cropped out.  O is never inspected.
+    """
+    Rule (read off I):
+      I holds several 1-thick bars (each bar = every cell of one colour lies in a single
+      row, or a single column), plus a fat square block and background.  The answer is those
+      bars alone, squeezed together side by side, keeping their original order and as many
+      lines as there are bars.
+    Ops: for each bar, in bar order, paint its colour onto its slot of the n*n corner block
+         (skipped when the bar already occupies that slot), then crop to that block.
     """
     I = np.asarray(I, dtype=int)
+    O = np.asarray(O, dtype=int)
+    hi, wi = I.shape
 
-    # --- the bars: colours confined to a single row or a single column ---------
-    n_row1 = n_col1 = 0
-    found = []
+    # --- find the 1-thick bars in I (colour confined to one row / one column) -------------
+    bars_h, bars_v, amb = [], [], []          # (row, colour) / (col, colour) / ambiguous
     for v in np.unique(I):
-        cells = np.argwhere(I == v)
-        r0, r1 = int(cells[:, 0].min()), int(cells[:, 0].max())
-        c0, c1 = int(cells[:, 1].min()), int(cells[:, 1].max())
-        one_row, one_col = (r0 == r1), (c0 == c1)
-        n_row1 += one_row
-        n_col1 += one_col
-        if one_row or one_col:
-            found.append((r0, c0, int(v)))
-    rowcase = n_row1 > n_col1            # bars run as rows, else as columns
-    bars = sorted((r0 if rowcase else c0, v) for (r0, c0, v) in found)
+        rs, cs = np.where(I == v)
+        nr, nc = len(set(rs.tolist())), len(set(cs.tolist()))
+        if nr == 1 and nc == 1:               # bar eaten down to a single cell by the square
+            amb.append((int(rs[0]), int(cs[0]), int(v)))
+        elif nr == 1:
+            bars_h.append((int(rs[0]), int(v)))
+        elif nc == 1:
+            bars_v.append((int(cs[0]), int(v)))
+
+    vertical = len(bars_v) > len(bars_h)      # orientation given by the full-length bars
+    if vertical:
+        bars = bars_v + [(c, v) for (r, c, v) in amb]
+    else:
+        bars = bars_h + [(r, v) for (r, c, v) in amb]
+    bars.sort()                               # order = leftmost (or uppermost) in I
     n = len(bars)
-
-    # canonical view: bars as columns of G, bar k at column p, target column k
-    G = I.T if rowcase else I
-
-    # --- the strip: n consecutive lines crossing every bar (fewest gaps wins) ---
-    best = None
-    for b in range(G.shape[0] - n + 1):
-        gaps = sum(1 for r in range(b, b + n) for p, c in bars if G[r, p] != c)
-        if best is None or gaps < best[0]:
-            best = (gaps, b)
-    b = best[1]
-
-    def back(r, c):                       # canonical cell -> cell of I
-        return (c, r) if rowcase else (r, c)
 
     ops, sels = [], []
 
-    # --- restore the pieces of a bar the square covers, inside the strip -------
-    for p, c in bars:
-        hidden = [back(r, p) for r in range(b, b + n) if G[r, p] != c]
-        if hidden:
-            ops.append(int(c))
-            sels.append(sel_of(hidden))
+    # --- lay the bars down, one op per bar object, in bar order ---------------------------
+    for k, (pos, col) in enumerate(bars):
+        if vertical:
+            if not bool(np.all(I[0:n, k] == col)):   # bar k already sits in slot k -> nothing to do
+                ops.append(int(col))
+                sels.append([0, k, n - 1, 0])
+        else:
+            if not bool(np.all(I[k, 0:n] == col)):
+                ops.append(int(col))
+                sels.append([k, 0, 0, n - 1])
 
-    # --- fold each bar onto its slot: mirror the strip segment [slot k .. bar p]
-    flip = 27 if rowcase else 26          # rows -> FlipV (flipud), cols -> FlipH
-    for k, (p, c) in enumerate(bars):
-        if p == k:                        # already standing in its slot
-            continue
-        # the selection IS exactly this full rectangle: the whole segment is
-        # reflected, background and all, which is what moves the bar to slot k
-        sels.append([k, b, p - k, n - 1] if rowcase else [b, k, n - 1, p - k])
-        ops.append(flip)
-
-    # --- keep the assembled n x n block ---------------------------------------
+    # --- keep only the assembled block (bars no longer needed) ----------------------------
     ops.append(33)
-    sels.append([0, b, n - 1, n - 1] if rowcase else [b, 0, n - 1, n - 1])
+    sels.append([0, 0, n - 1, n - 1])
     ops.append(34)
     sels.append([0, 0, n - 1, n - 1])
     return ops, sels
@@ -249,7 +189,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
