@@ -674,9 +674,23 @@ def pick(scores: dict, incumbent: str, order: list,
             and spare(base) >= spare_min
             and base["copy"] <= 1e-9 and base["idle"] <= 1e-9
             and base["dep"] <= dp + 1e-9 and base["solve"] >= sv - 1e-9):
-        return None, ("the incumbent reaches the answer without one of its own "
-                      "operations, and no candidate is better on anything else; "
-                      "this is a repair, not a swap")
+        # Here `route` earns its keep, as a veto rather than a prize. A
+        # candidate that drops the spare operation and picks up nothing else is
+        # the repair the finding asked for -- 995c5fa3's regeneration sizes its
+        # canvas once and stands at the incumbent's route. A candidate that
+        # wins this axis while acquiring the operation family the incumbent
+        # never had is the shape of 628fda7, and being clean of one marginal
+        # fault does not buy it. Preferring a lower route is not something a
+        # maker can be written towards; the ones that could win by it are the
+        # ones already keeping the route they had.
+        repair = {k: v for k, v in top.items()
+                  if v["route"] <= base["route"] + 1e-9}
+        if not repair:
+            return None, ("the incumbent reaches the answer without one of its "
+                          "own operations, and the only candidates without that "
+                          "fault take on operations it never had; this is a "
+                          "repair, not a swap")
+        top = repair
     if incumbent in top:
         return incumbent, "already the best of the candidates; kept"
     # Several candidates can be indistinguishable on all of it. Break it by the
@@ -696,6 +710,10 @@ def pick(scores: dict, incumbent: str, order: list,
         if base["idle"] > 1e-9:
             why.append(f"the incumbent's geometry cancels out on "
                        f"{base['idle']:.0%} of its solutions")
+        if spare(base) >= spare_min:
+            why.append(f"the incumbent reaches the answer without one of its "
+                       f"own operations on {spare(base):.0%} of the instances "
+                       f"looked at")
         if base["solve"] < s0 - 1e-9:
             why.append(f"the incumbent solves {base['solve']:.0%} against {s0:.0%}")
     lead = "; ".join(why) or "it is preferred on the concept"

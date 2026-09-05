@@ -73,3 +73,13 @@ def test_a_minority_spare_rate_is_the_draw_not_the_route():
     scores = {"arc-agi-1": s(solve=0.9), "redo": s(solve=1.0, spare=0.33)}
     win, _ = pick(scores, "arc-agi-1", ["arc-agi-1", "redo"])
     assert win == "redo"
+
+
+def test_the_repair_of_a_spare_incumbent_is_taken():
+    """A candidate that gives up the spare operation without picking up any
+    operation the incumbent did not have is the repair the finding asked for."""
+    scores = {"arc-agi-1": s(spare=0.6), "redo-spare": s(spare=0.0),
+              "redo-reflect": s(spare=0.0, route=1.0)}
+    win, _ = pick(scores, "arc-agi-1",
+                  ["arc-agi-1", "redo-spare", "redo-reflect"])
+    assert win == "redo-spare"
