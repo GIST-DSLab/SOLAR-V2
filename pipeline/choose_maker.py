@@ -10,11 +10,20 @@ off O, or that an ancestor had done the same job without them.
 So the candidates are scored, not read, and the ancestor is a candidate too --
 `arc-best` competes with the newest regeneration and wins where it deserves to.
 Every candidate sees the same instances, drawn the way the rollout draws them,
-and each gives up three rates:
+and each gives up its rates:
 
     solve   the ops, replayed on I, reach O
-    route   the ops contain the operation family the verifier's concept names
     copy    handed a different instance's output, the ops reach it anyway
+    dep     the ops change when the answer is disturbed
+    idle    some group of its turns or moves composes to the identity
+    spare   the route reaches O with one of its own operations left out
+    route   the ops contain the operation family the verifier's concept names
+
+Only the first five decide anything. `route` is reported, and was once the last
+filter: six routes were promoted by it alone and taken back out by hand in
+628fda7, among them a transpose spelled with two flips that beat a crop. What
+an operation family can be scored on, it can be satisfied by, so it says which
+candidate carries the concept and never which one to keep.
 
 `route` is `probe_direction` per instance rather than per maker, and that is the
 point of measuring it here: a maker that flips on three quarters of its
@@ -31,6 +40,7 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+import datetime
 import importlib.util
 import inspect
 import json
@@ -51,6 +61,7 @@ sys.path.insert(0, str(SOLAR_ROOT / "re-arc"))
 from probe_direction import CONCEPTS, verifier_concepts  # noqa: E402
 
 MAX_GRID_DIM = (30, 30)
+SPARE_MIN = 0.5
 OP_ID = {name: i for i, name in enumerate(solar_utils.action_names)}
 
 _REARC = {}
@@ -228,6 +239,48 @@ def replay(derive, I, O_shown, examples=None):
         env.close()
 
 
+TERMINAL = {OP_ID.get("Submit", 34)}
+
+
+def _run(I, O_shown, ops, sels):
+    """The grid a given route produces, or None if the environment refuses it."""
+    env = gym.make("ARCLE/O2ARCv2Env-v0", render_mode=None,
+                   data_loader=_One(I, O_shown), max_grid_size=MAX_GRID_DIM,
+                   colors=10, max_episode_steps=None, max_trial=1)
+    try:
+        obs, _ = env.reset(options={"prob_index": 0, "adaptation": False})
+        for op, sel in zip(ops, sels):
+            obs, _, _, _, _ = env.step(
+                {"selection": solar_utils.to_sel_mask(sel, MAX_GRID_DIM).astype(bool),
+                 "operation": int(op)})
+        h, w = int(obs["grid_dim"][0]), int(obs["grid_dim"][1])
+        return np.asarray(obs["grid"])[:h, :w].astype(int)
+    except Exception:
+        return None
+    finally:
+        env.close()
+
+
+def spare_ops(I, O, ops, sels) -> list:
+    """The operations this route reaches O without, named.
+
+    No judgement is involved and there are no false positives: the route minus
+    that operation is replayed and it still lands on the answer, so the
+    operation was not paid for. `cancels` cannot see this one -- half the routes
+    it catches break under either deletion -- and this cannot see that one, so
+    both are asked. What neither sees is an operation that is needed for the
+    wrong reason, and no measurement here will.
+    """
+    out = []
+    for i, op in enumerate(ops):
+        if int(op) in TERMINAL:
+            continue
+        g = _run(I, O, ops[:i] + ops[i + 1:], sels[:i] + sels[i + 1:])
+        if g is not None and g.shape == O.shape and bool((g == O).all()):
+            out.append((i, NAME.get(int(op), str(int(op)))))
+    return out
+
+
 TURN = {"FlipH": ((1, 0), (0, -1)), "FlipV": ((-1, 0), (0, 1)),
         "Rotate90": ((0, -1), (1, 0)), "Rotate270": ((0, 1), (-1, 0))}
 MOVE = {"MoveU": (-1, 0), "MoveD": (1, 0), "MoveL": (0, -1), "MoveR": (0, 1)}
@@ -354,7 +407,7 @@ def copy_pairs(pairs):
 
 
 def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
-          eps=None) -> dict:
+          eps=None, ablate: int = 3, ablate_max_ops: int = 60) -> dict:
     """solve / route / copy for one candidate on a fixed set of instances.
 
     `eps` are episodes -- (demonstrations, test) -- and when they are given the
@@ -372,6 +425,13 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
         shows = None
     n = len(pairs)
     solved = routed = idle = 0
+    # Ablation costs one replay per operation, so it is asked of the first few
+    # solved instances rather than all of them, and of routes short enough that
+    # the bill stays flat. A route past the cap reports None: unmeasured, not
+    # clean.
+    spare_hits = spare_seen = 0
+    spare_which = None
+    lens = []
     missed = []
     for i, (I, O) in enumerate(pairs):
         shown = shows[i] if shows else [
@@ -379,10 +439,18 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
         g, ops, sels = replay(derive, I, O, shown)
         if g is not None and g.shape == O.shape and bool((g == O).all()):
             solved += 1
+            lens.append(len(ops))
             if want and set(ops) & want:
                 routed += 1
             if cancels(ops, sels):
                 idle += 1
+            if spare_seen < ablate and len(ops) <= ablate_max_ops:
+                spare_seen += 1
+                found = spare_ops(I, O, ops, sels)
+                spare_hits += int(bool(found))
+                if found and spare_which is None:
+                    spare_which = [f"the {n} at position {i} of {len(ops)}"
+                                   for i, n in found]
         else:
             missed.append(i)
     dep = depends_on_O(derive, pairs[:8], np.random.default_rng(0))
@@ -396,6 +464,12 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
             "route": routed / solved if solved else 0.0,
             "copy": copied / len(cpairs) if cpairs else 0.0,
             "idle": idle / solved if solved else 0.0,
+            "spare": spare_hits / spare_seen if spare_seen else None,
+            "spare_seen": spare_seen, "spare_which": spare_which,
+            # Reported, never a condition. What a route costs is the operations
+            # in it that do nothing, which `idle` and `spare` name directly; a
+            # length made into a bar is a length to write towards.
+            "ops": sum(lens) / len(lens) if lens else None,
             "dep": dep,
             "solved": solved, "routed": routed, "idled": idle, "missed": missed,
             "copied": copied, "trials": len(cpairs),
@@ -415,6 +489,22 @@ def regenerate_finding(task: str, concept: str | None, cur: dict,
     it solves everything, by reading. The instance that actually defeated the
     honest attempts is in the best of them, so that is what gets shown.
     """
+    spare_text = (
+        f"On {cur['spare']:.0%} of the instances looked at, the grid your "
+        f"operations produce is exactly the same when one of them is left out — "
+        + "; ".join(cur.get("spare_which") or []) + ". Nothing in the answer "
+        f"depends on it: it is written, and then the route arrives where it "
+        f"would have arrived anyway. Every operation has to be one the answer "
+        f"needs.") if (cur.get("spare") or 0.0) >= SPARE_MIN else ""
+    if spare_text and not cur["copy"] and not cur.get("dep") and cur["solve"] >= 1:
+        # Nothing else is wrong with this one. Sending the whole lecture with it
+        # asks a maker that already derives from I to stop reading O, and it
+        # will find something to change; one fault, one instruction, and the
+        # rest of the route is to come back as it was.
+        return {"code": "SPARE_OPERATION", "severity": "medium",
+                "evidence": spare_text + " Removing it is the whole change: the "
+                            "rest of the route is right and should come back "
+                            "unaltered."}
     ev = [f"Of {cur['n']} instances drawn from this task's own generator and "
           f"vouched for by its verifier, your derive_operations solves "
           f"{cur['solved']}."]
@@ -432,6 +522,8 @@ def regenerate_finding(task: str, concept: str | None, cur: dict,
         "rarely it runs. Nothing is being asked about which operations you use: "
         "whatever route derives from I is the right one, and a route that paints "
         "cells is not worse than one that turns them.")
+    if spare_text:
+        ev.append(spare_text)
     ev += _honest_attempt_evidence(scores, pairs)
     return {"code": "ANSWER_COPIED_FROM_O", "severity": "high",
             "evidence": "\n\n".join(ev)}
@@ -460,7 +552,8 @@ def _honest_attempt_evidence(scores, pairs) -> list:
     return out
 
 
-def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
+def pick(scores: dict, incumbent: str, order: list,
+         spare_min: float = SPARE_MIN) -> tuple[str | None, str]:
     """The candidate that carries the concept without reading the answer.
 
     An earlier draft ordered these as two tie-breaks -- fewest copies, then most
@@ -471,6 +564,22 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
     honest answer is that none of them is good enough yet: say so, and let the
     finding go back to the generator.
     """
+    def spare(v):
+        """The spare rate, on the scale where it counts as a fault.
+
+        Deleting an operation and still landing on the answer is decisive about
+        the instance and not about the route: across the released draw, 38 of
+        400 tasks have some operation their route reaches the answer without,
+        and in all but four of them it is one or two episodes in five -- a
+        colour laid on cells that instance already had that colour, needed by
+        every other instance. What a majority means is that the route emits it
+        whatever it is given, which is the maker's doing. Below that it is the
+        draw's, and rejecting on it would hold a tenth of the set for repairs
+        that are not there.
+        """
+        r = v.get("spare")
+        return 0.0 if r is None else float(r)
+
     live = {k: v for k, v in scores.items() if v.get("loaded")}
     if not live:
         return None, "no candidate loaded"
@@ -495,7 +604,8 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
         # nine per cent fewer. Coverage bought that way is not coverage to
         # defend.
         clean = [v["solve"] for v in live.values()
-                 if v["copy"] <= 1e-9 and v["idle"] <= 1e-9]
+                 if v["copy"] <= 1e-9 and v["idle"] <= 1e-9
+                 and spare(v) < spare_min]
         if clean:
             s0 = max(clean)
     ok = {k: v for k, v in live.items() if v["solve"] >= s0 - 1e-9}
@@ -507,14 +617,22 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
     # have already passed, never a condition on its own.
     idle0 = base["idle"] if base else 0.0
     dep0 = base["dep"] if base else 1.0
+    # `spare` is what `idle` cannot see. A mirror and its undo compose to the
+    # identity and neither one can be deleted, which is why the algebra above
+    # exists; an operation the route reaches O without is the other shape of the
+    # same fault, and only deleting it shows that. Neither test subsumes the
+    # other, so both are conditions. Where the route was too long to ablate the
+    # rate is None, and an unmeasured axis rejects nobody.
     good = {k: v for k, v in ok.items()
             if v["copy"] <= 1e-9 and v["idle"] <= idle0 + 1e-9 and v["idle"] <= 1e-9
+            and spare(v) < spare_min
             and v["dep"] <= dep0 + 1e-9}
     if not good:
         # A candidate whose geometry cancels is not an improvement even when
         # the incumbent's does too; if nothing is clean, say so.
         good = {k: v for k, v in ok.items()
-                if v["copy"] <= 1e-9 and v["idle"] <= idle0 - 1e-9}
+                if v["copy"] <= 1e-9 and v["idle"] <= idle0 - 1e-9
+                and spare(v) < spare_min}
     if not good:
         return None, ("no candidate keeps its parameters off O and performs the "
                       "geometry it contains")
@@ -532,8 +650,33 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
     good = {k: v for k, v in good.items() if v["dep"] <= dp + 1e-9}
     sv = max(v["solve"] for v in good.values())
     good = {k: v for k, v in good.items() if v["solve"] >= sv - 1e-9}
-    hi = max(v["route"] for v in good.values())
-    top = {k: v for k, v in good.items() if v["route"] >= hi - 1e-9}
+    # Nothing after coverage. `route` used to be the last filter, and on the six
+    # tasks repinned in 628fda7 it was the only one that separated anything: the
+    # candidate tied its incumbent on every measured axis and contained the
+    # operation family the verifier's concept names, so a transpose spelled with
+    # two flips beat a crop, and a version that had to insert geometry to score
+    # here replaced one that did not need it. Counting whether an operation
+    # appears is satisfiable by appearing. It is reported and it decides nothing.
+    # Candidates that reach here are indistinguishable on everything measurable,
+    # and where the incumbent is among them it stays: a promotion is earned on an
+    # axis or it does not happen. Route length is not a tie-break either -- made
+    # one, the shortest route becomes the thing to write towards.
+    top = good
+    # A spare operation in the incumbent is a repair, not a reason to swap.
+    # 995c5fa3 grows its canvas before painting and then resizes it to the
+    # answer, so the first resize can go -- and the only candidate without that
+    # fault was the one taken out in 628fda7 for spelling a transpose with two
+    # flips. Cleanliness on the single axis the incumbent fails does not make a
+    # candidate better; what it is worse at is what nothing here measures. So
+    # where the incumbent would have been kept but for its spare operations,
+    # nothing is promoted and the task goes back to be regenerated.
+    if (incumbent not in top and base is not None
+            and spare(base) >= spare_min
+            and base["copy"] <= 1e-9 and base["idle"] <= 1e-9
+            and base["dep"] <= dp + 1e-9 and base["solve"] >= sv - 1e-9):
+        return None, ("the incumbent reaches the answer without one of its own "
+                      "operations, and no candidate is better on anything else; "
+                      "this is a repair, not a swap")
     if incumbent in top:
         return incumbent, "already the best of the candidates; kept"
     # Several candidates can be indistinguishable on all of it. Break it by the
@@ -558,9 +701,29 @@ def pick(scores: dict, incumbent: str, order: list) -> tuple[str | None, str]:
     lead = "; ".join(why) or "it is preferred on the concept"
     got = top[k]
     return k, (f"{lead}. This one solves, never draws another instance's output, "
-               f"performs the geometry it contains, does not change its route "
-               f"when the answer is disturbed ({got['dep']:.0%}), and carries the "
-               f"concept on {hi:.0%} of its solutions")
+               f"performs the geometry it contains, keeps no operation the route "
+               f"reaches the answer without, and does not change its route when "
+               f"the answer is disturbed ({got['dep']:.0%})"
+               + (f"; it carries the concept on {got['route']:.0%} of its "
+                  f"solutions, which is reported and was not why it won"
+                  if got.get("measured_route") else ""))
+
+
+def keep(root: Path, incumbent: str, task: str, rec: dict, stamp: str):
+    """Put the version about to be overwritten somewhere it can be read back.
+
+    Six routes were replaced by worse ones and the replacement was a `rmtree`,
+    so what had been there was recoverable only from a draw made before it. The
+    copy costs a few kilobytes and the ledger beside it says, per task, what was
+    swapped for what and on which numbers.
+    """
+    dst = root / incumbent / task
+    if not dst.exists():
+        return None
+    held = root / ".promoted" / stamp / task
+    held.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(dst, held, dirs_exist_ok=True)
+    return str(held.relative_to(root.parent))
 
 
 def main() -> None:
@@ -579,12 +742,21 @@ def main() -> None:
     ap.add_argument("--findings", default=None,
                     help="write the tasks with no acceptable candidate as "
                          "critique records, for critique_to_feedback.py")
+    ap.add_argument("--spare_min", type=float, default=SPARE_MIN,
+                    help="share of ablated instances that must give up an "
+                         "operation before it counts against a route")
+    ap.add_argument("--ablate", type=int, default=3,
+                    help="solved instances per candidate to delete operations "
+                         "from; 0 turns the check off")
+    ap.add_argument("--ablate_max_ops", type=int, default=60,
+                    help="routes longer than this are reported unmeasured")
     ap.add_argument("--apply", action="store_true",
                     help="copy each winner into the incumbent set")
     args = ap.parse_args()
 
     incumbent = args.candidates[0]
     root = SOLAR_ROOT / "maker"
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     vconcepts = verifier_concepts(Path(args.rearc_root))
 
     tasks = args.tasks
@@ -611,8 +783,10 @@ def main() -> None:
             # shown rather than another maker's.
             eps = (episodes_from_draw(args.episodes_root, t)
                    if args.episodes_root else None)
-            scores[cand] = score(t, p, pairs, cpairs, want, eps=eps)
-        win, why = pick(scores, incumbent, args.candidates)
+            scores[cand] = score(t, p, pairs, cpairs, want, eps=eps,
+                                 ablate=args.ablate,
+                                 ablate_max_ops=args.ablate_max_ops)
+        win, why = pick(scores, incumbent, args.candidates, args.spare_min)
         rec = {"task_id": t, "concept": cname, "instances": len(pairs),
                "winner": win, "reason": why,
                "changed": win is not None and win != incumbent,
@@ -624,10 +798,12 @@ def main() -> None:
         recs.append(rec)
         s = "  ".join(
             f"{c}:{scores[c]['solve']:.2f}/{scores[c]['route']:.2f}/"
-            f"{scores[c]['copy']:.2f}/{scores[c]['idle']:.2f}/{scores[c]['dep']:.2f}"
+            f"{scores[c]['copy']:.2f}/{scores[c]['idle']:.2f}/{scores[c]['dep']:.2f}/"
+            + ("-" if scores[c].get("spare") is None else f"{scores[c]['spare']:.2f}")
             if scores[c].get("loaded") else f"{c}:-" for c in args.candidates)
         print(f"{t}  {s}   -> {win or 'none of them'}", flush=True)
         if args.apply and win is not None and win != incumbent:
+            rec["replaced"] = keep(root, incumbent, t, rec, stamp)
             src, dst = root / win / t, root / incumbent / t
             shutil.rmtree(dst, ignore_errors=True)
             shutil.copytree(src, dst)
@@ -635,6 +811,20 @@ def main() -> None:
     for r in recs:
         for v in r["scores"].values():
             v.pop("_derive", None)
+    if args.apply:
+        moved = [r for r in recs if r.get("replaced")]
+        if moved:
+            led = root / ".promoted" / stamp / "promotions.json"
+            led.parent.mkdir(parents=True, exist_ok=True)
+            axes = ('solve', 'route', 'copy', 'idle', 'spare', 'dep', 'ops')
+            led.write_text(json.dumps(
+                [{"task_id": r["task_id"], "into": incumbent,
+                  "from": r["winner"], "reason": r["reason"],
+                  "held": r["replaced"],
+                  "before": {a: r["scores"][incumbent].get(a) for a in axes},
+                  "after": {a: r["scores"][r["winner"]].get(a) for a in axes}}
+                 for r in moved], indent=1))
+            print(f"  {len(moved)} replaced versions held under {led.parent}")
     Path(args.out).write_text(json.dumps(recs, indent=1))
     ch = [r for r in recs if r["changed"]]
     rg = [r for r in recs if r["winner"] is None]
