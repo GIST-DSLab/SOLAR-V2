@@ -35,220 +35,266 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from collections import Counter
 from maker.sel_helpers import sel_of
 
-# the dot-chain direction is a discrete structural variant -> plan it per episode
-DIRECS = [{"direc": "down"}, {"direc": "right"}, {"direc": "unity"}]
+DIRECS = ["down", "right", "unity"]
+_DVEC = {"down": (1, 0), "right": (0, 1), "unity": (1, 1)}
 
 
+def _unifint(diff_lb, diff_ub, bounds):
+    try:
+        return unifint(diff_lb, diff_ub, bounds)  # noqa: F821  (re-arc utils)
+    except NameError:
+        a, b = bounds
+        return random.randint(a, b)
+
+
+# ---------------------------------------------------------------- 1. colors
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
     bgc = random.choice(cols)
     rem = [c for c in cols if c != bgc]
     dotcol = random.choice(rem)
-    rem = [c for c in rem if c != dotcol]
-    boxcol = random.choice(rem)
+    # boxcol must be non-zero: ARCLE object ops (Move) only grab NON-ZERO cells,
+    # and the box is the object that translates.
+    rem2 = [c for c in rem if c != dotcol and c != 0]
+    boxcol = random.choice(rem2)
+
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(DIRECS):
-        examples = [dict(v) for v in DIRECS]
-        examples += [dict(random.choice(DIRECS)) for _ in range(n_ex - len(DIRECS))]
+        examples = [{"direc": d} for d in DIRECS]
+        examples += [{"direc": random.choice(DIRECS)} for _ in range(n_ex - len(DIRECS))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(DIRECS, n_ex)]
+        examples = [{"direc": d} for d in random.sample(DIRECS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "dotcol": dotcol, "boxcol": boxcol, "instance_plan": plan}
 
 
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    return random.randint(a + int((b - a) * diff_lb), a + int((b - a) * diff_ub))
-
-
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, dotcol, boxcol, direc=None) -> dict:
+# ---------------------------------------------------------------- 2. generate
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, dotcol, boxcol, direc=None, **kwargs) -> dict:
     if direc is None:
-        direc = random.choice([v["direc"] for v in DIRECS])
-    hub = max(7, min(int(max_h), 30))
-    wub = max(7, min(int(max_w), 30))
+        direc = random.choice(DIRECS)
+    di, dj = _DVEC[direc]
+
+    hub = max(7, min(30, int(max_h)))
+    wub = max(7, min(30, int(max_w)))
     h = _unifint(diff_lb, diff_ub, (7, hub))
     w = _unifint(diff_lb, diff_ub, (7, wub))
+
     doth = _unifint(diff_lb, diff_ub, (1, h // 3))
     dotw = _unifint(diff_lb, diff_ub, (1, w // 3))
     borderh = _unifint(diff_lb, diff_ub, (1, h // 4))
     borderw = _unifint(diff_lb, diff_ub, (1, w // 4))
-    dvr, dvc = {"down": (1, 0), "right": (0, 1), "unity": (1, 1)}[direc]
-    hi_i = h - doth - 1 if direc == "right" else h - doth - borderh - 1
-    hi_j = w - dotw - 1 if direc == "down" else w - dotw - borderw - 1
-    loci = random.randint(0, max(0, hi_i))
-    locj = random.randint(0, max(0, hi_j))
-    offr = dvr * (doth + borderh)
-    offc = dvc * (dotw + borderw)
 
-    gi = np.full((h, w), bgc, dtype=int)
-    for k in range(-15, 16):                      # periodic chain of identical dots
-        rr, cc = loci + k * offr, locj + k * offc
-        for a in range(rr, rr + doth):
-            for b in range(cc, cc + dotw):
-                if 0 <= a < h and 0 <= b < w:
-                    gi[a, b] = dotcol
-    box = []                                      # ring around the starter dot
-    for a in range(loci - borderh, loci + doth + borderh):
-        for b in range(locj - borderw, locj + dotw + borderw):
-            if loci <= a < loci + doth and locj <= b < locj + dotw:
-                continue
-            box.append((a, b))
-    go = gi.copy()
-    for (a, b) in box:                            # output: ring around the NEXT dot
-        if 0 <= a + offr < h and 0 <= b + offc < w:
-            go[a + offr, b + offc] = boxcol
-    for (a, b) in box:                            # input: ring around the starter dot
-        if 0 <= a < h and 0 <= b < w:
-            gi[a, b] = boxcol
-    return {"input": gi.tolist(), "output": go.tolist()}
+    hi_i = (h - doth - 1) if di == 0 else (h - doth - borderh - 1)
+    hi_j = (w - dotw - 1) if dj == 0 else (w - dotw - borderw - 1)
+    dotloci = random.randint(0, max(0, hi_i))
+    dotlocj = random.randint(0, max(0, hi_j))
+
+    offr = di * (doth + borderh)
+    offc = dj * (dotw + borderw)
+
+    gi = [[bgc] * w for _ in range(h)]
+    # periodic dots along the direction
+    for k in range(-15, 16):
+        r0 = dotloci + k * offr
+        c0 = dotlocj + k * offc
+        for r in range(r0, r0 + doth):
+            for c in range(c0, c0 + dotw):
+                if 0 <= r < h and 0 <= c < w:
+                    gi[r][c] = dotcol
+
+    R0, R1 = dotloci - borderh, dotloci + doth + borderh - 1
+    C0, C1 = dotlocj - borderw, dotlocj + dotw + borderw - 1
+    bx = [(r, c) for r in range(R0, R1 + 1) for c in range(C0, C1 + 1)
+          if not (dotloci <= r < dotloci + doth and dotlocj <= c < dotlocj + dotw)]
+
+    go = [row[:] for row in gi]
+    for (r, c) in bx:                       # output: box around the NEXT dot
+        rr, cc = r + offr, c + offc
+        if 0 <= rr < h and 0 <= cc < w:
+            go[rr][cc] = boxcol
+    for (r, c) in bx:                       # input: box around the anchor dot
+        if 0 <= r < h and 0 <= c < w:
+            gi[r][c] = boxcol
+
+    return {
+        'input': tuple(tuple(row) for row in gi),
+        'output': tuple(tuple(row) for row in go),
+    }
 
 
+# ---------------------------------------------------------------- 3. ops
 def derive_operations(I, O):
-    """The box jumps to the next dot of the chain. Equivalently: every cell takes the
-    value of its mirror partner across the mid-line/mid-point between the box's dot and
-    the next dot (the dot chain is invariant under that reflection, the box is not).
-    So the route performs that reflection with FlipV/FlipH on the largest on-grid region
-    that is symmetric about it, and then paints only what the reflection genuinely cannot
-    reach: box cells whose mirror partner lay off the grid, and old-box cells whose
-    mirror partner lay off the grid (so they were never carried away)."""
     I = np.asarray(I, dtype=int)
-    H, W = I.shape
-    present = sorted(set(I.flatten().tolist()))
+    O = np.asarray(O, dtype=int)
+    h, w = I.shape
+    ops, sels = [], []
 
-    # ---- read the structure off I: the box color is the one whose cells fill their
-    #      bounding box except for one solid rectangular hole (the starter dot).
-    parse = None
-    for boxcol in present:
-        rs, cs = np.nonzero(I == boxcol)
-        if len(rs) == 0:
-            continue
-        r0, r1, c0, c1 = int(rs.min()), int(rs.max()), int(cs.min()), int(cs.max())
-        sub = I[r0:r1 + 1, c0:c1 + 1]
-        hole = (sub != boxcol)
-        if not hole.any():
-            continue
-        hr, hc = np.nonzero(hole)
-        hh = int(hr.max() - hr.min() + 1)
-        hw = int(hc.max() - hc.min() + 1)
-        if int(hole.sum()) != hh * hw:
-            continue
-        vals = set(sub[hole].tolist())
-        if len(vals) != 1:
-            continue
-        dotcol = int(vals.pop())
-        di, dj = r0 + int(hr.min()), c0 + int(hc.min())
-        dh, dw = hh, hw
-        # one of the two border sides is always unclipped, so max() recovers its true size
-        bh = max(di - r0, r1 - (di + dh - 1))
-        bw = max(dj - c0, c1 - (dj + dw - 1))
-        if bh < 1 or bw < 1:
-            continue
-        dotcells = set((int(a), int(b)) for a, b in zip(*np.nonzero(I == dotcol)))
-        for (offr, offc) in ((dh + bh, 0), (0, dw + bw), (dh + bh, dw + bw)):
-            pred = set()
-            for k in range(-40, 41):
-                rr, cc = di + k * offr, dj + k * offc
-                for a in range(rr, rr + dh):
-                    for b in range(cc, cc + dw):
-                        if 0 <= a < H and 0 <= b < W:
-                            pred.add((a, b))
-            if pred == dotcells:                  # this spacing explains every dot
-                parse = (boxcol, dotcol, di, dj, dh, dw, bh, bw, offr, offc)
-                break
-        if parse is not None:
+    def comps(mask):
+        seen = np.zeros((h, w), dtype=bool)
+        out = []
+        for r in range(h):
+            for c in range(w):
+                if mask[r, c] and not seen[r, c]:
+                    stack = [(r, c)]
+                    seen[r, c] = True
+                    cur = []
+                    while stack:
+                        rr, cc = stack.pop()
+                        cur.append((rr, cc))
+                        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                            nr, nc = rr + dr, cc + dc
+                            if 0 <= nr < h and 0 <= nc < w and mask[nr, nc] and not seen[nr, nc]:
+                                seen[nr, nc] = True
+                                stack.append((nr, nc))
+                    out.append(cur)
+        return out
+
+    colors = sorted(set(int(v) for v in I.flatten().tolist()))
+    hyp = None
+
+    # Structural fit from I alone:
+    #   dotcol -> periodic filled rectangles; anchor dot = the one whose whole ring is
+    #   a single other colour (boxcol); box = (anchor grown by borderh/borderw) - anchor.
+    for dcol in colors:
+        dmask = (I == dcol)
+        dcells = set((int(r), int(c)) for r, c in np.argwhere(dmask).tolist())
+        for comp in comps(dmask):
+            rs = [r for r, _ in comp]
+            cs = [c for _, c in comp]
+            ar0, ar1, ac0, ac1 = min(rs), max(rs), min(cs), max(cs)
+            ah, aw = ar1 - ar0 + 1, ac1 - ac0 + 1
+            if len(comp) != ah * aw:
+                continue
+            ring = [(r, c) for r in range(ar0 - 1, ar1 + 2) for c in range(ac0 - 1, ac1 + 2)
+                    if 0 <= r < h and 0 <= c < w and not (ar0 <= r <= ar1 and ac0 <= c <= ac1)]
+            if not ring:
+                continue
+            rcols = set(int(I[r, c]) for r, c in ring)
+            if len(rcols) != 1:
+                continue
+            bcol = rcols.pop()
+            if bcol == dcol:
+                continue
+            bcells = set((int(r), int(c)) for r, c in np.argwhere(I == bcol).tolist())
+            if not bcells:
+                continue
+            br0 = min(r for r, _ in bcells); br1 = max(r for r, _ in bcells)
+            bc0 = min(c for _, c in bcells); bc1 = max(c for _, c in bcells)
+            if br0 > 0:
+                bh = ar0 - br0
+            elif br1 < h - 1:
+                bh = br1 - ar1
+            else:
+                continue
+            if bc0 > 0:
+                bw = ac0 - bc0
+            elif bc1 < w - 1:
+                bw = bc1 - ac1
+            else:
+                continue
+            if bh < 1 or bw < 1:
+                continue
+            R0, R1, C0, C1 = ar0 - bh, ar1 + bh, ac0 - bw, ac1 + bw
+            recon = {(r, c)
+                     for r in range(max(R0, 0), min(R1, h - 1) + 1)
+                     for c in range(max(C0, 0), min(C1, w - 1) + 1)} - set(comp)
+            if recon != bcells:
+                continue
+            # which direction does the dot lattice run in?
+            found = None
+            for name in ("unity", "down", "right"):
+                di, dj = _DVEC[name]
+                orr, occ = di * (ah + bh), dj * (aw + bw)
+                rec = set()
+                for k in range(-40, 41):
+                    r0k, c0k = ar0 + k * orr, ac0 + k * occ
+                    for r in range(r0k, r0k + ah):
+                        for c in range(c0k, c0k + aw):
+                            if 0 <= r < h and 0 <= c < w:
+                                rec.add((r, c))
+                if rec == dcells:
+                    found = (orr, occ)
+                    break
+            if found is None:
+                continue
+            hyp = dict(dotcol=dcol, boxcol=bcol, anchor=(ar0, ac0, ah, aw),
+                       rect=(R0, R1, C0, C1), off=found, bcells=bcells)
+            break
+        if hyp is not None:
             break
 
-    boxcol, dotcol, di, dj, dh, dw, bh, bw, offr, offc = parse
-    others = [c for c in present if c not in (boxcol, dotcol)]
-    if len(others) == 1:
-        bgc = others[0]
-    else:
-        cnt = Counter(I.flatten().tolist())
-        for c in (boxcol, dotcol):
-            cnt.pop(c, None)
-        bgc = cnt.most_common(1)[0][0]
+    if hyp is None:                       # safety net (should not trigger)
+        for r in range(h):
+            for c in range(w):
+                if I[r, c] != O[r, c]:
+                    ops.append(int(O[r, c]))
+                    sels.append(sel_of([(r, c)]))
+        ops.append(34)
+        sels.append([0, 0, h - 1, w - 1])
+        return ops, sels
 
-    rt, rb = di - bh, di + dh + bh - 1             # true (unclipped) ring bbox
-    cl, cr = dj - bw, dj + dw + bw - 1
+    boxcol = int(hyp['boxcol'])
+    dotcol = int(hyp['dotcol'])
+    rest = [c for c in colors if c != boxcol and c != dotcol]
+    bgc = int(rest[0]) if rest else 0
 
-    def ring_at(shr, shc):
-        out = set()
-        for a in range(rt + shr, rb + shr + 1):
-            for b in range(cl + shc, cr + shc + 1):
-                if di + shr <= a < di + shr + dh and dj + shc <= b < dj + shc + dw:
-                    continue
-                if 0 <= a < H and 0 <= b < W:
-                    out.add((a, b))
-        return out
+    src = sorted(hyp['bcells'])
+    orr, occ = hyp['off']
+    R0, R1, C0, C1 = hyp['rect']
+    ar0, ac0, ah, aw = hyp['anchor']
 
-    src = ring_at(0, 0)
-    dst = ring_at(offr, offc)
+    # where the box frame must end up: the same frame drawn around the NEXT dot
+    dest = {(r, c)
+            for r in range(max(R0 + orr, 0), min(R1 + orr, h - 1) + 1)
+            for c in range(max(C0 + occ, 0), min(C1 + occ, w - 1) + 1)}
+    dest -= {(r, c) for r in range(ar0 + orr, ar0 + orr + ah)
+             for c in range(ac0 + occ, ac0 + occ + aw)}
 
-    ops, sels = [], []
-    allcells = src | dst
-    rows = [r for r, _ in allcells]
-    cols = [c for _, c in allcells]
+    # --- slide the frame: ONE grab, then empty selections (ARCLE keeps it grabbed)
+    bgsnap = I.copy()
+    for (r, c) in src:
+        bgsnap[r, c] = 0
 
-    def sym_span(lo_need, hi_need, S, N):
-        """widest on-grid interval [a, S-a] centred on the reflection axis"""
-        a = min(lo_need, S - hi_need)
-        a = max(a, 0, S - (N - 1))
-        return a, S - a
+    def render(objset):
+        g = bgsnap.copy()
+        for (r, c) in objset:
+            g[r, c] = boxcol
+        return g
 
-    if offr > 0:
-        ra, rbb = sym_span(min(rows), max(rows), rt + rb + offr, H)
-    else:
-        ra, rbb = min(rows), max(rows)
-    if offc > 0:
-        ca, cbb = sym_span(min(cols), max(cols), cl + cr + offc, W)
-    else:
-        ca, cbb = min(cols), max(cols)
+    obj = set(src)
+    state = I.copy()
+    first = True
+    for (sr, sc, cnt) in ((1, 0, orr), (0, 1, occ)):
+        mop = 21 if sr else 22            # 21 = MoveD, 22 = MoveR
+        for _ in range(cnt):
+            nobj = {(r + sr, c + sc) for (r, c) in obj}
+            nobj = {(r, c) for (r, c) in nobj if 0 <= r < h and 0 <= c < w}
+            ns = render(nobj)
+            if np.array_equal(ns, state):    # nothing left to move -> stop
+                break
+            ops.append(mop)
+            sels.append(sel_of(src) if first else sel_of([]))
+            first = False
+            obj = nobj
+            state = ns
 
-    g = I.copy()
-    # bbox selection: the reflection acts on this WHOLE rectangle, background included
-    rect = [ra, ca, rbb - ra, cbb - ca]
-    if offr > 0:
-        ops.append(27); sels.append(list(rect))    # FlipV: reflect across the horizontal mid-line
-        g[ra:rbb + 1, ca:cbb + 1] = np.flipud(g[ra:rbb + 1, ca:cbb + 1])
-    if offc > 0:
-        ops.append(26); sels.append(list(rect))    # FlipH: reflect across the vertical mid-line
-        g[ra:rbb + 1, ca:cbb + 1] = np.fliplr(g[ra:rbb + 1, ca:cbb + 1])
+    # part of the frame that scrolled in from off-canvas (had no source pixels)
+    missing = sorted(dest - obj)
+    if missing:
+        ops.append(boxcol)
+        sels.append(sel_of(missing))
 
-    def components(cells):
-        cells = set(cells)
-        out = []
-        while cells:
-            seed = min(cells)
-            comp, stack = {seed}, [seed]
-            cells.discard(seed)
-            while stack:
-                r, c = stack.pop()
-                for nr, nc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
-                    if (nr, nc) in cells:
-                        cells.discard((nr, nc))
-                        comp.add((nr, nc))
-                        stack.append((nr, nc))
-            out.append(sorted(comp))
-        return out
+    # the frame's original footprint it no longer covers (ARCLE left it at 0)
+    vacated = sorted(set(src) - obj - set(missing))
+    if bgc != 0 and vacated:
+        ops.append(bgc)
+        sels.append(sel_of(vacated))
 
-    # finish the box arms the reflection could not fetch (their partner was off-grid)
-    for comp in components([p for p in sorted(dst) if g[p] != boxcol]):
-        ops.append(int(boxcol)); sels.append(sel_of(comp))
-        for p in comp:
-            g[p] = boxcol
-    # clear the old-box remains the reflection could not carry away
-    for comp in components([p for p in sorted(src - dst) if g[p] != bgc]):
-        ops.append(int(bgc)); sels.append(sel_of(comp))
-        for p in comp:
-            g[p] = bgc
-
-    ops.append(34); sels.append([0, 0, H - 1, W - 1])
+    ops.append(34)
+    sels.append([0, 0, h - 1, w - 1])      # full-grid bbox: submit
     return ops, sels
 
 
@@ -292,7 +338,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -68,7 +68,14 @@ SUBSETS = {
         # see --rearc_generate in gen_rearc_trajectories_v2.py. Named for how it
         # was made rather than continuing the ARC_best10_r* numbering, which was
         # the maker-generate() line.
-        root=DATA_ROOT / "ARC_rearc_draw10" / "whole",
+        # draw14 is draw13's maker set with twenty-five tasks put back to the
+        # published version. Those routes had been swapped in on a comparison
+        # that read operation names only; the selection mask carries the cells,
+        # so a route can shrink to two operations by moving the answer into the
+        # mask rather than into the trajectory. Three tasks kept the newer route
+        # (08ed6ac7, 1b60fb0c, b0c4d837): each performs what its verifier does
+        # and selects no arbitrary cell set.
+        root=DATA_ROOT / "ARC_rearc_draw14" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its
@@ -76,19 +83,6 @@ SUBSETS = {
         label="arc-agi-1",
         manifest=DATA_ROOT / "best_manifest.json",
         note="400 ARC-AGI-1 training tasks, one maker per task",
-        rollout="python gen_rearc_trajectories_v2.py --subfolder arc-agi-1 "
-                "--num_samples 15 --rand_seed 0 --max_grid_dim 30 30 "
-                "--rearc_generate --verify_filter --data_folder <out>",
-    ),
-    # The same 400 tasks drawn from the makers as they stand, exported beside
-    # the release rather than over it so the two can be read against each other.
-    "arc_agi1_candidate": dict(
-        root=DATA_ROOT / "ARC_rearc_draw13" / "whole",
-        makers="maker/arc-agi-1",
-        episodes=10,
-        label="arc-agi-1",
-        manifest=DATA_ROOT / "best_manifest.json",
-        note="400 ARC-AGI-1 training tasks, makers that do not read the answer",
         rollout="python gen_rearc_trajectories_v2.py --subfolder arc-agi-1 "
                 "--num_samples 15 --rand_seed 0 --max_grid_dim 30 30 "
                 "--rearc_generate --verify_filter --data_folder <out>",

@@ -33,147 +33,165 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import random
-import numpy as np
-from collections import Counter
-from maker.sel_helpers import sel_of
-
-
 def sample_colors(num_examples=None) -> dict:
-    # The rule depends only on the geometry/pattern of the two bars, not on their
-    # colours, so only the background colour needs fixing for the episode.
-    bgc = random.choice(list(range(10)))
-    return {"bgc": bgc}
+    import random
+    VARIANTS = [{"cross": True}, {"cross": False}]
+    bgc = random.choice(range(10))
+    n_ex = num_examples if num_examples else 3
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(examples)
+    else:
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
+    return {"bgc": bgc, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
-    cols = interval(0, 10, 1)
-    hlo = min(10, max_h)
-    wlo = min(10, max_w)
-    h = unifint(diff_lb, diff_ub, (hlo, max_h))
-    w = unifint(diff_lb, diff_ub, (wlo, max_w))
-    ph = unifint(diff_lb, diff_ub, (2, max(2, min(9, h - 1))))
-    pw = unifint(diff_lb, diff_ub, (2, max(2, min(9, w - 1))))
-    remcols = remove(bgc, cols)
-    hbar = frozenset({(choice(remcols), (k, 0)) for k in range(ph)})
-    wbar = frozenset({(choice(remcols), (0, k)) for k in range(pw)})
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, cross=None) -> dict:
+    import random
+    if cross is None:
+        cross = random.choice((True, False))
+    # foreground colors: never 0 (0 is "transparent" for Copy/Paste), never bgc
+    remcols = [c for c in range(1, 10) if c != bgc]
 
-    # place the bars; reject placements where one bar's stray cell lands exactly
-    # adjacent to (but not on) the other bar, which would make the two bars
-    # indistinguishable from a single longer bar in the input
-    locih = randint(0, h - ph)
-    locjh = randint(0, w - 1)
-    lociw = randint(0, h - 1)
-    locjw = randint(0, w - pw)
-    for _ in range(500):
-        inV = locih <= lociw <= locih + ph - 1
-        inW = locjw <= locjh <= locjw + pw - 1
-        if inV == inW:
-            break
-        if inW and (lociw < locih - 1 or lociw > locih + ph):
-            break
-        if inV and (locjh < locjw - 1 or locjh > locjw + pw):
-            break
-        locih = randint(0, h - ph)
-        locjh = randint(0, w - 1)
-        lociw = randint(0, h - 1)
-        locjw = randint(0, w - pw)
+    lo_h = min(10, max_h)
+    hi_h = max(lo_h, min(30, max_h))
+    lo_w = min(10, max_w)
+    hi_w = max(lo_w, min(30, max_w))
 
-    loch = (locih, locjh)
-    locw = (lociw, locjw)
-    canv = canvas(bgc, (h, w))
-    hbar = shift(hbar, loch)
-    wbar = shift(wbar, locw)
-    col = choice(remcols)
-    hbard = extract(hbar, lambda cij: abs(cij[1][0] - lociw) % ph == 0)[1]
-    hbar = sfilter(hbar, lambda cij: abs(cij[1][0] - lociw) % ph != 0) | {(col, hbard)}
-    wbard = extract(wbar, lambda cij: abs(cij[1][1] - locjh) % pw == 0)[1]
-    wbar = sfilter(wbar, lambda cij: abs(cij[1][1] - locjh) % pw != 0) | {(col, wbard)}
-    gi = paint(canv, hbar | wbar)
-    go = paint(canv, hbar | wbar)
-    for k in range(h // ph + 1):
-        go = paint(go, shift(hbar, (k * ph, 0)))
-        go = paint(go, shift(hbar, (-k * ph, 0)))
-    for k in range(w // pw + 1):
-        go = paint(go, shift(wbar, (0, k * pw)))
-        go = paint(go, shift(wbar, (0, -k * pw)))
-    return {'input': gi, 'output': go}
+    while True:
+        h = unifint(diff_lb, diff_ub, (lo_h, hi_h))
+        w = unifint(diff_lb, diff_ub, (lo_w, hi_w))
+        ph = unifint(diff_lb, diff_ub, (2, max(2, min(9, h - 1))))
+        pw = unifint(diff_lb, diff_ub, (2, max(2, min(9, w - 1))))
+        if ph > h or pw > w:
+            continue
+        locih = random.randint(0, h - ph)     # vertical bar rows locih..locih+ph-1
+        locjw = random.randint(0, w - pw)     # horizontal bar cols locjw..locjw+pw-1
+        if cross:
+            lociw = random.randint(locih, locih + ph - 1)
+            locjh = random.randint(locjw, locjw + pw - 1)
+        else:
+            lociw = random.randint(0, h - 1)  # horizontal bar row
+            locjh = random.randint(0, w - 1)  # vertical bar column
+            a_row = locih <= lociw <= locih + ph - 1
+            a_col = locjw <= locjh <= locjw + pw - 1
+            if a_row and a_col:
+                continue
+            # forbid a lone shared cell merging into the other bar's run
+            # (would make the bar length ambiguous from the input alone)
+            if a_row and (locjh == locjw - 1 or locjh == locjw + pw):
+                continue
+            if a_col and (lociw == locih - 1 or lociw == locih + ph):
+                continue
+        break
+
+    vc = [random.choice(remcols) for _ in range(ph)]
+    hc = [random.choice(remcols) for _ in range(pw)]
+    col = random.choice(remcols)
+    vc[(lociw - locih) % ph] = col
+    hc[(locjh - locjw) % pw] = col
+
+    gi = [[bgc] * w for _ in range(h)]
+    for k in range(ph):
+        gi[locih + k][locjh] = vc[k]
+    for k in range(pw):
+        gi[lociw][locjw + k] = hc[k]
+
+    go = [row[:] for row in gi]
+    for r in range(h):
+        go[r][locjh] = vc[(r - locih) % ph]
+    for c in range(w):
+        go[lociw][c] = hc[(c - locjw) % pw]
+
+    return {
+        'input': tuple(tuple(r) for r in gi),
+        'output': tuple(tuple(r) for r in go),
+    }
 
 
 def derive_operations(I, O):
-    """Rule (read entirely from I): the input holds one short vertical bar and one
-    short horizontal bar on a plain background.  The vertical bar's colour sequence
-    is repeated periodically (period = its length) down its whole column, and the
-    horizontal bar's colour sequence is repeated periodically (period = its length)
-    across its whole row.  O is only used for its shape (same as I)."""
+    import numpy as np
+    from collections import Counter
+
     I = np.asarray(I, dtype=int)
+    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    G = I.copy()
-
-    # background = the colour the canvas was painted with (bars are <= 18 cells
-    # on a grid of >= 100 cells, so it is the overwhelming majority colour)
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-    fg = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != bgc]
 
-    # the vertical bar's column is the column holding the most foreground cells
-    # (>= 2), every other column holds at most one; likewise for the row.
-    colcnt = Counter(c for _, c in fg)
-    rowcnt = Counter(r for r, _ in fg)
-    jh = max(sorted(colcnt), key=lambda c: colcnt[c])
-    iw = max(sorted(rowcnt), key=lambda r: rowcnt[r])
-
-    def longest_run(vals):
-        runs, cur = [], [vals[0]]
-        for v in vals[1:]:
-            if v == cur[-1] + 1:
-                cur.append(v)
+    def longest_run(line):
+        best_s, best_l, i, n = 0, 0, 0, len(line)
+        while i < n:
+            if line[i] != bgc:
+                j = i
+                while j < n and line[j] != bgc:
+                    j += 1
+                if j - i > best_l:
+                    best_s, best_l = i, j - i
+                i = j
             else:
-                runs.append(cur)
-                cur = [v]
-        runs.append(cur)
-        return max(runs, key=len)
+                i += 1
+        return best_s, best_l
 
-    vrows = longest_run(sorted(r for r, c in fg if c == jh))
-    hcols = longest_run(sorted(c for r, c in fg if r == iw))
-    ih, ph = vrows[0], len(vrows)
-    jw, pw = hcols[0], len(hcols)
-    vpat = [int(I[r, jh]) for r in vrows]   # vertical bar colour sequence
-    hpat = [int(I[iw, c]) for c in hcols]   # horizontal bar colour sequence
+    def plan(start, L, limit):
+        # full-length repeats of a bar of length L anchored at `start`, period L
+        origins = []
+        t = start - L
+        while t >= 0:
+            origins.append(t)
+            t -= L
+        t = start + L
+        while t + L <= limit:
+            origins.append(t)
+            t += L
+        origins.sort()
+        s = start % L                      # cells left over before the first full repeat
+        head = (start + L - s, s) if s > 0 else None
+        tmax = start
+        while tmax + 2 * L <= limit:
+            tmax += L
+        nxt = tmax + L
+        tail = (start, limit - nxt, nxt) if nxt < limit else None
+        return origins, head, tail
+
+    # the bar row / bar column are the only lines carrying more than one fg cell
+    cr = [int((I[r] != bgc).sum()) for r in range(hi)]
+    cc = [int((I[:, c] != bgc).sum()) for c in range(wi)]
+    i0 = max(range(hi), key=lambda r: cr[r])
+    j0 = max(range(wi), key=lambda c: cc[c])
+    r0, ph = longest_run([int(v) for v in I[:, j0]])
+    c0, pw = longest_run([int(v) for v in I[i0, :]])
 
     ops, sels = [], []
 
-    # 1. extend the vertical bar periodically over its whole column,
-    #    one Color op per colour of the bar's sequence (top-down order)
-    vtarget = [vpat[(r - ih) % ph] for r in range(hi)]
-    order = []
-    for r in range(hi):
-        if vtarget[r] not in order:
-            order.append(vtarget[r])
-    for v in order:
-        cells = [(r, jh) for r in range(hi) if vtarget[r] == v and G[r, jh] != v]
-        if cells:
-            ops.append(int(v))
-            sels.append(sel_of(cells))
-            for (r, c) in cells:
-                G[r, c] = v
+    # --- vertical bar: repeat it down column j0 with period ph ---
+    origins, head, tail = plan(r0, ph, hi)
+    if origins:
+        ops.append(28); sels.append([r0, j0, ph - 1, 0])
+        for t in origins:
+            ops.append(30); sels.append([t, j0, 0, 0])
+    if head:
+        ops.append(28); sels.append([head[0], j0, head[1] - 1, 0])
+        ops.append(30); sels.append([0, j0, 0, 0])
+    if tail:
+        ops.append(28); sels.append([tail[0], j0, tail[1] - 1, 0])
+        ops.append(30); sels.append([tail[2], j0, 0, 0])
 
-    # 2. extend the horizontal bar periodically over its whole row
-    htarget = [hpat[(c - jw) % pw] for c in range(wi)]
-    order = []
-    for c in range(wi):
-        if htarget[c] not in order:
-            order.append(htarget[c])
-    for v in order:
-        cells = [(iw, c) for c in range(wi) if htarget[c] == v and G[iw, c] != v]
-        if cells:
-            ops.append(int(v))
-            sels.append(sel_of(cells))
-            for (r, c) in cells:
-                G[r, c] = v
+    # --- horizontal bar: repeat it across row i0 with period pw ---
+    origins, head, tail = plan(c0, pw, wi)
+    if origins:
+        ops.append(28); sels.append([i0, c0, 0, pw - 1])
+        for t in origins:
+            ops.append(30); sels.append([i0, t, 0, 0])
+    if head:
+        ops.append(28); sels.append([i0, head[0], 0, head[1] - 1])
+        ops.append(30); sels.append([i0, 0, 0, 0])
+    if tail:
+        ops.append(28); sels.append([i0, tail[0], 0, tail[1] - 1])
+        ops.append(30); sels.append([i0, tail[2], 0, 0])
 
-    # Submit: selection is the whole (unchanged-size) grid rectangle
-    ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
@@ -217,7 +235,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

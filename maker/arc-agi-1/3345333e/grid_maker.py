@@ -34,25 +34,19 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-import numpy as np
-from collections import Counter
-from maker.sel_helpers import sel_of
 
 
-# The object the generator builds is mirror-symmetric about a VERTICAL axis and the
-# occluding rectangle always sits on its RIGHT half; the random dihedral transform
-# applied at the end turns that into one of four discrete situations.  Plan them.
-VARIANTS = [
-    {"axis": "vertical",   "side": "right"},
-    {"axis": "vertical",   "side": "left"},
-    {"axis": "horizontal", "side": "bottom"},
-    {"axis": "horizontal", "side": "top"},
-]
+VARIANTS = [{"axis": "v"}, {"axis": "h"}]
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc, objc, occcol = random.sample(cols, 3)
+    bgc = random.choice(cols)
+    # object color must be non-zero: the restoration copies the intact half of the
+    # shape with CopyI/Paste, and 0 is "nothing" for the clipboard.
+    objc = random.choice([c for c in cols if c != bgc and c != 0])
+    occcol = random.choice([c for c in cols if c not in (bgc, objc)])
+
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
         examples = [dict(v) for v in VARIANTS]
@@ -64,28 +58,14 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "objc": objc, "occcol": occcol, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, occcol,
-             axis=None, side=None) -> dict:
-    if axis is None or side is None:
-        v = choice(VARIANTS)
-        axis, side = v["axis"], v["side"]
-
-    # the class transform: base construction is (vertical axis, occluder on the right)
-    classfn = {("vertical", "right"): identity,
-               ("vertical", "left"): vmirror,
-               ("horizontal", "bottom"): dmirror,
-               ("horizontal", "top"): cmirror}[(axis, side)]
-    fns = [classfn]
-    # a further mirror along the symmetry axis keeps both axis and side intact
-    if choice((True, False)):
-        fns.append(hmirror if axis == "vertical" else vmirror)
-    swapped = axis == "horizontal"      # dmirror / cmirror transpose the canvas
-
-    hub = max(10, max_w if swapped else max_h)
-    wub = max(10, max_h if swapped else max_w)
-
-    h = unifint(diff_lb, diff_ub, (10, hub))
-    w = unifint(diff_lb, diff_ub, (10, wub))
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc=None, objc=None, occcol=None, axis=None) -> dict:
+    if axis is None:
+        axis = choice(('v', 'h'))
+    lim = min(max_h, max_w)                 # rot90-family transforms may transpose
+    lo = min(10, lim)
+    h = unifint(diff_lb, diff_ub, (lo, lim))
+    w = unifint(diff_lb, diff_ub, (lo, lim))
     oh = unifint(diff_lb, diff_ub, (4, h - 2))
     ow = unifint(diff_lb, diff_ub, (4, (w - 2) // 2))
     nc = unifint(diff_lb, diff_ub, (min(oh, ow), (oh * ow) // 3 * 2))
@@ -114,6 +94,16 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, occcol,
     ulcj = randint(locj + ow // 2 + 1, locj + ow - boxw + 1)
     bx = backdrop(frozenset({(ulci, ulcj), (ulci + boxh - 1, ulcj + boxw - 1)}))
     gi = fill(go, occcol, bx)
+    # shape is mirror-symmetric about a vertical axis here; transposing transforms
+    # turn that into a horizontal-axis symmetry. Pick the transform set matching `axis`.
+    mfs = (identity, dmirror, cmirror, vmirror, hmirror, rot90, rot180, rot270)
+    transposing = (dmirror, cmirror, rot90, rot270)
+    nmfs = choice((1, 2))
+    while True:
+        fns = sample(mfs, nmfs)
+        par = sum(1 for fn in fns if fn in transposing) % 2
+        if (par == 1) == (axis == 'h'):
+            break
     for fn in fns:
         gi = fn(gi)
         go = fn(go)
@@ -121,111 +111,79 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, occcol,
 
 
 def derive_operations(I, O):
-    """A mirror-symmetric object is partly hidden under a solid rectangle of a third
-    colour.  Everything below is read off I: the background is the grid border, the
-    occluder is the colour that forms a solid rectangle, and the mirror line is the
-    only line the *visible* grid is symmetric about (the occluder counting as a
-    wild card).  The hidden part is then the reflection of the strip on the other
-    side of that line: copy that strip out of the input, paste it over the
-    rectangle and flip it.
-    """
+    import numpy as np
+    from collections import Counter
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    h, w = I.shape
-    ho, wo = O.shape
+    hi, wi = I.shape
+
+    # background = border color
+    border = I[0].tolist() + I[-1].tolist() + I[:, 0].tolist() + I[:, -1].tolist()
+    bgc = Counter(border).most_common(1)[0][0]
+
+    # two remaining colors: the occluder is the one filling its bbox solidly
+    cols = [c for c in np.unique(I).tolist() if c != bgc]
+    info = {}
+    for c in cols:
+        rs, cs = np.where(I == c)
+        a, b, d, e = int(rs.min()), int(rs.max()), int(cs.min()), int(cs.max())
+        solid = (b - a + 1) * (e - d + 1) == len(rs)
+        info[c] = (solid, len(rs), (a, d, b, e))
+    solids = [c for c in cols if info[c][0]]
+    occ_c = solids[0] if len(solids) == 1 else min(cols, key=lambda c: info[c][1])
+    obj_c = [c for c in cols if c != occ_c][0]
+    r0, c0, r1, c1 = info[occ_c][2]
+
+    V = set(zip(*[a.tolist() for a in np.where(I == obj_c)]))   # visible shape cells
+    B = {(r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)}  # occluded area
+    allowed = V | B
+
+    # The shape is mirror-symmetric; find the axis (row-mirror r->K-r or col-mirror
+    # c->K-c) whose reflection of the visible shape stays inside shape+occluded area,
+    # never straddles the occluder, and overlaps the visible shape the most.
+    best = None
+    for kind in ('h', 'v'):
+        span = hi if kind == 'h' else wi
+        for K in range(0, 2 * span - 1):
+            if kind == 'h':
+                if K - r1 < 0 or K - r0 > hi - 1:
+                    continue
+                if not (K - r1 > r1 or K - r0 < r0):
+                    continue
+                mir = {(K - r, c) for (r, c) in V}
+            else:
+                if K - c1 < 0 or K - c0 > wi - 1:
+                    continue
+                if not (K - c1 > c1 or K - c0 < c0):
+                    continue
+                mir = {(r, K - c) for (r, c) in V}
+            if not mir <= allowed:
+                continue
+            score = len(mir & V)
+            if best is None or score > best[0]:
+                best = (score, kind, K)
+
     ops, sels = [], []
+    dh, dw = r1 - r0, c1 - c0
 
-    # ── background: the object keeps a >=1 cell margin from every edge ──────────
-    border = (list(I[0, :]) + list(I[h - 1, :]) + list(I[:, 0]) + list(I[:, w - 1]))
-    bgc = Counter(int(v) for v in border).most_common(1)[0][0]
-
-    # ── occluder: the non-background colour whose cells are a solid rectangle ───
-    boxes = []
-    for col in sorted({int(v) for v in np.unique(I)} - {bgc}):
-        cells = np.argwhere(I == col)
-        r0, c0 = cells.min(0)
-        r1, c1 = cells.max(0)
-        area = int((r1 - r0 + 1) * (c1 - c0 + 1))
-        if len(cells) == area:                       # solid filled rectangle
-            boxes.append((area, col, (int(r0), int(c0), int(r1), int(c1))))
-    boxes.sort()
-
-    # ── mirror line: reflect the whole grid, occluder cells are wild cards ──────
-    def mirrored(axis, S):
-        if axis == 1:
-            idx = S - np.arange(w)
-            ok = (idx >= 0) & (idx < w)
-            return np.where(ok[None, :], I[:, np.clip(idx, 0, w - 1)], -1), ok
-        idx = S - np.arange(h)
-        ok = (idx >= 0) & (idx < h)
-        return np.where(ok[:, None], I[np.clip(idx, 0, h - 1), :], -1), ok
-
-    def consistent(occ, axis, S):
-        B, _ = mirrored(axis, S)
-        out = B < 0
-        if np.any(out & (I != bgc)):
-            return False                    # something real reflects off the canvas
-        if np.any((I == occ) & (B == occ)):
-            return False                    # hidden on both sides -> unrecoverable
-        wild = (I == occ) | (B == occ)
-        return not np.any(~out & ~wild & (I != B))
-
-    found = None
-    for _area, occ, box in boxes:
-        for axis, lim in ((1, w), (0, h)):
-            for S in range(2 * lim - 1):
-                if consistent(occ, axis, S):
-                    found = (occ, box, axis, S)
-                    break
-            if found:
-                break
-        if found:
-            break
-
-    if found is None:                       # no mirror line: nothing can be restored
-        ops.append(34)
-        sels.append([0, 0, ho - 1, wo - 1])
-        return ops, sels
-
-    occ, (r0, c0, r1, c1), axis, S = found
-    box_sel = [r0, c0, r1 - r0, c1 - c0]     # the occluder IS exactly this rectangle
-    if axis == 1:                            # vertical mirror line: reflect columns
-        sr0, sr1, sc0, sc1 = r0, r1, S - c1, S - c0
-        flip_op = 26                         # FlipH (left<->right)
-    else:                                    # horizontal mirror line: reflect rows
-        sr0, sr1, sc0, sc1 = S - r1, S - r0, c0, c1
-        flip_op = 27                         # FlipV (up<->down)
-    src = I[sr0:sr1 + 1, sc0:sc1 + 1]        # the strip the hidden part mirrors
-
-    # Paste is transparent: a 0 in the strip writes nothing.  If those cells only
-    # have to become background, wipe the rectangle to background first and let the
-    # paste draw the object on top of it.
-    blind = src == 0
-    if not np.any(blind) or bgc == 0:
-        if np.any(blind):                    # bgc == 0: lay the background base
-            ops.append(int(bgc))
-            sels.append(box_sel)
-        ops.append(28)                                        # CopyI the strip
-        sels.append([sr0, sc0, sr1 - sr0, sc1 - sc0])         # whole rectangle
-        ops.append(30)                                        # Paste onto the box
-        sels.append([r0, c0, 0, 0])
-        ops.append(flip_op)                                   # mirror it in place
-        sels.append(box_sel)                                  # whole rectangle
+    if best is None:
+        ops.append(int(bgc)); sels.append([r0, c0, dh, dw])
     else:
-        # object colour is 0, which Copy/Paste cannot carry: clear the rectangle to
-        # background and paint the reflected object cells directly.
-        ops.append(int(bgc))
-        sels.append(box_sel)
-        cells = [(r0 + (r1 - r0 - i if axis == 0 else i),
-                  c0 + (c1 - c0 - j if axis == 1 else j))
-                 for i in range(sr1 - sr0 + 1) for j in range(sc1 - sc0 + 1)
-                 if src[i, j] == 0]
-        if cells:
-            ops.append(0)
-            sels.append(sel_of(cells))
+        _, kind, K = best
+        # Paste is transparent to 0: when bgc==0 the occluder must be cleared first.
+        if bgc == 0:
+            ops.append(0); sels.append([r0, c0, dh, dw])
+        if kind == 'h':
+            ops.append(28); sels.append([K - r1, c0, dh, dw])   # intact mirror half
+            ops.append(30); sels.append([r0, c0, 0, 0])         # onto occluded area
+            ops.append(27); sels.append([r0, c0, dh, dw])       # mirror it up<->down
+        else:
+            ops.append(28); sels.append([r0, K - c1, dh, dw])
+            ops.append(30); sels.append([r0, c0, 0, 0])
+            ops.append(26); sels.append([r0, c0, dh, dw])       # mirror it left<->right
 
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
@@ -269,7 +227,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -39,41 +39,36 @@ from collections import Counter
 from maker.sel_helpers import sel_of
 
 
-# The only discrete structural choice the generator makes: whether the centre
-# cell of the figure carries its own extra-coloured dot.
-VARIANTS = [{"has_center": True}, {"has_center": False}]
+VARIANTS = [{"center_dot": True}, {"center_dot": False}]
 
 
 def sample_colors(num_examples=None) -> dict:
-    # Only the background is a fixed role: the rule is about the SIZE of each
-    # scattered frame, never about which colour it happens to be.
-    bgc = random.choice(list(range(10)))
-
+    cols = list(range(10))
+    bgc = random.choice(cols)
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
+        ex = [dict(v) for v in VARIANTS]
+        ex += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+        random.shuffle(ex)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
+        ex = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+    plan = ex + [dict(random.choice(ex))]
     return {"bgc": bgc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, has_center=None) -> dict:
-    if has_center is None:
-        has_center = choice((True, False))
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc=None, center_dot=None) -> dict:
     cols = interval(0, 10, 1)
-    dmax = min(7, max(2, max_h // 4), max(2, max_w // 4))
-    if dmax < 2:
-        dmax = 2
+    if bgc is None:
+        bgc = choice(cols)
+    if center_dot is None:
+        center_dot = choice(VARIANTS)["center_dot"]
+    dmax = max(2, min(7, max_h // 4, max_w // 4))
     while True:
         d = unifint(diff_lb, diff_ub, (2, dmax))
         h, w = d, d
-        lo_h = min(max(4 * d, 2 * d + 2), max_h)
-        lo_w = min(max(4 * d, 2 * d + 2), max_w)
-        fullh = unifint(diff_lb, diff_ub, (lo_h, max_h))
-        fullw = unifint(diff_lb, diff_ub, (lo_w, max_w))
+        fullh = unifint(diff_lb, diff_ub, (4 * d, max_h))
+        fullw = unifint(diff_lb, diff_ub, (4 * d, max_w))
         remcols = remove(bgc, cols)
         ccols = sample(remcols, d)
         quad = canvas(bgc, (d + 1, d + 1))
@@ -87,7 +82,7 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, has_center=None) -> dict:
         go = paint(go, qobj1)
         go = paint(go, qobj2)
         go = vconcat(go, hmirror(go)[1:])
-        if has_center:
+        if center_dot:
             go = fill(go, choice(difference(remcols, ccols)), {center(asindices(go))})
         objs = partition(go)
         objs = sfilter(objs, lambda o: color(o) != bgc)
@@ -99,9 +94,9 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, has_center=None) -> dict:
         for obj in objs:
             objn = normalize(obj)
             obji = toindices(objn)
-            ow = width(obj)
-            dh = max(0, ow // 2 - 1)
-            cands = sfilter(fullinds, lambda ij: ij[0] <= fullh - ow and ij[1] <= fullw - ow)
+            dd = width(obj)
+            dh = max(0, dd // 2 - 1)
+            cands = sfilter(fullinds, lambda ij: ij[0] <= fullh - dd and ij[1] <= fullw - dd)
             cands = cands | shift(cands, (-dh, 0)) | shift(cands, (0, -dh)) | shift(cands, (dh, 0)) | shift(cands, (0, dh))
             maxtr = 10
             tr = 0
@@ -126,110 +121,37 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, has_center=None) -> dict:
 
 
 def derive_operations(I, O):
-    """
-    Rule, read off the INPUT alone:
-
-      Each non-background colour in I is one scattered piece, and each piece is a
-      square RING: the four corner-brackets of one square frame, so it is mirror
-      symmetric about both of its own axes.  The pieces are the concentric rings
-      of a single figure and nest by frame size -- widest frame outermost, each
-      next-widest one cell further in, a lone pixel dead centre.
-
-      A piece may have been dropped over the canvas edge, in which case part of it
-      is missing; the surviving dimension of its bounding box still spans the whole
-      frame, and its own mirror symmetry restores the cells the edge cut off.
-
-    Route: take the widest ring's frame as the working frame, lay the background
-    over it, redraw every ring inside it at the depth its own width dictates
-    ((S - m) // 2 cells in from the border), then crop the canvas to that frame.
-
-    Everything below -- the frame side S, where it sits, each ring's cells, each
-    ring's depth -- is measured in I.  O is never read.
-    """
-    I = np.asarray(I, dtype=int)          # O is deliberately never read below
+    I = np.asarray(I, dtype=int)
+    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-
-    # background: the canvas colour the pieces were scattered onto
-    bgc = int(Counter(I.flatten().tolist()).most_common(1)[0][0])
-
-    pieces = []
-    for col in sorted(set(int(v) for v in I.flatten()) - {bgc}):
-        cells = [(r, c) for r in range(hi) for c in range(wi) if int(I[r, c]) == col]
-        obs = set(cells)
-        rs = [r for r, _ in cells]
-        cs = [c for _, c in cells]
-        r0, r1 = min(rs), max(rs)
-        c0, c1 = min(cs), max(cs)
-        bh, bw = r1 - r0 + 1, c1 - c0 + 1
-        m = max(bh, bw)                     # the ring's frame side
-
-        def ring_from(fr, fc):
-            """The whole ring implied by these cells sitting in a frame at (fr,fc):
-            mirror them about both axes of that frame."""
-            out = set()
-            for r, c in cells:
-                rr, cc = r - fr, c - fc
-                if not (0 <= rr < m and 0 <= cc < m):
-                    return None
-                for a in (rr, m - 1 - rr):
-                    for b in (cc, m - 1 - cc):
-                        out.add((a, b))
-            return out
-
-        # A ring dropped over the canvas edge is short in one dimension, and what
-        # is missing is off-grid: so its frame starts either at the near edge of
-        # what survived or one frame-width back from the far edge.  Only one of
-        # those stories has the whole ring meeting the canvas in exactly the cells
-        # that are actually there.
-        cand_r = [r0] if bh == m else [r0, r1 - m + 1]
-        cand_c = [c0] if bw == m else [c0, c1 - m + 1]
-        fr, fc, ring = r0, c0, None
-        for cr in cand_r:
-            for cc0 in cand_c:
-                cand = ring_from(cr, cc0)
-                if cand is None:
-                    continue
-                seen = {(cr + a, cc0 + b) for a, b in cand
-                        if 0 <= cr + a < hi and 0 <= cc0 + b < wi}
-                if seen == obs:
-                    fr, fc, ring = cr, cc0, cand
-                    break
-            if ring is not None:
-                break
-        if ring is None:
-            ring = ring_from(r0, c0) or {(r - r0, c - c0) for r, c in cells}
-
-        pieces.append({"col": col, "m": m, "ring": sorted(ring), "fr": fr, "fc": fc})
-
-    # widest frame first: that ring is the outermost one of the figure
-    pieces.sort(key=lambda p: -p["m"])
-    S = pieces[0]["m"]                       # the figure is S x S
-
-    # the outer ring's own frame is the working frame (pulled inside the canvas
-    # if that ring was the one hanging over the edge)
-    R0 = max(0, min(pieces[0]["fr"], hi - S))
-    C0 = max(0, min(pieces[0]["fc"], wi - S))
-
+    ho, wo = O.shape
     ops, sels = [], []
 
-    # 1. lay the background base over the whole frame square
-    #    (bbox form: the selection really is that full rectangle)
-    ops.append(bgc)
-    sels.append([R0, C0, S - 1, S - 1])
-
-    # 2. draw the rings into it, outermost first, each at its own depth
-    for p in pieces:
-        depth = (S - p["m"]) // 2
-        cells = [(R0 + depth + r, C0 + depth + c) for r, c in p["ring"]]
-        ops.append(int(p["col"]))
-        sels.append(sel_of(cells))
-
-    # 3. crop the canvas down to the assembled figure
+    # 1. Shrink the canvas to the output size (keeps I's top-left corner content).
     ops.append(33)
-    sels.append([R0, C0, S - 1, S - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
+
+    # Working grid after the crop is exactly I[:ho, :wo] (zeros stay zero).
+    W = I[:ho, :wo]
+
+    cr, cc = ho // 2, wo // 2
+    targets = {}
+    for r in range(ho):
+        for c in range(wo):
+            col = int(O[r, c])
+            if W[r, c] != col:
+                targets.setdefault(col, []).append((r, c))
+
+    # Paint the concentric rings from the outermost inward.
+    def radius(col):
+        return max(max(abs(r - cr), abs(c - cc)) for r, c in targets[col])
+
+    for col in sorted(targets, key=radius, reverse=True):
+        ops.append(col)
+        sels.append(sel_of(targets[col]))
 
     ops.append(34)
-    sels.append([0, 0, S - 1, S - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -273,7 +195,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; new makers use kwargs dict entries.
+                # backwards-compatible single-key form; v3 uses kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
