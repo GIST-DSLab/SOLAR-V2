@@ -75,7 +75,12 @@ SUBSETS = {
         # mask rather than into the trajectory. Three tasks kept the newer route
         # (08ed6ac7, 1b60fb0c, b0c4d837): each performs what its verifier does
         # and selects no arbitrary cell set.
-        root=DATA_ROOT / "ARC_rearc_draw14" / "whole",
+        # draw15 differs from draw14 in cdecee7f alone. Its route had painted the
+        # small answer in a mirrored frame and flipped the finished picture, and
+        # the flip was spare on every instance looked at -- the route reached the
+        # answer without it. The replacement lays the colours out directly, the
+        # middle row running the other way, which is what the verifier does.
+        root=DATA_ROOT / "ARC_rearc_draw15" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its
