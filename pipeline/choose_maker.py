@@ -123,7 +123,14 @@ def episodes_from_draw(root: str, task: str, limit: int = 10):
     produced the file, so a draw made with one maker set scores another.
     """
     import glob as _glob
-    hits = _glob.glob(f"{root}/whole/test.{task}.*")
+    # Both spellings of the path. The flag's own help says "a rollout
+    # directory", and every caller so far typed the directory the rollout
+    # printed, which ends in /whole; the mismatch returned None and the score
+    # fell back to demonstrations built out of other drawn pairs, without
+    # saying so. Judgements were made on that fallback for a week.
+    base = str(root)[:-len("/whole")] if str(root).rstrip("/").endswith("/whole") \
+        else str(root)
+    hits = _glob.glob(f"{base}/whole/test.{task}.*")
     if not hits:
         return None
     out = []
@@ -150,6 +157,15 @@ def draw(task: str, n: int, seeds) -> list | None:
     Several seeds, pooled: one seed's sample is a narrow view of what the
     generator makes, and a maker that misses a whole shape of instance can look
     like it missed one by chance.
+
+    One shape of instance is worth insisting on. Paste, CopyI and CopyO treat 0
+    as nothing there, so a maker that replicates a region loses whatever role
+    the palette happened to assign 0 to -- and the palette assigns it only
+    sometimes, so the miss hides. Seven released makers solve every instance
+    whose target holds no 0 and as little as none of the rest. The pool is
+    topped up from further seeds until targets carrying a 0 are a quarter of
+    it, when the generator makes any at all; a generator that never does is
+    left alone.
     """
     out = []
     for sd in seeds:
@@ -157,6 +173,17 @@ def draw(task: str, n: int, seeds) -> list | None:
         if got is None:
             return None
         out += got
+    want_zero = max(1, len(out) // 4)
+    has_zero = sum(1 for _, O in out if 0 in np.unique(O))
+    sd = max(seeds) + 1 if seeds else 1
+    while has_zero < want_zero and sd <= max(seeds, default=0) + 12:
+        got = _draw_one(task, n, sd) or []
+        sd += 1
+        keep = [(I, O) for I, O in got if 0 in np.unique(O)]
+        if not keep:
+            continue
+        out += keep[:want_zero - has_zero]
+        has_zero += len(keep[:want_zero - has_zero])
     return out
 
 
@@ -406,6 +433,28 @@ def copy_pairs(pairs):
     return out
 
 
+def zero_rate(derive, pairs):
+    """Solved, over the drawn instances whose target carries a 0.
+
+    Paste, CopyI and CopyO treat 0 as nothing there, so a maker that replicates
+    a region drops whatever role the palette gave 0 to. The palette gives it
+    only sometimes, which is why the miss survived a release: seven makers
+    solve every instance without a 0 in the target and as little as none of the
+    ones with. Measured on drawn instances rather than on episodes, because a
+    rollout keeps only what solved.
+    """
+    solved = seen = 0
+    for i, (I, O) in enumerate(pairs):
+        if 0 not in np.unique(O):
+            continue
+        seen += 1
+        shown = [(a.tolist(), b.tolist())
+                 for j, (a, b) in enumerate(pairs) if j != i][:3]
+        g, _, _ = replay(derive, I, O, shown)
+        solved += g is not None and g.shape == O.shape and bool((g == O).all())
+    return solved, seen
+
+
 def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
           eps=None, ablate: int = 3, ablate_max_ops: int = 60) -> dict:
     """solve / route / copy for one candidate on a fixed set of instances.
@@ -418,6 +467,10 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
     derive = load_derive(maker_path)
     if derive is None:
         return {"loaded": False}
+    # Held before `eps` replaces them. Episodes come out of a rollout, which
+    # dropped whatever failed, so an instance a maker cannot solve is missing
+    # from them by construction -- exactly the instances the zero rate is for.
+    drawn = list(pairs)
     if eps:
         pairs = [t for _, t in eps]
         shows = [[(a.tolist(), b.tolist()) for a, b in ex] for ex, _ in eps]
@@ -453,6 +506,7 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
                                    for i, n in found]
         else:
             missed.append(i)
+    zsolved, zseen = zero_rate(derive, drawn)
     dep = depends_on_O(derive, pairs[:8], np.random.default_rng(0))
     copied = 0
     for I, P in cpairs:
@@ -465,6 +519,7 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
             "copy": copied / len(cpairs) if cpairs else 0.0,
             "idle": idle / solved if solved else 0.0,
             "spare": spare_hits / spare_seen if spare_seen else None,
+            "zero": zsolved / zseen if zseen else None, "zero_seen": zseen,
             "spare_seen": spare_seen, "spare_which": spare_which,
             # Reported, never a condition. What a route costs is the operations
             # in it that do nothing, which `idle` and `spare` name directly; a
@@ -801,6 +856,11 @@ def main() -> None:
             # shown rather than another maker's.
             eps = (episodes_from_draw(args.episodes_root, t)
                    if args.episodes_root else None)
+            if args.episodes_root and eps is None:
+                raise SystemExit(
+                    f"--episodes_root {args.episodes_root} holds no episodes for "
+                    f"{t}. Judging would fall back to demonstrations built from "
+                    f"other drawn pairs, which is what this flag exists to avoid.")
             scores[cand] = score(t, p, pairs, cpairs, want, eps=eps,
                                  ablate=args.ablate,
                                  ablate_max_ops=args.ablate_max_ops)
@@ -818,6 +878,7 @@ def main() -> None:
             f"{c}:{scores[c]['solve']:.2f}/{scores[c]['route']:.2f}/"
             f"{scores[c]['copy']:.2f}/{scores[c]['idle']:.2f}/{scores[c]['dep']:.2f}/"
             + ("-" if scores[c].get("spare") is None else f"{scores[c]['spare']:.2f}")
+            + "/" + ("-" if scores[c].get("zero") is None else f"{scores[c]['zero']:.2f}")
             if scores[c].get("loaded") else f"{c}:-" for c in args.candidates)
         print(f"{t}  {s}   -> {win or 'none of them'}", flush=True)
         if args.apply and win is not None and win != incumbent:
