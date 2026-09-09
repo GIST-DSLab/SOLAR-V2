@@ -34,169 +34,249 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
+import numpy as np
+
+from maker.sel_helpers import sel_of
+
+# ---------------------------------------------------------------- helpers ----
+
+TRANSFORMS = ('identity', 'dmirror', 'cmirror', 'vmirror',
+              'hmirror', 'rot90', 'rot180', 'rot270')
+
+SIDES = ('right', 'left', 'bottom', 'top')
 
 
-VARIANTS = [
-    {"direction": "R"},
-    {"direction": "L"},
-    {"direction": "U"},
-    {"direction": "D"},
-]
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    lo = a + int((b - a) * diff_lb)
+    hi = a + int((b - a) * diff_ub)
+    if hi < lo:
+        hi = lo
+    lo = max(lo, a)
+    hi = min(hi, b)
+    return random.randint(lo, hi)
 
+
+def _apply_fn(name, g):
+    if name == 'dmirror':
+        return np.transpose(g)
+    if name == 'cmirror':
+        return np.rot90(np.transpose(g), 2)
+    if name == 'vmirror':
+        return np.fliplr(g)
+    if name == 'hmirror':
+        return np.flipud(g)
+    if name == 'rot90':
+        return np.rot90(g, 3)
+    if name == 'rot180':
+        return np.rot90(g, 2)
+    if name == 'rot270':
+        return np.rot90(g, 1)
+    return g
+
+
+def _side_from_cells(obj_rc, sep_rc):
+    """Which side of the blob's bbox does the 1-wide marker line sit on?"""
+    if set(r for r, _ in obj_rc) & set(r for r, _ in sep_rc):   # shares rows -> vertical line
+        return 'right' if min(c for _, c in sep_rc) > min(c for _, c in obj_rc) else 'left'
+    return 'bottom' if min(r for r, _ in sep_rc) > min(r for r, _ in obj_rc) else 'top'
+
+
+def _probe(fns):
+    """Where a composition of the mirror-ops puts the line, and whether it swaps dims."""
+    p = np.zeros((5, 7), dtype=int)
+    p[1:4, 1:3] = 1          # "blob"
+    p[1:4, 3] = 2            # "marker line", built on its right
+    q = p
+    for fn in fns:
+        q = _apply_fn(fn, q)
+    obj = [(int(r), int(c)) for r, c in zip(*np.where(q == 1))]
+    sep = [(int(r), int(c)) for r, c in zip(*np.where(q == 2))]
+    return _side_from_cells(obj, sep), (q.shape != p.shape)
+
+
+def _grow_shape(h, w, diff_lb, diff_ub):
+    """Grow the blob exactly like the RE-ARC generator: a connected set that
+    contains one cell of the last column and is at least 2 columns wide."""
+    inds = [(i, j) for i in range(h) for j in range(w)]
+    sp = (random.randint(0, h - 1), w - 1)
+    shp = {sp}
+    numcellsd = _unifint(diff_lb, diff_ub, (0, (h * w) // 2))
+    numc = random.choice((numcellsd, h * w - numcellsd))
+    numc = min(max(2, numc), h * w - 1)
+    reminds = set(inds) - {sp}
+
+    def cands():
+        nb = set()
+        for (i, j) in shp:
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    if di or dj:
+                        nb.add((i + di, j + dj))
+        return sorted((reminds - shp) & nb)
+
+    for _ in range(numc):
+        cs = cands()
+        if not cs:
+            break
+        shp.add(random.choice(cs))
+    guard = 0
+    while len({j for _, j in shp}) == 1 and guard <= h * w:
+        cs = cands()
+        if not cs:
+            return None
+        shp.add(random.choice(cs))
+        guard += 1
+    return shp if len({j for _, j in shp}) > 1 else None
+
+
+# ------------------------------------------- 1. colors + per-instance plan ----
 
 def sample_colors(num_examples=None) -> dict:
-    import random as _r
-    cols = [c for c in range(1, 10) if c != 3]          # 3 is the output background; 0 breaks Copy/Paste
-    bgc, sepc, objc = _r.sample(cols, 3)
+    # 3 is reserved: it is the color the background turns into.
+    # 0 stays an ordinary picture color and may land on any role.
+    cols = [c for c in range(10) if c != 3]
+    bgc, sepc, objc = random.sample(cols, 3)
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(_r.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        _r.shuffle(examples)
+    variants = [{"side": s} for s in SIDES]
+    if n_ex >= len(variants):
+        examples = [dict(v) for v in variants]
+        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
+        random.shuffle(examples)
     else:
-        examples = [dict(v) for v in _r.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(_r.choice(examples))]
+        examples = [dict(v) for v in random.sample(variants, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "sepc": sepc, "objc": objc, "instance_plan": plan}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, sepc=None, objc=None, direction=None) -> dict:
-    dirmap = {
-        'identity': lambda v: v,
-        'dmirror':  lambda v: (v[1], v[0]),
-        'cmirror':  lambda v: (-v[1], -v[0]),
-        'vmirror':  lambda v: (v[0], -v[1]),
-        'hmirror':  lambda v: (-v[0], v[1]),
-        'rot90':    lambda v: (v[1], -v[0]),
-        'rot180':   lambda v: (-v[0], -v[1]),
-        'rot270':   lambda v: (-v[1], v[0]),
-    }
-    mfs = ((identity, 'identity'), (dmirror, 'dmirror'), (cmirror, 'cmirror'),
-           (vmirror, 'vmirror'), (hmirror, 'hmirror'), (rot90, 'rot90'),
-           (rot180, 'rot180'), (rot270, 'rot270'))
-    dvecs = {'R': (0, 1), 'L': (0, -1), 'D': (1, 0), 'U': (-1, 0)}
-    if direction is None:
-        direction = choice(('R', 'L', 'U', 'D'))
-    target = dvecs[direction]
-    while True:
-        nmfs = choice((1, 2))
-        fns = sample(mfs, nmfs)
-        v = (0, 1)
-        for _, nm in fns:
-            v = dirmap[nm](v)
-        if v == target:
-            break
-    # L/R keep the frame; U/D come from transposing transforms -> dims swap at the end
-    if direction in ('L', 'R'):
-        hlim, wlim = max_h, max_w
-    else:
-        hlim, wlim = max_w, max_h
+# ------------------------------------------------------------ 2. generator ----
 
-    h = unifint(diff_lb, diff_ub, (2, min(20, hlim - 1)))
-    w = unifint(diff_lb, diff_ub, (2, min(10, (wlim - 1) // 2)))
-    c = canvas(bgc, (h, w))
-    inds = totuple(asindices(c))
-    spi = randint(0, h - 1)
-    sp = (spi, w - 1)
-    shp = {sp}
-    numcellsd = unifint(diff_lb, diff_ub, (0, (h * w) // 2))
-    numc = choice((numcellsd, h * w - numcellsd))
-    numc = min(max(2, numc), h * w - 1)
-    reminds = set(remove(sp, inds))
-    for k in range(numc):
-        shp.add(choice(totuple((reminds - shp) & mapply(neighbors, shp))))
-    while width(shp) == 1:
-        shp.add(choice(totuple((reminds - shp) & mapply(neighbors, shp))))
-    c2 = fill(c, objc, shp)
-    borderinds = sfilter(shp, lambda ij: ij[1] == w - 1)
-    c3 = fill(c, sepc, borderinds)
-    gimini = asobject(hconcat(c2, vmirror(c3)))
-    gomini = asobject(hconcat(c2, vmirror(c2)))
-    fullh = unifint(diff_lb, diff_ub, (h + 1, hlim))
-    fullw = unifint(diff_lb, diff_ub, (2 * w + 1, wlim))
-    fullg = canvas(bgc, (fullh, fullw))
-    loci = randint(0, fullh - h)
-    locj = randint(0, fullw - 2 * w)
-    loc = (loci, locj)
-    gi = paint(fullg, gimini)
-    go = paint(fullg, gomini)
-    for fn, _ in fns:
-        gi = fn(gi)
-        go = fn(go)
-    go = replace(go, bgc, 3)
-    return {'input': gi, 'output': go}
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, sepc, objc, side=None) -> dict:
+    if side is None or side not in SIDES:
+        side = random.choice(SIDES)
+
+    for _ in range(600):
+        fns = random.sample(TRANSFORMS, random.choice((1, 2)))
+        got_side, swaps = _probe(fns)
+        if got_side != side:
+            continue
+
+        H_lim = max_w if swaps else max_h        # limits BEFORE the transform
+        W_lim = max_h if swaps else max_w
+        hmax = min(20, H_lim - 1)
+        wmax = min(10, (W_lim - 1) // 2)
+        if hmax < 2 or wmax < 2:
+            continue
+
+        h = _unifint(diff_lb, diff_ub, (2, hmax))
+        w = _unifint(diff_lb, diff_ub, (2, wmax))
+        shp = _grow_shape(h, w, diff_lb, diff_ub)
+        if shp is None:
+            continue
+
+        c2 = np.full((h, w), bgc, dtype=int)         # the blob
+        c3 = np.full((h, w), bgc, dtype=int)         # only its last-column cells
+        for (i, j) in shp:
+            c2[i, j] = objc
+            if j == w - 1:
+                c3[i, j] = sepc
+
+        gimini = np.hstack([c2, np.fliplr(c3)])      # blob + marker line
+        gomini = np.hstack([c2, np.fliplr(c2)])      # blob + its reflection
+
+        fullh = _unifint(diff_lb, diff_ub, (h + 1, H_lim))
+        fullw = _unifint(diff_lb, diff_ub, (2 * w + 1, W_lim))
+        loci = random.randint(0, fullh - h)
+        locj = random.randint(0, fullw - 2 * w)
+
+        gi = np.full((fullh, fullw), bgc, dtype=int)
+        go = np.full((fullh, fullw), bgc, dtype=int)
+        gi[loci:loci + h, locj:locj + 2 * w] = gimini
+        go[loci:loci + h, locj:locj + 2 * w] = gomini
+
+        for fn in fns:
+            gi = _apply_fn(fn, gi)
+            go = _apply_fn(fn, go)
+        go = np.where(go == bgc, 3, go)
+
+        return {"input": gi.tolist(), "output": go.tolist()}
+
+    raise ValueError("could not build an instance within the given bounds")
 
 
-def derive_operations(I, O):
-    import numpy as np
-    from collections import Counter, deque
+# ---------------------------------------------------- 3. ARCLE trajectory ----
 
+def derive_operations(I, O, examples=None):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-
-    # exactly three colors: background > object > marker line (strict, by construction)
-    cnt = Counter(I.flatten().tolist())
-    order = sorted(cnt.items(), key=lambda kv: (-kv[1], kv[0]))
-    bgc = order[0][0]
-    objc = order[1][0]
-    sepc = order[2][0]
-
-    obj = np.argwhere(I == objc)
-    r0, c0 = int(obj[:, 0].min()), int(obj[:, 1].min())
-    r1, c1 = int(obj[:, 0].max()), int(obj[:, 1].max())
-    h, w = r1 - r0 + 1, c1 - c0 + 1
-
-    sep = np.argwhere(I == sepc)
-    srs = sorted(set(int(p) for p in sep[:, 0]))
-    scs = sorted(set(int(p) for p in sep[:, 1]))
-
-    # the marker line sits flush against one side of the object: that side is the mirror axis
-    if len(scs) == 1 and scs[0] == c1 + 1:
-        dr0, dc0, flip = r0, c1 + 1, 26            # mirror to the right  -> FlipH
-    elif len(scs) == 1 and scs[0] == c0 - 1:
-        dr0, dc0, flip = r0, c0 - w, 26            # mirror to the left   -> FlipH
-    elif len(srs) == 1 and srs[0] == r1 + 1:
-        dr0, dc0, flip = r1 + 1, c0, 27            # mirror downwards     -> FlipV
-    else:
-        dr0, dc0, flip = r0 - h, c0, 27            # mirror upwards       -> FlipV
-
+    ho, wo = O.shape
     ops, sels = [], []
 
-    # 1. every background region becomes 3 (object and marker untouched)
-    seen = np.zeros((hi, wi), dtype=bool)
-    comps = []
-    for r in range(hi):
-        for c in range(wi):
-            if I[r, c] == bgc and not seen[r, c]:
-                q = deque([(r, c)])
-                seen[r, c] = True
-                cells = [(r, c)]
-                while q:
-                    y, x = q.popleft()
-                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        ny, nx = y + dy, x + dx
-                        if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] and I[ny, nx] == bgc:
-                            seen[ny, nx] = True
-                            q.append((ny, nx))
-                            cells.append((ny, nx))
-                comps.append(cells)
-    comps.sort(key=len, reverse=True)              # open background first, then the enclosed pockets
-    for cells in comps:
-        sr, sc = cells[0]
-        ops.append(13)
-        sels.append([int(sr), int(sc), 0, 0])
+    # --- the three roles ----------------------------------------------------
+    # background = the color whose bounding box spans the picture (it always
+    # owns a full row and a full column); of the other two the blob is the
+    # bigger one, the 1-wide mirror marker the smaller.
+    best = None
+    for col in np.unique(I):
+        rs, cs = np.where(I == col)
+        key = (int((rs.max() - rs.min() + 1) * (cs.max() - cs.min() + 1)), int(len(rs)))
+        if best is None or key > best[0]:
+            best = (key, int(col))
+    bgc = best[1]
+    rest = [int(c) for c in np.unique(I) if int(c) != bgc]
+    counts = {c: int((I == c).sum()) for c in rest}
+    objc = max(rest, key=lambda c: counts[c])
+    sepc = min(rest, key=lambda c: counts[c])
 
-    # 2. stamp the object (now sitting on a 3 background) across the marked side and mirror it
-    ops.append(29)
-    sels.append([r0, c0, h - 1, w - 1])
-    ops.append(30)
-    sels.append([dr0, dc0, 0, 0])
-    ops.append(flip)
-    sels.append([dr0, dc0, h - 1, w - 1])
+    obj_rc = [(int(r), int(c)) for r, c in zip(*np.where(I == objc))]
+    sep_rc = [(int(r), int(c)) for r, c in zip(*np.where(I == sepc))]
+    r0 = min(r for r, _ in obj_rc); r1 = max(r for r, _ in obj_rc)
+    c0 = min(c for _, c in obj_rc); c1 = max(c for _, c in obj_rc)
+    oh, ow = r1 - r0 + 1, c1 - c0 + 1
+
+    # the marker line tells us which side the reflection is built on
+    side = _side_from_cells(obj_rc, sep_rc)
+    if side in ('right', 'left'):
+        flip_op = 26                                   # FlipH: left <-> right
+        dj = ow if side == 'right' else -ow
+        dest_r, dest_c = r0, c0 + dj
+        mirror_rc = [(r, c0 + c1 - c + dj) for r, c in obj_rc]
+    else:
+        flip_op = 27                                   # FlipV: up <-> down
+        di = oh if side == 'bottom' else -oh
+        dest_r, dest_c = r0 + di, c0
+        mirror_rc = [(r0 + r1 - r + di, c) for r, c in obj_rc]
+
+    # --- 1. the picture's background becomes 3 (base layer) -----------------
+    bg_cells = [(int(r), int(c)) for r, c in zip(*np.where(I == bgc))]
+    if bgc != 3 and bg_cells:
+        ops.append(3)
+        sels.append(sel_of(bg_cells))
+
+    if objc != 0:
+        # --- 2. duplicate the blob's whole bbox (blob + its 3-background) ---
+        # bbox selection intended here: the whole rectangle, background included.
+        ops.append(29)                                 # CopyO (grid already recolored)
+        sels.append([r0, c0, oh - 1, ow - 1])
+        # --- 3. drop that rectangle on the far side of the marker line -----
+        ops.append(30)                                 # Paste at destination origin
+        sels.append([dest_r, dest_c, 0, 0])
+        # --- 4. reflect it in place: that is the rule ----------------------
+        src = np.where(I[r0:r1 + 1, c0:c1 + 1] == bgc, 3, I[r0:r1 + 1, c0:c1 + 1])
+        mirrored = np.fliplr(src) if flip_op == 26 else np.flipud(src)
+        if not np.array_equal(src, mirrored):          # skip only a literal no-op
+            ops.append(flip_op)
+            sels.append([dest_r, dest_c, oh - 1, ow - 1])  # whole rectangle, on purpose
+    else:
+        # The blob is drawn in color 0, which Copy/Paste read as "nothing there",
+        # so a copy would arrive empty: paint the reflected blob's own cells
+        # instead. They cover the whole marker line, so the line goes with it.
+        ops.append(0)
+        sels.append(sel_of(mirror_rc))
 
     ops.append(34)
-    sels.append([0, 0, hi - 1, wi - 1])
+    sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
 
 
@@ -240,7 +320,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

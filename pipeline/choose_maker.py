@@ -703,6 +703,22 @@ def pick(scores: dict, incumbent: str, order: list,
     # -- d364b489 from 374 to 5 -- so it is not a cost being traded away.
     dp = min(v["dep"] for v in good.values())
     good = {k: v for k, v in good.items() if v["dep"] <= dp + 1e-9}
+    # Coverage of the instances where 0 is a colour of the picture, ahead of
+    # coverage in general because `solve` cannot see it. With --episodes_root
+    # the solved set is the rollout's, and the rollout kept only what solved:
+    # 2bcee788 stands at solve 1.00 there and answers none of the instances
+    # whose target holds a 0. Only a real gap counts -- a rate is a handful of
+    # instances and a few points of difference is noise -- and a candidate that
+    # has no such instances to answer neither wins nor loses by them. The margin
+    # is wide on purpose: e21d9049's repair went from answering 14% of them to
+    # 26%, which on twenty-odd instances is three more, and swapping the release
+    # for that is churn. It stays on the list to be regenerated instead.
+    zs = [v["zero"] for v in good.values() if v.get("zero") is not None]
+    if zs:
+        zv = max(zs)
+        if base is None or base.get("zero") is None or zv > base["zero"] + 0.15:
+            good = {k: v for k, v in good.items()
+                    if v.get("zero") is None or v["zero"] >= zv - 1e-9}
     sv = max(v["solve"] for v in good.values())
     good = {k: v for k, v in good.items() if v["solve"] >= sv - 1e-9}
     # Nothing after coverage. `route` used to be the last filter, and on the six
@@ -771,6 +787,10 @@ def pick(scores: dict, incumbent: str, order: list,
                        f"looked at")
         if base["solve"] < s0 - 1e-9:
             why.append(f"the incumbent solves {base['solve']:.0%} against {s0:.0%}")
+        bz, gz = base.get("zero"), top[k].get("zero")
+        if bz is not None and gz is not None and gz > bz + 1e-9:
+            why.append(f"the incumbent answers {bz:.0%} of the instances where 0 "
+                       f"is a colour of the picture, against {gz:.0%}")
     lead = "; ".join(why) or "it is preferred on the concept"
     got = top[k]
     return k, (f"{lead}. This one solves, never draws another instance's output, "
