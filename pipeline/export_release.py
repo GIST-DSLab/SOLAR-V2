@@ -80,7 +80,17 @@ SUBSETS = {
         # the flip was spare on every instance looked at -- the route reached the
         # answer without it. The replacement lays the colours out directly, the
         # middle row running the other way, which is what the verifier does.
-        root=DATA_ROOT / "ARC_rearc_draw15" / "whole",
+        # draw16 repairs six makers that lost cells to ARCLE reading 0 as
+        # nothing there: 2bcee788, 97a05b5b, 4938f0c2, 3345333e, 9d9215db and
+        # 6855a6e4 each answered between none and four fifths of the instances
+        # whose target holds a 0 and now answer all of them. Three of them kept
+        # the replication and repair only the cells the paste could not carry,
+        # which is why they did not have to give up the concept to do it.
+        # 97a05b5b went on that list for the 0s and turned out to be reading the
+        # answer as well -- its route changed on every pair when O was disturbed.
+        # e21d9049 is still short: its repair reached every such instance by
+        # drawing another instance's output, and was refused.
+        root=DATA_ROOT / "ARC_rearc_draw16" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its

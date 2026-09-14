@@ -33,38 +33,36 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import numpy as np
-from collections import Counter
-
-
 def sample_colors(num_examples=None) -> dict:
     import random
     cols = list(range(10))
-    bgc = random.choice(cols)
-    # objc must be non-zero: the object is relocated with CopyI/Paste, and 0 is
-    # "nothing" to the clipboard.
-    objc = random.choice([c for c in range(1, 10) if c != bgc])
-    boxc = random.choice([c for c in cols if c not in (bgc, objc)])
+    bgc, objc, boxc = random.sample(cols, 3)
 
-    variants = [{"transposed": False}, {"transposed": True}]
+    # the only discrete structural variant is the global orientation of the
+    # frame (two horizontal rails vs. two vertical rails = dmirror of the grid)
+    VARIANTS = [{"transposed": False}, {"transposed": True}]
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(variants):
-        examples = [dict(v) for v in variants]
-        examples += [dict(random.choice(variants)) for _ in range(n_ex - len(variants))]
+    if n_ex >= len(VARIANTS):
+        examples = [dict(v) for v in VARIANTS]
+        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(variants, n_ex)]
+        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
     plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "objc": objc, "boxc": boxc, "instance_plan": plan}
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, boxc, transposed=None) -> dict:
-    from random import randint, choice, sample
+    import random as _r
     if transposed is None:
-        transposed = choice((True, False))
-    lim_h, lim_w = (max_w, max_h) if transposed else (max_h, max_w)
-    h = unifint(diff_lb, diff_ub, (10, lim_h))
-    w = unifint(diff_lb, diff_ub, (4, lim_w))
+        transposed = _r.choice((True, False))
+
+    # when the grid gets transposed at the end, the row/col budgets swap
+    lim_h = max_w if transposed else max_h
+    lim_w = max_h if transposed else max_w
+
+    h = unifint(diff_lb, diff_ub, (10, max(10, lim_h)))
+    w = unifint(diff_lb, diff_ub, (4, max(4, lim_w)))
     fullh = unifint(diff_lb, diff_ub, (10, h))
     fullw = unifint(diff_lb, diff_ub, (3, w))
     bcanv = canvas(bgc, (h, w))
@@ -77,18 +75,18 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, boxc, transposed=None) -
     br = connect((objh + 1, 0), (objh + 1, fullw - 1))
     br = br | {(objh + 2, 0), (objh + 2, fullw - 1)}
     cands = backdrop(frozenset({(0, 1), (objh - 1, fullw - 2)}))
-    ncands = objh * (fullw - 2)
     for k in range(2):
         canvi = fill(canvi, boxc, br)
         canvo = fill(canvo, boxc, br)
-        ncellsd = unifint(diff_lb, diff_ub, (0, ncands // 2))
-        ncells = choice((ncellsd, ncands - ncellsd))
-        ncells = min(max(1, ncells), ncands)
-        # anchor the object on the far edge of its band: this makes the reflected
-        # copy land exactly against the bracket (keeps generator == verifier).
-        anchor = (0, randint(1, fullw - 2))
-        rest = [c for c in totuple(cands) if c != anchor]
-        cells = frozenset([anchor] + sample(rest, ncells - 1))
+        ncellsd = unifint(diff_lb, diff_ub, (0, (objh * (fullw - 2)) // 2))
+        ncells = choice((ncellsd, objh * (fullw - 2) - ncellsd))
+        ncells = min(max(1, ncells), objh * (fullw - 2))
+        cells = frozenset(sample(totuple(cands), ncells))
+        # anchor the pattern at the outer edge of its band: the mirrored copy is
+        # laid flush against the rail, so this keeps generator == verifier
+        du = min(i for i, j in cells)
+        if du:
+            cells = frozenset((i - du, j) for i, j in cells)
         canvi = fill(canvi, objc, cells)
         canvo = fill(canvo, objc, shift(hmirror(cells), (objh + 3, 0)))
         canvi = hmirror(canvi)
@@ -101,94 +99,120 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, boxc, transposed=None) -
     return {'input': gi, 'output': go}
 
 
-def derive_operations(I, O):
-    """
-    Rule (read off I): a two-bracket frame sits in the middle; one blob of object
-    cells lies outside each bracket.  Each blob is mirrored through its bracket and
-    tucked inside the frame, flush against the bracket's end row/col; its old place
-    becomes background.
-
-    Per blob: CopyI its bbox -> Paste inside the frame -> flip it in place
-    (only if the flip actually changes it) -> erase the blob's old bbox.
-    """
+def derive_operations(I, O, examples=None):
     import numpy as np
+    from collections import Counter
+    try:
+        from maker.sel_helpers import sel_of
+    except Exception:
+        def sel_of(cells):
+            return {"cells": [[int(r), int(c)] for r, c in cells]}
+
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
-    hi, wi = I.shape
+    H, W = I.shape
+    G = I.copy()
     ops, sels = [], []
 
-    pts_of = {}
-    for c in np.unique(I):
-        pts_of[int(c)] = [(int(r), int(cc)) for r, cc in np.argwhere(I == c)]
+    # --- background: the canvas colour the structure is drawn on ---
+    cnt = Counter(I.flatten().tolist())
+    bgc = int(cnt.most_common(1)[0][0])
+    others = sorted(int(c) for c in cnt if c != bgc)
 
-    def bbox(pts):
-        rs = [p[0] for p in pts]
-        cs = [p[1] for p in pts]
-        return min(rs), max(rs), min(cs), max(cs)
-
-    def is_frame(pts):
-        r0, r1, c0, c1 = bbox(pts)
-        for (r, c) in pts:
-            if r0 < r < r1 and c0 < c < c1:
-                return False
-        H = r1 - r0 + 1
-        W = c1 - c0 + 1
-        rowcnt = Counter(r for r, _ in pts)
-        colcnt = Counter(c for _, c in pts)
-        if len(pts) == 2 * W + 4 and rowcnt[r0] == W and rowcnt[r1] == W:
-            return True
-        if len(pts) == 2 * H + 4 and colcnt[c0] == H and colcnt[c1] == H:
-            return True
-        return False
-
-    boxc = None
-    for c in sorted(pts_of):
-        if len(pts_of[c]) >= 6 and is_frame(pts_of[c]):
-            boxc = c
-            break
-    rest = [c for c in pts_of if c != boxc]
-    objc = min(rest, key=lambda c: len(pts_of[c]))
-    bgc = [c for c in rest if c != objc][0]
-
-    box = pts_of[boxc]
-    br0, br1, bc0, bc1 = bbox(box)
-    # brackets are the two full lines: horizontal if the frame occupies its own
-    # centre column (a full-width line does; two vertical bars do not).
-    horizontal = any(c == bc0 + (bc1 - bc0 + 1) // 2 for _, c in box)
-
-    obj = pts_of[objc]
-    if horizontal:
-        groups = [([p for p in obj if p[0] < br0], 'near'),
-                  ([p for p in obj if p[0] > br1], 'far')]
-    else:
-        groups = [([p for p in obj if p[1] < bc0], 'near'),
-                  ([p for p in obj if p[1] > bc1], 'far')]
-
-    for grp, side in groups:
-        if not grp:
+    # --- the frame: two full parallel rails + 4 inward stubs, all on its bbox border ---
+    boxc, horizontal = None, True
+    for c in others:
+        pts = np.argwhere(I == c)
+        r0, r1 = int(pts[:, 0].min()), int(pts[:, 0].max())
+        c0, c1 = int(pts[:, 1].min()), int(pts[:, 1].max())
+        hh, ww = r1 - r0 + 1, c1 - c0 + 1
+        if not all((int(r) in (r0, r1)) or (int(cc) in (c0, c1)) for r, cc in pts):
             continue
-        u, l, a, b = bbox(grp)
-        hh = l - u + 1
-        ww = b - a + 1
-        rel = {(r - u, c - a) for r, c in grp}
+        rows_full = all(I[r0, j] == c for j in range(c0, c1 + 1)) and \
+                    all(I[r1, j] == c for j in range(c0, c1 + 1))
+        cols_full = all(I[i, c0] == c for i in range(r0, r1 + 1)) and \
+                    all(I[i, c1] == c for i in range(r0, r1 + 1))
+        if rows_full and len(pts) == 2 * ww + 4:
+            boxc, horizontal = c, True
+            break
+        if cols_full and len(pts) == 2 * hh + 4:
+            boxc, horizontal = c, False
+            break
+    if boxc is None:
+        boxc = others[0]
+        pts = np.argwhere(I == boxc)
+        r0, c0 = int(pts[:, 0].min()), int(pts[:, 1].min())
+        c1 = int(pts[:, 1].max())
+        horizontal = all(I[r0, j] == boxc for j in range(c0, c1 + 1))
+    objc = [c for c in others if c != boxc][0]
+
+    bx = np.argwhere(I == boxc)
+    br0, br1 = int(bx[:, 0].min()), int(bx[:, 0].max())
+    bc0, bc1 = int(bx[:, 1].min()), int(bx[:, 1].max())
+
+    # --- the two patterns living outside the frame, one on each side ---
+    obj = [(int(r), int(c)) for r, c in np.argwhere(I == objc)]
+    if horizontal:
+        groups = [[p for p in obj if p[0] < br0], [p for p in obj if p[0] > br1]]
+    else:
+        groups = [[p for p in obj if p[1] < bc0], [p for p in obj if p[1] > bc1]]
+
+    for gi, cells in enumerate(groups):
+        if not cells:
+            continue
+        r0 = min(r for r, _ in cells)
+        r1 = max(r for r, _ in cells)
+        c0 = min(c for _, c in cells)
+        c1 = max(c for _, c in cells)
+        hh, ww = r1 - r0 + 1, c1 - c0 + 1
+        rect = I[r0:r1 + 1, c0:c1 + 1]
+
+        # destination: flush against the inner side of its own rail
         if horizontal:
-            dr = br0 + 2 if side == 'near' else br1 - 2 - (hh - 1)
-            dc = a
-            flip_op = 27                                  # up<->down
-            same = rel == {(hh - 1 - r, c) for r, c in rel}
+            dest_c = c0
+            dest_r = br0 + 2 if gi == 0 else br1 - 2 - (hh - 1)
+            flip_op = 27                      # up<->down
         else:
-            dr = u
-            dc = bc0 + 2 if side == 'near' else bc1 - 2 - (ww - 1)
-            flip_op = 26                                  # left<->right
-            same = rel == {(r, ww - 1 - c) for r, c in rel}
+            dest_r = r0
+            dest_c = bc0 + 2 if gi == 0 else bc1 - 2 - (ww - 1)
+            flip_op = 26                      # left<->right
 
-        ops.append(28); sels.append([u, a, hh - 1, ww - 1])      # grab the blob
-        ops.append(30); sels.append([dr, dc, 0, 0])              # drop it inside the frame
-        if not same:
-            ops.append(flip_op); sels.append([dr, dc, hh - 1, ww - 1])
-        ops.append(bgc); sels.append([u, a, hh - 1, ww - 1])     # clear its old place
+        tgt = G[dest_r:dest_r + hh, dest_c:dest_c + ww].copy()
+        do_paste = not np.array_equal(np.where(rect != 0, rect, tgt), tgt)
 
-    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
+        # 1. grab the region from the input (whole rectangle, background included)
+        if do_paste:
+            ops.append(28); sels.append([r0, c0, hh - 1, ww - 1])
+
+        # 2. the pattern leaves its place outside the frame
+        ops.append(int(bgc)); sels.append(sel_of(cells))
+        for r, c in cells:
+            G[r, c] = bgc
+
+        # 3. lay the region down inside the frame
+        if do_paste:
+            tgt = G[dest_r:dest_r + hh, dest_c:dest_c + ww].copy()
+            ops.append(30); sels.append([dest_r, dest_c, 0, 0])
+            G[dest_r:dest_r + hh, dest_c:dest_c + ww] = np.where(rect != 0, rect, tgt)
+
+        # 4. ARCLE reads 0 as "nothing there": cells of the region holding 0 did not
+        #    travel with the paste. Lay in exactly those, and only where they differ.
+        rep = [(dest_r + i, dest_c + j)
+               for i in range(hh) for j in range(ww)
+               if rect[i, j] == 0 and G[dest_r + i, dest_c + j] != 0]
+        if rep:
+            ops.append(0); sels.append(sel_of(rep))
+            for r, c in rep:
+                G[r, c] = 0
+
+        # 5. mirror the laid-down region in place (whole rectangle is the intent)
+        cur = G[dest_r:dest_r + hh, dest_c:dest_c + ww].copy()
+        flipped = np.flipud(cur) if horizontal else np.fliplr(cur)
+        if not np.array_equal(cur, flipped):
+            ops.append(flip_op); sels.append([dest_r, dest_c, hh - 1, ww - 1])
+            G[dest_r:dest_r + hh, dest_c:dest_c + ww] = flipped
+
+    ops.append(34); sels.append([0, 0, H - 1, W - 1])
     return ops, sels
 
 
@@ -232,7 +256,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

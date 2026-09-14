@@ -37,151 +37,201 @@ import random
 import numpy as np
 from collections import Counter
 
-ROTS = ("identity", "rot90", "rot180", "rot270")
+from maker.sel_helpers import sel_of
+
+
+# ---------------------------------------------------------------- colors ----
+ROTS = [0, 1, 2, 3]          # identity / rot90 / rot180 / rot270
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
-    bgc = random.choice(cols)
+    """Only the background is a real colour role here: the rule (mirror the seed
+    quadrant into all four quadrants) is colour independent.  The one genuinely
+    discrete structural dimension is which corner the seed sits in, i.e. the
+    final rotation, so that is pre-planned per instance."""
+    bgc = random.choice(range(10))
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(ROTS):
-        exs = [{"rotf_name": r} for r in ROTS]
-        exs += [{"rotf_name": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
-        random.shuffle(exs)
+        examples = [{"rot": r} for r in ROTS]
+        examples += [{"rot": random.choice(ROTS)} for _ in range(n_ex - len(ROTS))]
+        random.shuffle(examples)
     else:
-        exs = [{"rotf_name": r} for r in random.sample(list(ROTS), n_ex)]
-    plan = exs + [dict(random.choice(exs))]
+        examples = [{"rot": r} for r in random.sample(ROTS, n_ex)]
+    plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, rotf_name=None) -> dict:
-    if rotf_name is None:
-        rotf_name = random.choice(list(ROTS))
-    rotmap = {"identity": identity, "rot90": rot90, "rot180": rot180, "rot270": rot270}
-    rotf = rotmap[rotf_name]
-    swap = rotf_name in ("rot90", "rot270")
-    lim_h = max_w if swap else max_h
-    lim_w = max_h if swap else max_w
-
+# -------------------------------------------------------------- generator ---
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc=None, rot=None) -> dict:
     cols = interval(0, 10, 1)
-    hub = max(5, min(14, (lim_h - 1) // 2))
-    wub = max(5, min(14, (lim_w - 1) // 2))
-    h = unifint(diff_lb, diff_ub, (5, hub))
-    w = unifint(diff_lb, diff_ub, (5, wub))
+    if bgc is None:
+        bgc = choice(cols)
+    if rot is None:
+        rot = choice((0, 1, 2, 3))
+
+    # rot90 / rot270 transpose the canvas, so size limits swap for those cases
+    if rot in (1, 3):
+        hlim, wlim = (max_w - 1) // 2, (max_h - 1) // 2
+    else:
+        hlim, wlim = (max_h - 1) // 2, (max_w - 1) // 2
+    hlim = max(5, min(14, hlim))
+    wlim = max(5, min(14, wlim))
+
+    h = unifint(diff_lb, diff_ub, (5, hlim))
+    w = unifint(diff_lb, diff_ub, (5, wlim))
     h = h * 2 + 1
     w = w * 2 + 1
-    remcols = list(remove(bgc, cols))
+
+    remcols = remove(bgc, cols)
     ub = min(h, w) // 4
     nrings = unifint(diff_lb, diff_ub, (1, ub))
     onlinesbase = tuple([(2 * k + 1, 2 * k + 1) for k in range(ub)])
-    onlines = random.sample(list(onlinesbase), nrings)
-    onlines = {(random.choice(remcols), ij) for ij in onlines}
+    onlines = sample(onlinesbase, nrings)
+    onlines = {(choice(remcols), ij) for ij in onlines}
     gi = canvas(bgc, (h, w))
     gi = paint(gi, onlines)
+
     linsbase = apply(rbind(add, (0, 2)), onlinesbase[:-1])
     nlines = unifint(diff_lb, diff_ub, (1, len(linsbase)))
-    linesps = random.sample(list(linsbase), nlines)
-    colors = [random.choice(remcols) for k in range(nlines)]
+    linesps = sample(linsbase, nlines)
+    colors = [choice(remcols) for k in range(nlines)]
     dots = {(col, ij) for col, ij in zip(colors, linesps)}
     dots2 = {(col, ij[::-1]) for col, ij in zip(colors, linesps)}
     gi = paint(gi, dots | dots2)
+
     ff = lambda ij: ij[1] % 2 == 1
     ff2 = lambda ij: ij[0] % 2 == 1
     linesps2 = tuple(x[::-1] for x in linesps)
     lines = tuple(sfilter(connect(ij, (ij[0], w - ij[1] - 1)), ff) for ij in linesps)
     lines2 = tuple(sfilter(connect(ij, (h - ij[0] - 1, ij[1])), ff2) for ij in linesps2)
-    lines = merge({recolor(col, l1 | l2) for col, (l1, l2) in zip(colors, zip(lines, lines2))})
+    lines = merge({recolor(col, l1 | l2)
+                   for col, (l1, l2) in zip(colors, zip(lines, lines2))})
     gobase = paint(gi, lines)
     go = paint(gobase, merge(fgpartition(vmirror(gobase))))
     go = paint(go, merge(fgpartition(hmirror(gobase))))
     go = paint(go, merge(fgpartition(vmirror(hmirror(gobase)))))
+
+    rotf = (identity, rot90, rot180, rot270)[rot]
     gi = rotf(gi)
     go = rotf(go)
     return {'input': gi, 'output': go}
 
 
-def derive_operations(I, O):
-    # I holds seeds of concentric square "rings" (every other cell, odd rows/cols).
-    # Ring k lives on rows {2k+1, H-2-2k} and cols {2k+1, W-2-2k}.
-    # Each ring may carry: a corner dot (one of its 4 corners is seeded in I)
-    # and a dotted edge colour (two seeds, one on a horizontal edge, one on a
-    # vertical edge, each sitting right next to the anchor corner).
-    # Rule: complete every ring -> 4 corner dots + all 4 dotted edges.
+# ------------------------------------------------------------- operations ---
+def derive_operations(I, O, examples=None):
+    """
+    Rule (read off I alone):
+      * every mark lives at odd (row, col) inside ONE corner quadrant;
+      * a mark pair {(2k+1, 2k+3), (2k+3, 2k+1)} (same colour) shoots a ray of
+        odd-spaced cells inward from each of its two members;
+      * the finished quadrant is then replicated into the other three quadrants
+        by mirroring about the centre column and the centre row.
+
+    Trajectory:  draw the rays  ->  CopyO the seed quadrant / half, Paste it on
+    the far side, repair the cells the palette painted 0 (ARCLE treats 0 as
+    "nothing there", so they never travel), FlipH / FlipV the pasted block.
+    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     H, W = I.shape
+    ch, cw = (H - 1) // 2, (W - 1) // 2
+
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-    ub = min(H, W) // 4
 
     ops, sels = [], []
+    g = I.copy()
 
-    for k in range(ub):
-        r0, r1 = 2 * k + 1, H - 2 - 2 * k
-        c0, c1 = 2 * k + 1, W - 2 - 2 * k
+    # ---- which corner holds the seed ----------------------------------------
+    fg = [(r, c) for r in range(H) for c in range(W) if I[r, c] != bgc]
+    frs = [r for r, _ in fg]
+    fcs = [c for _, c in fg]
+    top = (max(frs) < ch) if fg else True
+    left = (max(fcs) < cw) if fg else True
 
-        # ---- ring k: corner dots ----
-        corners = [(r0, c0), (r0, c1), (r1, c0), (r1, c1)]
-        cseed = None
-        for p in corners:
-            if I[p[0], p[1]] != bgc:
-                cseed = p
-                break
-        if cseed is not None:
-            cval = int(I[cseed[0], cseed[1]])
-            for p in corners:
-                if p != cseed:
-                    ops.append(cval)
-                    sels.append([p[0], p[1], 0, 0])
+    def tor(rr):
+        return rr if top else H - 1 - rr
 
-        hcols = list(range(2 * k + 3, W - 2 * k - 3, 2))   # cols strictly inside ring corners
-        vrows = list(range(2 * k + 3, H - 2 * k - 3, 2))   # rows strictly inside ring corners
+    def toc(cc):
+        return cc if left else W - 1 - cc
 
-        # ---- ring k: horizontal edges ----
-        hseed = None
-        for r in (r0, r1):
-            for c in hcols:
-                if I[r, c] != bgc:
-                    hseed = (r, c)
-                    break
-            if hseed is not None:
-                break
-        if hseed is not None:
-            rh, ch = hseed
-            lval = int(I[rh, ch])
-            # grow the dotted edge outward from its seed along the ring's row
-            for c in sorted([c for c in hcols if c != ch], key=lambda x: abs(x - ch)):
-                ops.append(lval)
-                sels.append([rh, c, 0, 0])
-            # mirror the finished edge onto the opposite side of the ring
-            rm = r1 if rh == r0 else r0
-            ops.append(29)
-            sels.append([rh, hcols[0], 0, hcols[-1] - hcols[0]])
-            ops.append(30)
-            sels.append([rm, hcols[0], 0, 0])
+    # ---- 1. draw each mark-pair's two rays inside the seed quadrant ----------
+    ub = min(H, W) // 4
+    for k in range(max(0, ub - 1)):
+        a, b = 2 * k + 1, 2 * k + 3          # corner-canonical coordinates
+        col = int(I[tor(a), toc(b)])
+        if col == bgc:
+            continue                          # this ring carries no ray
+        # ray running along row `a`, starting one step past its own mark
+        hcells = [(tor(a), toc(c))
+                  for c in range(b + 2, min(cw, W - 1 - b) + 1, 2)]
+        if hcells:
+            ops.append(col)
+            sels.append(sel_of(hcells))
+            for (r, c) in hcells:
+                g[r, c] = col
+        # ray running down column `a`
+        vcells = [(tor(r), toc(a))
+                  for r in range(b + 2, min(ch, H - 1 - b) + 1, 2)]
+        if vcells:
+            ops.append(col)
+            sels.append(sel_of(vcells))
+            for (r, c) in vcells:
+                g[r, c] = col
 
-        # ---- ring k: vertical edges ----
-        vseed = None
-        for c in (c0, c1):
-            for r in vrows:
-                if I[r, c] != bgc:
-                    vseed = (r, c)
-                    break
-            if vseed is not None:
-                break
-        if vseed is not None:
-            rv, cv = vseed
-            lval = int(I[rv, cv])
-            for r in sorted([r for r in vrows if r != rv], key=lambda x: abs(x - rv)):
-                ops.append(lval)
-                sels.append([r, cv, 0, 0])
-            cm = c1 if cv == c0 else c0
-            ops.append(29)
-            sels.append([vrows[0], cv, vrows[-1] - vrows[0], 0])
-            ops.append(30)
-            sels.append([vrows[0], cm, 0, 0])
+    # ---- 2. mirror the quadrant across the centre column --------------------
+    r0 = 0 if top else ch                     # the seed's row-half (centre row incl.)
+    c_src = 0 if left else cw + 1
+    c_dst = cw + 1 if left else 0
 
-    ops.append(34)
-    sels.append([0, 0, H - 1, W - 1])
+    # full rectangle: whole seed half-block, background included -> bbox is exact
+    ops.append(29); sels.append([r0, c_src, ch, cw - 1])          # CopyO
+    ops.append(30); sels.append([r0, c_dst, 0, 0])                # Paste
+
+    src = g[r0:r0 + ch + 1, c_src:c_src + cw].copy()
+    dst = g[r0:r0 + ch + 1, c_dst:c_dst + cw]
+    repair = []
+    for i in range(ch + 1):
+        for j in range(cw):
+            if src[i, j] != 0:
+                dst[i, j] = src[i, j]
+            elif dst[i, j] != 0:              # a 0-coloured cell did not travel
+                repair.append((r0 + i, c_dst + j))
+    if repair:
+        ops.append(0); sels.append(sel_of(repair))                # Color0
+        for (r, c) in repair:
+            g[r, c] = 0
+
+    # full rectangle: the pasted block is mirrored in place, background included
+    ops.append(26); sels.append([r0, c_dst, ch, cw - 1])          # FlipH
+    g[r0:r0 + ch + 1, c_dst:c_dst + cw] = np.fliplr(g[r0:r0 + ch + 1,
+                                                      c_dst:c_dst + cw])
+
+    # ---- 3. mirror the finished half across the centre row ------------------
+    r_src = 0 if top else ch + 1
+    r_dst = ch + 1 if top else 0
+
+    ops.append(29); sels.append([r_src, 0, ch - 1, W - 1])        # CopyO
+    ops.append(30); sels.append([r_dst, 0, 0, 0])                 # Paste
+
+    src = g[r_src:r_src + ch, :].copy()
+    dst = g[r_dst:r_dst + ch, :]
+    repair = []
+    for i in range(ch):
+        for j in range(W):
+            if src[i, j] != 0:
+                dst[i, j] = src[i, j]
+            elif dst[i, j] != 0:
+                repair.append((r_dst + i, j))
+    if repair:
+        ops.append(0); sels.append(sel_of(repair))                # Color0
+        for (r, c) in repair:
+            g[r, c] = 0
+
+    ops.append(27); sels.append([r_dst, 0, ch - 1, W - 1])        # FlipV
+    g[r_dst:r_dst + ch, :] = np.flipud(g[r_dst:r_dst + ch, :])
+
+    ops.append(34); sels.append([0, 0, H - 1, W - 1])             # Submit
     return ops, sels
 
 
@@ -225,7 +275,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
