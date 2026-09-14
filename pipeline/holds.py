@@ -89,6 +89,19 @@ class _HeldColours:
         self.genfn = genfn
         self.roles = roles
 
+    def new_pair(self):
+        """A fresh instance is about to be drawn; start a new line of the log.
+
+        The counter was already being reset here by the caller. What was not
+        kept was *which* colours went out, and without that the only way to ask
+        whether an episode's roles held was to guess at the grids afterwards --
+        which is measuring the shadow. Three different guesses gave three
+        different answers on the same draw.
+        """
+        self.taken = 0
+        self.rounds = 0
+        self.current = []
+
     def __enter__(self):
         # Every maker begins by deleting utils, dsl and generators from
         # sys.modules so its own embedded copy of the DSL wins, so the module
@@ -97,6 +110,7 @@ class _HeldColours:
         # defined in. Patch that dictionary.
         self.taken = 0
         self.rounds = 0
+        self.current = []
         self.first_pool = frozenset()
         self._g = self.genfn.__globals__
         self._choice = self._g.get("choice")
@@ -123,6 +137,7 @@ class _HeldColours:
                 for c in perm[self.taken:]:
                     if c in pool:
                         self.taken += 1
+                        self.current.append(c)
                         return c
             return self._choice(seq)
 
@@ -139,6 +154,7 @@ class _HeldColours:
                 picked = [c for c in perm[self.taken:] if c in pool][:k]
                 if len(picked) == k:
                     self.taken += k
+                    self.current.extend(picked)
                     return picked
             return self._sample(seq, k)
 

@@ -162,6 +162,9 @@ def _get_generator(tid):
 # both the colour hold and the planner read the call site by walking out of this
 # file, so a frame added here is a call site misread there.
 _DRAWING = None
+# Set by _episode_pool: the colours the hold assigned, per pair, or None where
+# the episode was drawn without one.
+_HELD_LOG = None
 
 
 def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80, deadline=None):
@@ -176,8 +179,8 @@ def _gen_capped(genfn, lb, ub, max_hw, vfn=None, retries=80, deadline=None):
             return None
         held = getattr(genfn, "_held", None)
         if held is not None:
-            held.taken = 0             # the roles are re-assigned per instance
-            held.rounds = 0            # and a generator may retry a few times
+            held.new_pair()            # roles re-assigned per instance, and
+                                       # a generator may retry a few times
         if _DRAWING is not None:
             _DRAWING.instance()
         try:
@@ -204,7 +207,7 @@ from holds import (ASSIGNED, COLOUR_ARGS, COLOUR_NAME, _asks_for_colour,
 def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0,
                   plan=None):
     """One episode's pairs, all drawn under the same colour assignment."""
-    pool, tries = [], 0
+    pool, tries, kept = [], 0, []
     if perm is None:
         perm = _random.sample(range(10), 10)
     ctx = _HeldColours(perm, genfn, roles) if unify else None
@@ -252,6 +255,8 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0,
                              vfn=vfn, retries=retries, deadline=deadline)
             if pr is not None:
                 pool.append(pr)
+                if ctx is not None:
+                    kept.append(list(ctx.current))
     finally:
         if counts is not None:
             counts.__exit__()
@@ -260,6 +265,11 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0,
             globals()["_DRAWING"] = None
         if ctx is not None:
             ctx.__exit__()
+    # What the hold actually handed out, per pair, for the episode that is
+    # returned. Recorded rather than inferred: an episode whose roles did not
+    # hold is not always visible in the grids, and reading it off them gave a
+    # different answer every time it was tried.
+    globals()["_HELD_LOG"] = kept if (ctx is not None and len(pool) >= need) else None
     return pool if len(pool) >= need else None
 
 
@@ -347,7 +357,8 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
             continue
         ei = [p[0].astype(np.uint8) for p in ex]
         eo = [p[1].astype(np.uint8) for p in ex]
-        desc = {"operations": ops, "selections": sels, "id": str(s)}
+        desc = {"operations": ops, "selections": sels, "id": str(s),
+                "palette_hold": _HELD_LOG}
         samples.append((ei, eo, [I.astype(np.uint8)], [O.astype(np.uint8)], desc))
     return samples
 
@@ -568,7 +579,7 @@ def run_task(tid: str, maker_path: Path) -> tuple[int, int]:
         # Provenance for --demo_trajectories rides in desc so the round-trip
         # exporter (which ignores desc) needs no special-casing. Absent when the
         # flag is off, leaving the record byte-identical to before.
-        for _extra in ("group_id", "role", "example_index"):
+        for _extra in ("group_id", "role", "example_index", "palette_hold"):
             if _extra in desc:
                 _desc_out[_extra] = desc[_extra]
 
