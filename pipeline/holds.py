@@ -20,7 +20,13 @@ import sys
 PIPELINE_DIR = __file__.rsplit("/", 1)[0]
 
 
-COLOUR_ARGS = re.compile(r"(?:choice|sample)\(\s*([A-Za-z_]\w*)")
+# The whole argument expression, not its first identifier. 623ea044 draws its
+# foreground as `choice(remove(bgc, colopts))`: the first name is `remove`, the
+# colour pool is the second, and reading only the first left that role free --
+# the background held across an episode and the foreground did not, which is
+# the inconsistency a reader found in the published data. Twenty-one tasks draw
+# a role through a wrapper like this.
+COLOUR_ARGS = re.compile(r"(?:choice|sample)\((.*)")
 COLOUR_NAME = re.compile(r"col|^itv$|^remitv$", re.I)
 
 
@@ -119,8 +125,16 @@ class _HeldColours:
 
         def choice(seq):
             items = _fix_colours(seq) if _asks_for_colour() else None
+            # Rewinding is for a generator that gave up and started its own
+            # draw again inside one instance. It used to fire across instances
+            # too, because nothing here knew where one ended: 08ed6ac7 declares
+            # a single role and took six colours in its first pair, eleven in
+            # the second and twenty-three in the third, so every pair of an
+            # episode came out differently. `new_pair` marks the boundary now,
+            # and the heuristic is bounded by it.
             if items is not None and self.taken >= self.roles \
-                    and set(items) == self.first_pool and self.rounds < _ROUNDS:
+                    and self.roles and set(items) == self.first_pool \
+                    and self.rounds < _ROUNDS:
                 self.taken = 0        # the generator is retrying; roles again
                 self.rounds += 1
             if items is not None and self.taken < self.roles:
@@ -144,7 +158,8 @@ class _HeldColours:
         def sample(seq, k):
             items = _fix_colours(seq) if _asks_for_colour() else None
             if items is not None and self.taken >= self.roles \
-                    and set(items) == self.first_pool and self.rounds < _ROUNDS:
+                    and self.roles and set(items) == self.first_pool \
+                    and self.rounds < _ROUNDS:
                 self.taken = 0
                 self.rounds += 1
             if items is not None and self.taken < self.roles:
