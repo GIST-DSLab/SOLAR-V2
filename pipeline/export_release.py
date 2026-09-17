@@ -90,7 +90,13 @@ SUBSETS = {
         # answer as well -- its route changed on every pair when O was disturbed.
         # e21d9049 is still short: its repair reached every such instance by
         # drawing another instance's output, and was refused.
-        root=DATA_ROOT / "ARC_rearc_draw16" / "whole",
+        # draw17 is draw16 with the colour hold fixed. An episode is three
+        # demonstrations and a test, and the roles are supposed to keep their
+        # colours across all four so the rule is readable from the
+        # demonstrations; the hold missed a role whenever the generator drew it
+        # through a wrapper, and over-captured whenever its retry heuristic
+        # crossed an instance boundary. Held roles go from 309 tasks to 327.
+        root=DATA_ROOT / "ARC_rearc_draw17" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its
