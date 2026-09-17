@@ -879,8 +879,17 @@ function paint(filter){
   // "move", "floodfill" are the useful ways to find a task you can't name.
   const shown = INDEX.filter(t => !q || t.task.includes(q) || (t.ops || "").toLowerCase().includes(q));
   const repaint = () => paint(document.getElementById("search").value);
-  const thumbHTML = (a, c) => `<div class="thumb"><img src="${a}" alt="" loading="lazy">` +
-    `<span class="arrow">→</span><img src="${c}" alt="" loading="lazy"></div>`;
+  // onerror refreshes the index. The dataset server hands out thumbnail URLs
+  // signed for an hour, and these <img> are lazy, so a tab left open past that
+  // requests a dead URL the moment a card below the fold scrolls into view --
+  // the top of the list has pictures and everything under it is blank. Asking
+  // for the rows again mints new signatures; `refreshThumbs` keeps one refresh
+  // in flight and gives up after a couple so a genuinely missing asset does not
+  // loop.
+  const thumbHTML = (a, c) => `<div class="thumb">` +
+    `<img src="${a}" alt="" loading="lazy" onerror="refreshThumbs(this)">` +
+    `<span class="arrow">→</span>` +
+    `<img src="${c}" alt="" loading="lazy" onerror="refreshThumbs(this)"></div>`;
   const taskCard = t => {
     const b = document.createElement("button");
     b.className = "card" + (t.task === TASK ? " on" : ""); b.dataset.task = t.task;
@@ -1052,9 +1061,24 @@ addEventListener("hashchange", route);
    where the site looks empty is one round trip, not four. A single failure used
    to be final; transient 500s from the dataset server are common enough that it
    retries before giving up, and the failure is offered a Try again. */
-async function loadIndex(){
+// A thumbnail whose signature has expired asks for the index again. Not a
+// timer: a tab nobody is looking at should cost nothing, and the failure is
+// self-announcing.
+let THUMB_REFRESH = null, THUMB_TRIES = 0;
+function refreshThumbs(img){
+  if(img) img.onerror = null;            // one report per picture
+  if(THUMB_REFRESH || THUMB_TRIES >= 2 || sub().local) return;
+  THUMB_TRIES++;
+  THUMB_REFRESH = loadIndex(true).finally(() => { THUMB_REFRESH = null; });
+}
+window.refreshThumbs = refreshThumbs;
+
+async function loadIndex(quiet){
   const q = () => document.getElementById("search").value;
-  INDEX_STATE = "loading"; paint(q());
+  // A refresh asked for by an expired thumbnail repaints only once it has the
+  // new rows. Flipping to "loading" would empty the grid under a reader who is
+  // mid-scroll, to fix a picture.
+  if(!quiet){ INDEX_STATE = "loading"; paint(q()); }
   // Local (family) subsets ship as static files beside this page, not as HF
   // configs: one task-level index, then per-task shards loaded on demand.
   if(sub().local){
@@ -1078,7 +1102,7 @@ async function loadIndex(){
         task: row.task_id, ops: row.operations,
         thumb_in: row.input.src, thumb_out: row.target.src,
       })));
-      INDEX_STATE = "ready"; paint(q());
+      INDEX_STATE = "ready"; THUMB_TRIES = 0; paint(q());
       return true;
     }catch(e){
       if(attempt < 2) await new Promise(r => setTimeout(r, 700 * 2**attempt));
