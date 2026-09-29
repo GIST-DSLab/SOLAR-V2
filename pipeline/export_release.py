@@ -96,7 +96,15 @@ SUBSETS = {
         # demonstrations; the hold missed a role whenever the generator drew it
         # through a wrapper, and over-captured whenever its retry heuristic
         # crossed an instance boundary. Held roles go from 309 tasks to 327.
-        root=DATA_ROOT / "ARC_rearc_draw17" / "whole",
+        # draw18 repairs six makers that were reading the answer. The dep axis
+        # had only ever been asked of the tasks a promotion was being decided
+        # for; run across all four hundred it names nine, six of them changing
+        # their whole route when the answer is disturbed, and three of those
+        # drawing another instance's answer when handed one. They had been in
+        # the release for months. b782dc8a's repair costs it a little of the
+        # zero axis (1.00 to 0.86) and is taken anyway -- reading the answer is
+        # the heavier fault.
+        root=DATA_ROOT / "ARC_rearc_draw18" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its

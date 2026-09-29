@@ -34,28 +34,58 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-import numpy as np
 from collections import Counter, deque
+import numpy as np
+from maker.sel_helpers import sel_of
 
 
 def sample_colors(num_examples=None) -> dict:
-    # generator samples: pathcol, wallcol, dotcol, ncol = sample(cols, 4)
     pathcol, wallcol, dotcol, ncol = random.sample(range(10), 4)
     return {"pathcol": pathcol, "wallcol": wallcol, "dotcol": dotcol, "ncol": ncol}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             pathcol: int, wallcol: int, dotcol: int, ncol: int) -> dict:
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    lo = int(a + diff_lb * (b - a))
+    hi = int(a + diff_ub * (b - a))
+    lo, hi = max(a, min(lo, b)), max(a, min(hi, b))
+    if hi < lo:
+        lo, hi = hi, lo
+    return random.randint(lo, hi)
+
+
+def _components(g, col):
+    h, w = len(g), len(g[0])
+    seen = set()
+    comps = []
+    for r in range(h):
+        for c in range(w):
+            if g[r][c] != col or (r, c) in seen:
+                continue
+            comp = []
+            dq = deque([(r, c)])
+            seen.add((r, c))
+            while dq:
+                a, b = dq.popleft()
+                comp.append((a, b))
+                for da, db in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    na, nb = a + da, b + db
+                    if 0 <= na < h and 0 <= nb < w and (na, nb) not in seen and g[na][nb] == col:
+                        seen.add((na, nb))
+                        dq.append((na, nb))
+            comps.append(comp)
+    return comps
+
+
+def generate(diff_lb, diff_ub, max_h=30, max_w=30, pathcol=0, wallcol=1, dotcol=2, ncol=3, **kw) -> dict:
     wall_pairs = {'N': 'S', 'S': 'N', 'E': 'W', 'W': 'E'}
     dlt = [('W', (-1, 0)), ('E', (1, 0)), ('S', (0, 1)), ('N', (0, -1))]
-    walls = {'N': True, 'S': True, 'E': True, 'W': True}
-    # grid is (2h-1) x (2w-1); a random rot may transpose it -> bound both by min
-    m = min(max_h, max_w)
-    dim_ub = max(3, min(15, (m + 1) // 2))
+    cap = max(3, min(15, (min(max_h, max_w) + 1) // 2))
     while True:
-        h = unifint(diff_lb, diff_ub, (3, dim_ub))
-        w = unifint(diff_lb, diff_ub, (3, dim_ub))
-        maze = [[{'x': x, 'y': y, 'walls': {**walls}} for y in range(h)] for x in range(w)]
+        h = _unifint(diff_lb, diff_ub, (3, cap))
+        w = _unifint(diff_lb, diff_ub, (3, cap))
+        maze = [[{'x': x, 'y': y, 'walls': {'N': True, 'S': True, 'E': True, 'W': True}}
+                 for y in range(h)] for x in range(w)]
         kk = h * w
         stck = []
         cc = maze[0][0]
@@ -65,19 +95,19 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
             for direc, (dx, dy) in dlt:
                 x2, y2 = cc['x'] + dx, cc['y'] + dy
                 if 0 <= x2 < w and 0 <= y2 < h:
-                    neighbour = maze[x2][y2]
-                    if all(neighbour['walls'].values()):
-                        nbhs.append((direc, neighbour))
+                    nb = maze[x2][y2]
+                    if all(nb['walls'].values()):
+                        nbhs.append((direc, nb))
             if not nbhs:
                 cc = stck.pop()
                 continue
-            direc, next_cell = choice(nbhs)
+            direc, nxt = random.choice(nbhs)
             cc['walls'][direc] = False
-            next_cell['walls'][wall_pairs[direc]] = False
+            nxt['walls'][wall_pairs[direc]] = False
             stck.append(cc)
-            cc = next_cell
+            cc = nxt
             nv += 1
-        grid = [[pathcol for x in range(w * 2)]]
+        grid = [[pathcol for _ in range(w * 2)]]
         for y in range(h):
             row = [pathcol]
             for x in range(w):
@@ -89,74 +119,79 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
                 row.append(pathcol if maze[x][y]['walls']['S'] else wallcol)
                 row.append(pathcol)
             grid.append(row)
-        gi = tuple(tuple(r[1:-1]) for r in grid[1:-1])
-        objs = objects(gi, T, F, F)
-        objs = colorfilter(objs, pathcol)
-        objs = sfilter(objs, lambda obj: size(obj) > 4)
-        if len(objs) == 0:
+        gi = [list(r[1:-1]) for r in grid[1:-1]]
+        objs = [o for o in _components(gi, pathcol) if len(o) > 4]
+        if not objs:
             continue
-        objs = order(objs, size)
-        nobjs = len(objs)
-        idx = unifint(diff_lb, diff_ub, (0, nobjs - 1))
-        obj = toindices(objs[idx])
-        cell = choice(totuple(obj))
-        gi = fill(gi, dotcol, {cell})
-        nbhs = dneighbors(cell) & ofcolor(gi, pathcol)
-        gi = fill(gi, ncol, nbhs)
-        obj1 = sfilter(obj, lambda ij: even(manhattan({ij}, {cell})))
-        obj2 = obj - obj1
-        go = fill(gi, dotcol, obj1)
-        go = fill(go, ncol, obj2)
+        objs.sort(key=len)
+        idx = _unifint(diff_lb, diff_ub, (0, len(objs) - 1))
+        obj = objs[idx]
+        cell = random.choice(obj)
+        gi[cell[0]][cell[1]] = dotcol
+        H, W = len(gi), len(gi[0])
+        for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            nr, nc = cell[0] + dr, cell[1] + dc
+            if 0 <= nr < H and 0 <= nc < W and gi[nr][nc] == pathcol:
+                gi[nr][nc] = ncol
+        go = [list(r) for r in gi]
+        for (r, c) in obj:
+            go[r][c] = dotcol if (abs(r - cell[0]) + abs(c - cell[1])) % 2 == 0 else ncol
         break
-    rotf = choice((identity, rot90, rot180, rot270))
-    gi = rotf(gi)
-    go = rotf(go)
-    return {'input': gi, 'output': go}
+    k = random.choice((0, 1, 2, 3))
+    gi = np.rot90(np.array(gi), k)
+    go = np.rot90(np.array(go), k)
+    return {"input": gi.tolist(), "output": go.tolist()}
 
 
-def derive_operations(I, O):
+def derive_operations(I, O, examples=None):
     """
-    Rule (read off I): one corridor of a single colour carries a 2-cell marker --
-    a lone seed cell plus the differently coloured cell(s) touching it.  The two
-    marker colours alternate outward along that corridor, so every corridor cell
-    at even step-distance from the seed takes the seed's colour and every odd one
-    takes the neighbour colour.  Walk the corridor once, breadth-first from the
-    seed, painting the still-unmarked cells as the alternation reaches them.
+    Rule: a maze of corridors (one colour) and walls; one corridor carries a
+    marker -- a seed cell and the differently coloured cell(s) touching it.
+    The two marker colours alternate outward along that whole corridor.
+    Walk the corridor breadth-first from the seed, painting each still
+    unmarked corridor cell with the seed colour at even steps and the
+    neighbour colour at odd steps.  Everything is read from I (and the
+    corridor-colour convention from the demonstrations); O is never read.
     """
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     h, w = I.shape
     ops, sels = [], []
-
-    diff = [(r, c) for r in range(h) for c in range(w) if I[r, c] != O[r, c]]
-    if not diff:
-        ops.append(34)
-        sels.append([0, 0, h - 1, w - 1])
-        return ops, sels
-
-    # the corridor's own colour: every cell the rule repaints still wears it in I
-    corridor_col = int(I[diff[0][0], diff[0][1]])
-
-    # marker colours = the two rarest colours (seed cell + the cell(s) it touches);
-    # maze corridor colour and separator colour both occupy large parts of the grid
     cnt = Counter(I.flatten().tolist())
-    rest = sorted([c for c in cnt if c != corridor_col], key=lambda c: (cnt[c], c))
-    seed_col, other_col = rest[0], rest[1]
+    cols = sorted(cnt, key=lambda c: (cnt[c], c))
+    seed_col = cols[0]
+    other_col = sorted([c for c in cnt if c != seed_col], key=lambda c: (cnt[c], c))[0]
+    marker = {seed_col, other_col}
+    mcells = [(r, c) for r in range(h) for c in range(w) if int(I[r, c]) in marker]
 
-    # seed = a cell of the rarer marker colour; if both markers are single cells they
-    # are adjacent, so either choice yields the same parity colouring
-    seed = None
-    for r in range(h):
-        for c in range(w):
-            if int(I[r, c]) == seed_col:
-                seed = (r, c)
+    # corridor colour: the colour the demonstrations repaint
+    path_col = None
+    if examples:
+        votes = Counter()
+        for ei, eo in examples:
+            ei = np.asarray(ei, dtype=int)
+            eo = np.asarray(eo, dtype=int)
+            if ei.shape != eo.shape:
+                continue
+            m = ei != eo
+            votes.update(ei[m].tolist())
+        for c, _ in votes.most_common():
+            if c in cnt and c not in marker:
+                path_col = int(c)
                 break
-        if seed is not None:
-            break
+    if path_col is None:
+        # fallback: rarest colour among the cells surrounding the marker
+        mset = set(mcells)
+        ring = Counter()
+        for r, c in mcells:
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < h and 0 <= nc < w and (nr, nc) not in mset:
+                        ring[int(I[nr, nc])] += 1
+        path_col = sorted(ring, key=lambda c: (ring[c], c))[0]
 
-    corridor_cols = {corridor_col, seed_col, other_col}
-
-    # walk the one corridor object outward from the seed
+    seed = next((r, c) for r, c in mcells if int(I[r, c]) == seed_col)
+    ok = marker | {path_col}
     dist = {seed: 0}
     walk = [seed]
     dq = deque([seed])
@@ -164,19 +199,17 @@ def derive_operations(I, O):
         r, c = dq.popleft()
         for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             nr, nc = r + dr, c + dc
-            if 0 <= nr < h and 0 <= nc < w and (nr, nc) not in dist \
-                    and int(I[nr, nc]) in corridor_cols:
+            if 0 <= nr < h and 0 <= nc < w and (nr, nc) not in dist and int(I[nr, nc]) in ok:
                 dist[(nr, nc)] = dist[(r, c)] + 1
                 dq.append((nr, nc))
                 walk.append((nr, nc))
 
-    # one contiguous stretch of ops for this one object, in outward order
+    # one object (the marked corridor), painted outward from the seed
     for (r, c) in walk:
-        if int(I[r, c]) != corridor_col:
-            continue  # already carries its marker colour
-        col = seed_col if dist[(r, c)] % 2 == 0 else other_col
-        ops.append(int(col))
-        sels.append([r, c, 0, 0])
+        if int(I[r, c]) != path_col:
+            continue
+        ops.append(int(seed_col if dist[(r, c)] % 2 == 0 else other_col))
+        sels.append(sel_of([(r, c)]))
 
     ops.append(34)
     sels.append([0, 0, h - 1, w - 1])
@@ -223,7 +256,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

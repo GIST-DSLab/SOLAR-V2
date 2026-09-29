@@ -37,38 +37,27 @@ import random
 import numpy as np
 from collections import Counter
 from maker.sel_helpers import sel_of
-
-
-VARIANTS = [{"center_dot": True}, {"center_dot": False}]
+from dsl import *
+from utils import *
 
 
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
-    bgc = random.choice(cols)
-    n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        ex = [dict(v) for v in VARIANTS]
-        ex += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(ex)
-    else:
-        ex = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = ex + [dict(random.choice(ex))]
-    return {"bgc": bgc, "instance_plan": plan}
+    # Only the background is an episode-level role; ring colours are free
+    # (the rule depends on ring shape/size, not on which colour a ring has).
+    return {"bgc": random.choice(range(10))}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, center_dot=None) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, **kw) -> dict:
     cols = interval(0, 10, 1)
     if bgc is None:
         bgc = choice(cols)
-    if center_dot is None:
-        center_dot = choice(VARIANTS)["center_dot"]
-    dmax = max(2, min(7, max_h // 4, max_w // 4))
+    lim = min(max_h, max_w, 30)
+    dmax = max(2, min(7, lim // 4))
     while True:
         d = unifint(diff_lb, diff_ub, (2, dmax))
         h, w = d, d
-        fullh = unifint(diff_lb, diff_ub, (4 * d, max_h))
-        fullw = unifint(diff_lb, diff_ub, (4 * d, max_w))
+        fullh = unifint(diff_lb, diff_ub, (4 * d, min(30, max_h)))
+        fullw = unifint(diff_lb, diff_ub, (4 * d, min(30, max_w)))
         remcols = remove(bgc, cols)
         ccols = sample(remcols, d)
         quad = canvas(bgc, (d + 1, d + 1))
@@ -82,7 +71,7 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
         go = paint(go, qobj1)
         go = paint(go, qobj2)
         go = vconcat(go, hmirror(go)[1:])
-        if center_dot:
+        if choice((True, False)):
             go = fill(go, choice(difference(remcols, ccols)), {center(asindices(go))})
         objs = partition(go)
         objs = sfilter(objs, lambda o: color(o) != bgc)
@@ -94,9 +83,9 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
         for obj in objs:
             objn = normalize(obj)
             obji = toindices(objn)
-            dd = width(obj)
-            dh = max(0, dd // 2 - 1)
-            cands = sfilter(fullinds, lambda ij: ij[0] <= fullh - dd and ij[1] <= fullw - dd)
+            d = width(obj)
+            dh = max(0, d // 2 - 1)
+            cands = sfilter(fullinds, lambda ij: ij[0] <= fullh - d and ij[1] <= fullw - d)
             cands = cands | shift(cands, (-dh, 0)) | shift(cands, (0, -dh)) | shift(cands, (dh, 0)) | shift(cands, (0, dh))
             maxtr = 10
             tr = 0
@@ -120,38 +109,97 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     return {'input': gi, 'output': go}
 
 
-def derive_operations(I, O):
+def derive_operations(I, O=None):
+    """Rule (read from I only): every non-background colour is one square
+    ring made of four corner-L's (possibly clipped by the grid border); a lone
+    single cell, if any, is the centre. The rings have distinct odd sides
+    3,5,...,2d+1; stack them concentrically in a (2d+1)x(2d+1) canvas laid
+    with the background, outermost ring first, then the centre.
+    O is never read."""
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    colors = sorted(set(I.flatten().tolist()) - {bgc})
+
+    def ring(s, L):
+        cells = set()
+        for j in range(L):
+            for (a, b) in ((0, j), (j, 0)):
+                cells |= {(a, b), (a, s - 1 - b), (s - 1 - a, b), (s - 1 - a, s - 1 - b)}
+        return cells
+
+    # For each colour, every (side, arm length) whose ring, placed somewhere
+    # and clipped by the grid, reproduces exactly the visible cells.
+    fits = {}
+    for col in colors:
+        vis = {(int(r), int(c)) for r, c in zip(*np.nonzero(I == col))}
+        top = min(vis)
+        opts = []
+        for s in range(3, 2 * len(colors) + 2, 2):
+            for L in range(2, (s + 1) // 2 + 1):
+                R = ring(s, L)
+                ok = False
+                for p in R:
+                    dr, dc = top[0] - p[0], top[1] - p[1]
+                    sh = {(r + dr, c + dc) for r, c in R}
+                    if {(r, c) for r, c in sh if 0 <= r < hi and 0 <= c < wi} == vis:
+                        ok = True
+                        break
+                if ok:
+                    opts.append((s, L))
+        fits[col] = opts
+
+    def solve(centre):
+        rings = [c for c in colors if c != centre]
+        d = len(rings)
+        sides = {2 * (d - i) + 1 for i in range(d)}
+        order_c = sorted(rings, key=lambda c: len({s for s, _ in fits[c]}))
+        assign = {}
+
+        def bt(k, used):
+            if k == len(order_c):
+                return True
+            col = order_c[k]
+            for s, L in fits[col]:
+                if s in sides and s not in used:
+                    assign[col] = (s, L)
+                    if bt(k + 1, used | {s}):
+                        return True
+            return False
+        return (rings, d, assign) if bt(0, frozenset()) else None
+
+    unfit = [c for c in colors if not fits[c]]
+    one = [c for c in colors if int((I == c).sum()) == 1]
+    tries = unfit[:1] if unfit else one + [None]
+    res = None
+    for centre in tries:
+        res = solve(centre)
+        if res is not None:
+            break
+    rings, d, assign = res
+    S = 2 * d + 1
+
     ops, sels = [], []
-
-    # 1. Shrink the canvas to the output size (keeps I's top-left corner content).
-    ops.append(33)
-    sels.append([0, 0, ho - 1, wo - 1])
-
-    # Working grid after the crop is exactly I[:ho, :wo] (zeros stay zero).
-    W = I[:ho, :wo]
-
-    cr, cc = ho // 2, wo // 2
-    targets = {}
-    for r in range(ho):
-        for c in range(wo):
-            col = int(O[r, c])
-            if W[r, c] != col:
-                targets.setdefault(col, []).append((r, c))
-
-    # Paint the concentric rings from the outermost inward.
-    def radius(col):
-        return max(max(abs(r - cr), abs(c - cc)) for r, c in targets[col])
-
-    for col in sorted(targets, key=radius, reverse=True):
-        ops.append(col)
-        sels.append(sel_of(targets[col]))
-
-    ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    # 1. Resize the canvas to the S x S output frame (full rectangle).
+    ops.append(33); sels.append([0, 0, S - 1, S - 1])
+    cur = I[:S, :S].copy()
+    # 2. Lay the background over the whole frame (clears leftover input fragments).
+    if (cur != bgc).any():
+        ops.append(bgc); sels.append([0, 0, S - 1, S - 1])
+        cur[:, :] = bgc
+    # 3. Draw each completed ring, outermost first.
+    for col in sorted(rings, key=lambda c: -assign[c][0]):
+        s, L = assign[col]
+        off = (S - s) // 2
+        cells = [(r + off, c + off) for r, c in ring(s, L)]
+        ops.append(col); sels.append(sel_of(cells))
+        for r, c in cells:
+            cur[r, c] = col
+    # 4. The single-cell colour, if present, goes in the centre.
+    if centre is not None:
+        ops.append(centre); sels.append(sel_of([(d, d)]))
+        cur[d, d] = centre
+    ops.append(34); sels.append([0, 0, S - 1, S - 1])
     return ops, sels
 
 
@@ -195,7 +243,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
