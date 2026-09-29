@@ -34,217 +34,47 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-from collections import Counter, deque
+from collections import Counter
 
 import numpy as np
-
 from maker.sel_helpers import sel_of
 
-# Task 05f2a901: a solid rectangle (anchor) and a ragged shape sit on a plain background.
-# The ragged shape slides in a straight line toward the rectangle and stops one cell
-# before it would run into it. Direction is a structural variant -> planned per instance.
-DIRECTIONS = ["up", "down", "left", "right"]
 
-
-def sample_colors(num_examples=None) -> dict:
-    fgc = random.choice(list(range(1, 10)))          # mover must be non-zero (ARCLE Move ignores 0s)
-    rest = [c for c in range(10) if c != fgc]
-    bgc, destc = random.sample(rest, 2)
-    n_ex = num_examples if num_examples else 3
-    if n_ex >= len(DIRECTIONS):
-        examples = [{"direction": d} for d in DIRECTIONS]
-        examples += [{"direction": random.choice(DIRECTIONS)} for _ in range(n_ex - len(DIRECTIONS))]
-        random.shuffle(examples)
-    else:
-        examples = [{"direction": d} for d in random.sample(DIRECTIONS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "fgc": fgc, "destc": destc, "instance_plan": plan}
-
+# ---------------------------------------------------------------- helpers
 
 def _unifint(diff_lb, diff_ub, bounds):
-    lb, ub = bounds
-    if ub < lb:
-        lb, ub = ub, ub
-    a = lb + int(round((ub - lb) * diff_lb))
-    b = lb + int(round((ub - lb) * diff_ub))
-    a = max(lb, min(ub, a))
-    b = max(lb, min(ub, b))
-    if a > b:
-        a, b = b, a
-    return random.randint(a, b)
-
-
-def _neighbors4(rc):
-    r, c = rc
-    return [(r + 1, c), (r - 1, c), (r, c + 1), (r, c - 1)]
-
-
-def _connected4(cells):
-    cells = set(cells)
-    if not cells:
-        return False
-    start = next(iter(cells))
-    seen = {start}
-    dq = deque([start])
-    while dq:
-        cur = dq.popleft()
-        for nb in _neighbors4(cur):
-            if nb in cells and nb not in seen:
-                seen.add(nb)
-                dq.append(nb)
-    return len(seen) == len(cells)
-
-
-def _attempt(diff_lb, diff_ub, max_h, max_w, bgc, fgc, destc, direction):
-    if direction in ("up", "down"):
-        hlim, wlim = min(30, max_h), min(30, max_w)
-    else:                                   # these orientations transpose the base grid
-        hlim, wlim = min(30, max_w), min(30, max_h)
-    if hlim < 8 or wlim < 8:
-        return None
-    h = _unifint(diff_lb, diff_ub, (8, hlim))
-    w = _unifint(diff_lb, diff_ub, (8, wlim))
-
-    objh = _unifint(diff_lb, diff_ub, (2, min(w // 2, h // 2)))
-    objw = _unifint(diff_lb, diff_ub, (objh, w // 2))
-
-    start = (random.randrange(objh), random.randrange(objw))
-    cells = {start}
-    ncells = _unifint(diff_lb, diff_ub, (objh + objw, objh * objw))
-    for _ in range(ncells - 1):
-        cands = set()
-        for rc in cells:
-            for nb in _neighbors4(rc):
-                if 0 <= nb[0] < objh and 0 <= nb[1] < objw and nb not in cells:
-                    cands.add(nb)
-        if not cands:
-            break
-        cells.add(random.choice(sorted(cands)))
-
-    rs = [r for r, _ in cells]
-    cs = [c for _, c in cells]
-    if (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1) == len(cells):
-        cells.remove(random.choice(sorted(cells)))   # never a filled rectangle itself
-    if len(cells) < 2 or not _connected4(cells):
-        return None
-    r0, c0 = min(r for r, _ in cells), min(c for _, c in cells)
-    cells = {(r - r0, c - c0) for r, c in cells}
-    objh = max(r for r, _ in cells) + 1
-    objw = max(c for _, c in cells) + 1
-    if objh * objw == len(cells):
-        return None
-    if h - objh < 3:
-        return None
-
-    loci = _unifint(diff_lb, diff_ub, (3, h - objh))
-    locj = _unifint(diff_lb, diff_ub, (0, w - objw))
-    obj = {(r + loci, c + locj) for r, c in cells}
-
-    sqd_cap = min(w, loci - 1, max(1, int((h * w / 5.0) ** 0.5)))   # keep background in the majority
-    if sqd_cap < 1:
-        return None
-    sqd = _unifint(diff_lb, diff_ub, (1, sqd_cap))
-    if loci - sqd - 1 < 0:
-        return None
-    locisq = random.randint(0, loci - sqd - 1)
-    locjsq = random.randint(locj - sqd + 1, locj + objw - 1)
-    sq = {(r, c) for r in range(locisq, locisq + sqd)
-          for c in range(locjsq, locjsq + sqd) if 0 <= r < h and 0 <= c < w}
-    if not sq:
-        return None
-
-    # slide the shape straight up, stopping one step before it would collide with the square
-    cur = set(obj)
-    k = 0
-    while True:
-        nxt = {(r - 1, c) for r, c in cur}
-        if nxt & sq:
-            break
-        if min(r for r, _ in nxt) < 0:
-            return None
-        cur = nxt
-        k += 1
-        if k > 40:
-            return None
-    if k < 1:
-        return None
-
-    # keep "slide until blocked" and "slide until adjacent" in agreement
-    probe = set(obj)
-    kadj = None
-    for step in range(0, k + 1):
-        if any((r + dr, c + dc) in sq for r, c in probe
-               for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1))):
-            kadj = step
-            break
-        probe = {(r - 1, c) for r, c in probe}
-    if kadj != k:
-        return None
-
-    gi = np.full((h, w), bgc, dtype=int)
-    go = np.full((h, w), bgc, dtype=int)
-    for r, c in obj:
-        gi[r, c] = fgc
-    for r, c in sq:
-        gi[r, c] = destc
-        go[r, c] = destc
-    for r, c in cur:
-        go[r, c] = fgc
-
-    if Counter(gi.flatten().tolist()).most_common(1)[0][0] != bgc:
-        return None
-    if Counter(go.flatten().tolist()).most_common(1)[0][0] != bgc:
-        return None
-
-    if direction == "down":
-        gi, go = np.flipud(gi), np.flipud(go)
-    elif direction == "left":
-        gi, go = gi.T.copy(), go.T.copy()
-    elif direction == "right":
-        gi, go = np.fliplr(gi.T).copy(), np.fliplr(go.T).copy()
-    if random.random() < 0.5:                       # extra mirror that preserves the direction
-        if direction in ("up", "down"):
-            gi, go = np.fliplr(gi), np.fliplr(go)
-        else:
-            gi, go = np.flipud(gi), np.flipud(go)
-
-    if gi.shape[0] > max_h or gi.shape[1] > max_w:
-        return None
-    return {"input": gi.tolist(), "output": go.tolist()}
-
-
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgc, destc, direction=None) -> dict:
-    if direction is None:
-        direction = random.choice(DIRECTIONS)
-    for _ in range(500):
-        res = _attempt(diff_lb, diff_ub, max_h, max_w, bgc, fgc, destc, direction)
-        if res is not None:
-            return res
-    raise ValueError("generation failed")
+    a, b = bounds
+    if b < a:
+        b = a
+    d = random.uniform(diff_lb, diff_ub)
+    return min(b, max(a, int(round(a + (b - a) * d))))
 
 
 def _components(I, bgc):
-    h, w = I.shape
-    seen = np.zeros((h, w), dtype=bool)
+    """Univalued, 8-connected components of non-background cells
+    (matches objects(I, T, T, T)); a colour-0 object is kept like any other."""
+    hi, wi = I.shape
+    seen = np.zeros((hi, wi), dtype=bool)
     comps = []
-    for r in range(h):
-        for c in range(w):
+    for r in range(hi):
+        for c in range(wi):
             if seen[r, c] or I[r, c] == bgc:
                 continue
-            col = I[r, c]
-            dq = deque([(r, c)])
+            col = int(I[r, c])
+            stack = [(r, c)]
             seen[r, c] = True
-            cells = []
-            while dq:
-                cr, cc = dq.popleft()
-                cells.append((cr, cc))
-                for dr in (-1, 0, 1):
-                    for dc in (-1, 0, 1):
-                        nr, nc = cr + dr, cc + dc
-                        if 0 <= nr < h and 0 <= nc < w and not seen[nr, nc] and I[nr, nc] == col:
-                            seen[nr, nc] = True
-                            dq.append((nr, nc))
-            comps.append((int(col), set(cells)))
+            cells = set()
+            while stack:
+                y, x = stack.pop()
+                cells.add((y, x))
+                for dy in (-1, 0, 1):
+                    for dx in (-1, 0, 1):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < hi and 0 <= nx < wi and not seen[ny, nx] \
+                                and I[ny, nx] == col:
+                            seen[ny, nx] = True
+                            stack.append((ny, nx))
+            comps.append((col, cells))
     return comps
 
 
@@ -254,7 +84,80 @@ def _bbox(cells):
     return min(rs), max(rs), min(cs), max(cs)
 
 
-def derive_operations(I, O):
+# ---------------------------------------------------------------- sample_colors
+
+def sample_colors(num_examples=None) -> dict:
+    bgc, fgc, destc = random.sample(range(10), 3)
+    return {"bgc": bgc, "fgc": fgc, "destc": destc}
+
+
+# ---------------------------------------------------------------- generate
+
+def generate(diff_lb, diff_ub, max_h=30, max_w=30, bgc=0, fgc=1, destc=2, **kw) -> dict:
+    h = _unifint(diff_lb, diff_ub, (8, max(8, max_h)))
+    w = _unifint(diff_lb, diff_ub, (8, max(8, max_w)))
+    objh = _unifint(diff_lb, diff_ub, (2, min(w // 2, h // 2)))
+    objw = _unifint(diff_lb, diff_ub, (objh, w // 2))
+    bb = {(i, j) for i in range(objh) for j in range(objw)}
+    sp = random.choice(sorted(bb))
+    obj = {sp}
+    bb.discard(sp)
+    ncells = _unifint(diff_lb, diff_ub, (objh + objw, objh * objw))
+    for _ in range(ncells - 1):
+        cand = set()
+        for (y, x) in obj:
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                cand.add((y + dy, x + dx))
+        cand = (bb - obj) & cand
+        if not cand:
+            break
+        obj.add(random.choice(sorted(cand)))
+    r0, r1, c0, c1 = _bbox(obj)
+    if (r1 - r0 + 1) * (c1 - c0 + 1) == len(obj):
+        obj.discard(random.choice(sorted(obj)))
+    r0, r1, c0, c1 = _bbox(obj)
+    obj = {(y - r0, x - c0) for y, x in obj}
+    objh, objw = r1 - r0 + 1, c1 - c0 + 1
+    loci = _unifint(diff_lb, diff_ub, (3, h - objh))
+    locj = _unifint(diff_lb, diff_ub, (0, w - objw))
+    gi = np.full((h, w), bgc, dtype=int)
+    go = np.full((h, w), bgc, dtype=int)
+    obj = {(y + loci, x + locj) for y, x in obj}
+    for y, x in obj:
+        gi[y, x] = fgc
+    sqd = random.randint(1, min(w, loci - 1))
+    locisq = random.randint(0, loci - sqd - 1)
+    locjsq = random.randint(locj - sqd + 1, locj + objw - 1)
+    sq = {(y, x) for y in range(locisq, locisq + sqd)
+          for x in range(locjsq, locjsq + sqd) if 0 <= x < w and 0 <= y < h}
+    for y, x in sq:
+        gi[y, x] = destc
+        go[y, x] = destc
+    while len(obj & sq) == 0:
+        obj = {(y - 1, x) for y, x in obj}
+    obj = {(y + 1, x) for y, x in obj}
+    for y, x in obj:
+        go[y, x] = fgc
+    mfs = [
+        lambda g: g,
+        lambda g: g.T,
+        lambda g: np.rot90(g, 2).T,
+        lambda g: g[:, ::-1],
+        lambda g: g[::-1, :],
+        lambda g: np.rot90(g, 3),
+        lambda g: np.rot90(g, 2),
+        lambda g: np.rot90(g, 1),
+    ]
+    for fn in random.sample(mfs, random.choice((1, 2))):
+        gi = fn(gi)
+        go = fn(go)
+    return {"input": np.ascontiguousarray(gi).tolist(),
+            "output": np.ascontiguousarray(go).tolist()}
+
+
+# ---------------------------------------------------------------- derive_operations
+
+def derive_operations(I, O, examples=None):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
@@ -277,8 +180,8 @@ def derive_operations(I, O):
         ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
         return ops, sels
 
-    rect = max(filled, key=lambda t: len(t[1]))[1]     # solid rectangle = the anchor
-    obj = max(ragged, key=lambda t: len(t[1]))[1]      # ragged shape = the traveller
+    rect = max(filled, key=lambda t: len(t[1]))[1]            # solid rectangle = the anchor
+    obj_col, obj = max(ragged, key=lambda t: len(t[1]))       # ragged shape = the traveller
 
     orr0, orr1, occ0, occ1 = _bbox(obj)
     rr0, rr1, rc0, rc1 = _bbox(rect)
@@ -308,13 +211,20 @@ def derive_operations(I, O):
         steps += 1
 
     if steps > 0:
-        mv = {(-1, 0): 20, (1, 0): 21, (0, 1): 22, (0, -1): 23}[(dr, dc)]
-        ops.append(mv); sels.append(sel_of(sorted(obj)))     # first Move grabs the shape
-        for _ in range(steps - 1):
-            ops.append(mv); sels.append(sel_of([]))          # empty selection keeps it grabbed
-        hole = sorted(set(obj) - cur)                        # only the vacated footprint
-        if bgc != 0 and hole:
-            ops.append(int(bgc)); sels.append(sel_of(hole))
+        if obj_col != 0:
+            mv = {(-1, 0): 20, (1, 0): 21, (0, 1): 22, (0, -1): 23}[(dr, dc)]
+            ops.append(mv); sels.append(sel_of(sorted(obj)))     # first Move grabs the shape
+            for _ in range(steps - 1):
+                ops.append(mv); sels.append(sel_of([]))          # empty selection keeps it grabbed
+            hole = sorted(set(obj) - cur)                        # only the vacated footprint
+            if bgc != 0 and hole:
+                ops.append(int(bgc)); sels.append(sel_of(hole))
+        else:
+            # The traveller is colour 0: ARCLE's Move carries no 0 cells, so a Move
+            # would change nothing. Lift the shape off its footprint (paint it
+            # background), then put it down with an explicit Color(0) where it lands.
+            ops.append(int(bgc)); sels.append(sel_of(sorted(obj)))
+            ops.append(0); sels.append(sel_of(sorted(cur)))
 
     ops.append(34); sels.append([0, 0, hi - 1, wi - 1])       # full-grid rectangle: submit
     return ops, sels

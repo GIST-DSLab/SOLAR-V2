@@ -35,110 +35,122 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-
-# shape index -> (cell set inside the 4x4 block, output label colour)
-#   0: full block                      -> 2
-#   1: box outline                     -> 8
-#   2: full minus 2 left/right notches -> 3
-#   3: full minus bottom 2x2 notch     -> 4
-_FULL = {(r, c) for r in range(4) for c in range(4)}
-_SHAPES = [
-    set(_FULL),                                                   # o1
-    {(r, c) for (r, c) in _FULL if r in (0, 3) or c in (0, 3)},   # o2 (box)
-    _FULL - {(1, 0), (2, 0), (1, 3), (2, 3)},                     # o3
-    _FULL - {(2, 1), (2, 2), (3, 1), (3, 2)},                     # o4
-]
-_LABELS = [2, 8, 3, 4]
-
-# every variant contains all four shape types (and its first 4 entries do too,
-# so a max_w-driven truncation still teaches the full shape->colour mapping)
-VARIANTS = [
-    {"shapes": [0, 1, 2, 3]},
-    {"shapes": [3, 2, 1, 0]},
-    {"shapes": [1, 3, 0, 2, 1]},
-    {"shapes": [2, 0, 3, 1, 2, 0]},
-]
+from maker.sel_helpers import sel_of
 
 
+# ---------------------------------------------------------------- 1. colors
+# The four 4x4 block shapes (generator's `mpr`) are discrete structural
+# variants, each mapping to a fixed label colour:
+#   0 -> full square      -> 2
+#   1 -> box (perimeter)  -> 8
+#   2 -> full minus (1,0),(2,0),(1,3),(2,3) -> 3
+#   3 -> full minus 2x2 at (2,1)            -> 4
+# Every variant must be demonstrated, so the shape assignment is planned
+# per instance up-front and merged into generate() by the caller.
 def sample_colors(num_examples=None) -> dict:
-    bgc = random.choice(range(10))
+    bgc = random.choice(list(range(10)))
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
-    else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+
+    order = [0, 1, 2, 3]
+    random.shuffle(order)
+    chunks = [[] for _ in range(max(1, n_ex))]
+    for i, s in enumerate(order):
+        chunks[i % len(chunks)].append(s)
+
+    examples = []
+    for ch in chunks:
+        shapes = list(ch)
+        random.shuffle(shapes)
+        extra = [random.randrange(4) for _ in range(6 - len(shapes))]
+        examples.append({"shapes": shapes + extra,
+                         "min_num": max(1, len(shapes))})
+    random.shuffle(examples)
+
     plan = examples + [dict(random.choice(examples))]
     return {"bgc": bgc, "instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, shapes=None) -> dict:
-    max_num = max(1, min((max_w + 1) // 5, max_h, 6))
-    if shapes is None:
-        n = random.randint(1, max_num)
-        shapes = [random.randrange(4) for _ in range(n)]
-    else:
-        shapes = list(shapes)[:max_num]
-    num = len(shapes)
+# ---------------------------------------------------------------- 2. generate
+def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
+             bgc=None, shapes=None, min_num=1) -> dict:
+    cols = interval(0, 10, 1)
+    if bgc is None:
+        bgc = choice(cols)
+
+    o1 = asindices(canvas(-1, (4, 4)))
+    o2 = box(asindices(canvas(-1, (4, 4))))
+    o3 = asindices(canvas(-1, (4, 4))) - {(1, 0), (2, 0), (1, 3), (2, 3)}
+    o4 = o1 - shift(asindices(canvas(-1, (2, 2))), (2, 1))
+    mpr = [(o1, 2), (o2, 8), (o3, 3), (o4, 4)]
+
+    # input is 4 x (5*num - 1), output is num x num
+    num_cap = min(6, (max_w + 1) // 5, max_h, max_w)
+    num_cap = max(1, num_cap)
+    num = unifint(diff_lb, diff_ub, (1, num_cap))
+    num = max(num, min(max(1, int(min_num)), num_cap))
 
     h = 4
-    w = 5 * num - 1
-    remcols = [c for c in range(10) if c != bgc]
+    w = 4 * num + num - 1
+    remcols = [c for c in cols if c != bgc]
+    gi = canvas(bgc, (h, w))
+    ccols = []
+    for k in range(num):
+        col = choice(remcols)
+        if shapes:
+            obj, outcol = mpr[shapes[k % len(shapes)] % 4]
+        else:
+            obj, outcol = choice(mpr)
+        locj = 5 * k
+        gi = fill(gi, col, shift(obj, (0, locj)))
+        ccols.append(outcol)
+    go = tuple(repeat(c, num) for c in ccols)
+    return {'input': gi, 'output': go}
 
-    gi = [[bgc] * w for _ in range(h)]
-    for k, si in enumerate(shapes):
-        col = random.choice(remcols)
-        for (r, c) in _SHAPES[si]:
-            gi[r][c + 5 * k] = col
 
-    go = [[_LABELS[si]] * num for si in shapes]
-    return {
-        "input": tuple(tuple(row) for row in gi),
-        "output": tuple(tuple(row) for row in go),
-    }
+# ---------------------------------------------------------------- 3. ops
+def _classify_block(B):
+    """Label colour of one 4x4 block, read from the block alone."""
+    B = np.asarray(B, dtype=int)
+    if len(set(B.flatten().tolist())) == 1:
+        return 2                       # solid square
+    if not np.array_equal(B, B[::-1]):
+        return 4                       # not up/down symmetric (2x2 bite at bottom)
+    if B[0, 0] != B[1, 0]:
+        return 3                       # side notches
+    return 8                           # box
 
 
-def derive_operations(I, O):
+def derive_operations(I, O, examples=None):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
 
-    # blocks are 4x4 patches at column stride 5
-    num = (wi + 1) // 5
-
-    # classify each block patch straight out of I -> its label colour
-    labels = []
-    for k in range(num):
-        P = I[0:4, 5 * k:5 * k + 4]
-        if len(set(P.flatten().tolist())) == 1:          # solid block
-            lab = 2
-        elif not np.array_equal(P, P[::-1, :]):          # not up/down symmetric
-            lab = 4
-        elif int(P[0, 0]) != int(P[1, 0]):               # top-left edge broken
-            lab = 3
-        else:                                            # hollow box
-            lab = 8
-        labels.append(lab)
+    num = (wi + 1) // 5                # number of 4x4 blocks along the row
+    labels = [_classify_block(I[0:4, 5 * k:5 * k + 4]) for k in range(num)]
 
     ops, sels = [], []
 
-    # canvas needs one row per block; grow it when there are more blocks than rows
-    if num > hi:
-        ops.append(33)
-        sels.append([0, 0, num - 1, wi - 1])
+    # Size the canvas ONCE to the answer's shape (num x num).
+    # Full-rectangle bbox: a canvas resize acts on the whole rectangle.
+    ops.append(33); sels.append([0, 0, num - 1, num - 1])
 
-    # each block becomes one solid row of its label colour
-    for k, lab in enumerate(labels):
-        ops.append(lab)
-        sels.append([k, 0, 0, num - 1])
+    # Track the grid as it now stands (transparent copy of I's top-left corner,
+    # zero padding below row 3 when num > 4).
+    cur = np.zeros((num, num), dtype=int)
+    for r in range(min(num, hi)):
+        for c in range(min(num, wi)):
+            cur[r, c] = I[r, c]
 
-    # keep only the num x num answer block
-    ops.append(33)
-    sels.append([0, 0, num - 1, num - 1])
+    # One block -> one solid row, in block order.
+    for k in range(num):
+        lab = labels[k]
+        if np.all(cur[k, :] == lab):
+            continue                   # row already holds this colour: no visible change
+        ops.append(int(lab))
+        sels.append(sel_of([(k, c) for c in range(num)]))
+        cur[k, :] = lab
 
-    ops.append(34)
-    sels.append([0, 0, num - 1, num - 1])
+    ops.append(34); sels.append([0, 0, num - 1, num - 1])
     return ops, sels
 
 
@@ -182,7 +194,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

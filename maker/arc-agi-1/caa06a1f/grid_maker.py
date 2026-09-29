@@ -39,17 +39,13 @@ import numpy as np
 
 
 def sample_colors(num_examples=None) -> dict:
-    """Fix the whole palette for the episode.
-
-    Colors are drawn from 1..9 only: every clipboard/object op in ARCLE treats 0 as
-    "nothing there", and this task copies and slides the wallpaper as a whole, so no
-    cell of the wallpaper may be 0.
+    """Fix the whole palette for the episode (any colour 0-9 may take any role).
 
     The 4 rotations of the scene are the discrete structural cases (they decide which
     corner stays uncovered and therefore which way the wallpaper slides), so they are
     planned per instance and all four are shown when there are enough example slots.
     """
-    pool = list(range(1, 10))
+    pool = list(range(10))
     random.shuffle(pool)
     bgc = pool[0]            # canvas color (entirely covered by the wallpaper)
     tric = pool[1]           # color of the opaque L-shaped band
@@ -151,19 +147,20 @@ def derive_operations(I, O):
     Move slides the finished wallpaper, and the line the slide exposes is refilled from
     the line one period away.  Every selection below is exactly the full rectangle it
     names (strips, whole grid, single line, paste origin), so the bbox form is used.
+    A strip whose source is exactly the strip just pasted is NOT copied again: the
+    clipboard already holds that very period.
     """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
     ops, sels = [], []
 
-    # --- read the scene: 3 of the 4 corners are band color, one corner is free
     corner_pos = [(0, 0), (0, w - 1), (h - 1, w - 1), (h - 1, 0)]
     ccols = [int(I[r, c]) for r, c in corner_pos]
     tric = Counter(ccols).most_common(1)[0][0]
     free = [i for i, v in enumerate(ccols) if v != tric]
     fi = free[0] if free else 0
-    sr, sc = [(0, -1), (-1, 0), (0, 1), (1, 0)][fi]   # slide toward the free corner
+    sr, sc = [(0, -1), (-1, 0), (0, 1), (1, 0)][fi]
 
     band_rows = [r for r in range(h) if all(int(I[r, c]) == tric for c in range(w))]
     band_cols = [c for c in range(w) if all(int(I[r, c]) == tric for r in range(h))]
@@ -172,7 +169,7 @@ def derive_operations(I, O):
     vr0, vr1 = (len(band_rows), h - 1) if top else (0, h - 1 - len(band_rows))
     vc0, vc1 = (len(band_cols), w - 1) if left else (0, w - 1 - len(band_cols))
 
-    V = I[vr0:vr1 + 1, vc0:vc1 + 1]                   # the still-visible wallpaper
+    V = I[vr0:vr1 + 1, vc0:vc1 + 1]
     Hv, Wv = V.shape
     pv = Hv
     for p in range(1, Hv + 1):
@@ -184,72 +181,104 @@ def derive_operations(I, O):
         if all(V[r, c] == V[r, c + p] for r in range(Hv) for c in range(Wv - p)):
             ph = p
             break
-    # clipboard ops treat 0 as "nothing": if the wallpaper itself uses color 0, clear
-    # each destination strip first so its 0 cells are already correct when pasting.
-    has_zero = bool((V == 0).any())
 
-    # --- 1. grow the wallpaper across the horizontal band, one period-tall strip at a
-    #        time, over the columns that are still visible.
+    # The wallpaper value of any cell, read off the visible part of I.
+    def wall(r, c):
+        return int(V[(r - vr0) % pv, (c - vc0) % ph])
+
+    # Clipboard ops treat 0 as "nothing": a destination strip is cleared to 0 first
+    # only when the wallpaper it receives contains 0 AND the band there is not already 0.
+    def needs_clear(r0, r1, c0, c1):
+        return tric != 0 and any(wall(r, c) == 0 for r in range(r0, r1 + 1)
+                                 for c in range(c0, c1 + 1))
+
+    def all_zero(r0, r1, c0, c1):
+        return all(wall(r, c) == 0 for r in range(r0, r1 + 1) for c in range(c0, c1 + 1))
+
+    # --- 1. grow the wallpaper across the horizontal band, period-tall strips
+    last = None                                   # origin row of the strip just pasted
     if top:
         d = vr0 - pv
         while d > -pv:
             lo = max(d, 0)
             ln = d + pv - lo
             src = lo + pv
-            ops.append(28 if src >= vr0 else 29)      # CopyI while source is untouched
-            sels.append([src, vc0, ln - 1, vc1 - vc0])   # full rectangle: the strip
-            if has_zero:
+            zero = all_zero(lo, lo + ln - 1, vc0, vc1)   # nothing for a Paste to write
+            if not zero:
+                if src != last:                       # clipboard doesn't hold it yet
+                    ops.append(28 if src >= vr0 else 29)
+                    sels.append([src, vc0, ln - 1, vc1 - vc0])
+            if needs_clear(lo, lo + ln - 1, vc0, vc1):
                 ops.append(0)
-                sels.append([lo, vc0, ln - 1, vc1 - vc0])  # full rectangle: destination
-            ops.append(30)
-            sels.append([lo, vc0, 0, 0])              # paste origin
+                sels.append([lo, vc0, ln - 1, vc1 - vc0])
+            if not zero:
+                ops.append(30)
+                sels.append([lo, vc0, 0, 0])
+                last = lo
             d -= pv
     else:
         d = vr1 + 1
         while d <= h - 1:
             ln = min(pv, h - d)
             src = d - pv
-            ops.append(28 if src + ln - 1 <= vr1 else 29)
-            sels.append([src, vc0, ln - 1, vc1 - vc0])
-            if has_zero:
+            zero = all_zero(d, d + ln - 1, vc0, vc1)   # nothing for a Paste to write
+            if not zero:
+                if src != last:
+                    ops.append(28 if src + ln - 1 <= vr1 else 29)
+                    sels.append([src, vc0, ln - 1, vc1 - vc0])
+            if needs_clear(d, d + ln - 1, vc0, vc1):
                 ops.append(0)
                 sels.append([d, vc0, ln - 1, vc1 - vc0])
-            ops.append(30)
-            sels.append([d, vc0, 0, 0])
+            if not zero:
+                ops.append(30)
+                sels.append([d, vc0, 0, 0])
+                last = d
             d += pv
 
-    # --- 2. grow it sideways across the vertical band, one period-wide strip at a time,
-    #        now over the full height (the rows were completed in step 1).
+    clip_col, clip_w = None, 0                    # full-height clipboard left by step 2
+    # --- 2. grow it sideways across the vertical band, period-wide strips
+    last = None
     if left:
         d = vc0 - ph
         while d > -ph:
             lo = max(d, 0)
             ln = d + ph - lo
             src = lo + ph
-            ops.append(29)                            # source includes cells just made
-            sels.append([0, src, h - 1, ln - 1])      # full rectangle: the strip
-            if has_zero:
+            zero = all_zero(0, h - 1, lo, lo + ln - 1)   # nothing for a Paste to write
+            if not zero:
+                if src != last:
+                    ops.append(29)
+                    sels.append([0, src, h - 1, ln - 1])
+                    clip_col, clip_w = src, ln
+            if needs_clear(0, h - 1, lo, lo + ln - 1):
                 ops.append(0)
                 sels.append([0, lo, h - 1, ln - 1])
-            ops.append(30)
-            sels.append([0, lo, 0, 0])
+            if not zero:
+                ops.append(30)
+                sels.append([0, lo, 0, 0])
+                last = lo
             d -= ph
     else:
         d = vc1 + 1
         while d <= w - 1:
             ln = min(ph, w - d)
             src = d - ph
-            ops.append(29)
-            sels.append([0, src, h - 1, ln - 1])
-            if has_zero:
+            zero = all_zero(0, h - 1, d, d + ln - 1)   # nothing for a Paste to write
+            if not zero:
+                if src != last:
+                    ops.append(29)
+                    sels.append([0, src, h - 1, ln - 1])
+                    clip_col, clip_w = src, ln
+            if needs_clear(0, h - 1, d, d + ln - 1):
                 ops.append(0)
                 sels.append([0, d, h - 1, ln - 1])
-            ops.append(30)
-            sels.append([0, d, 0, 0])
+            if not zero:
+                ops.append(30)
+                sels.append([0, d, 0, 0])
+                last = d
             d += ph
 
-    # --- 3. slide the whole, now complete, wallpaper one cell toward the free corner.
-    #        Selection is the entire grid rectangle - every cell belongs to the object.
+    # --- 3. slide the whole wallpaper one cell toward the free corner (whole grid)
     ops.append({(-1, 0): 20, (1, 0): 21, (0, 1): 22, (0, -1): 23}[(sr, sc)])
     sels.append([0, 0, h - 1, w - 1])
 
@@ -257,17 +286,28 @@ def derive_operations(I, O):
     if sc != 0:
         e = w - 1 if sc < 0 else 0
         s_col = e - ph if e > 0 else e + ph
-        ops.append(29)
-        sels.append([0, s_col, h - 1, 0])             # full rectangle: one column
-        ops.append(30)
-        sels.append([0, e, 0, 0])
+        # The exposed column needs the wallpaper column just beyond the old edge.  If
+        # the full-height clipboard left by step 2 already carries it, paste directly.
+        need = [wall(r, w if e == w - 1 else -1) for r in range(h)]
+        if any(need):                     # an all-0 line is already right after the slide
+            back = 1 if sc < 0 else -1    # post-slide column x holds pre-slide x+back
+            have = clip_col is not None and all(
+                wall(r, clip_col + j) == wall(r, e + j + back)
+                for j in range(clip_w) if e + j < w for r in range(h))
+            if not have:
+                ops.append(29)
+                sels.append([0, s_col, h - 1, 0])
+            ops.append(30)
+            sels.append([0, e, 0, 0])
     else:
         e = h - 1 if sr < 0 else 0
         s_row = e - pv if e > 0 else e + pv
-        ops.append(29)
-        sels.append([s_row, 0, 0, w - 1])             # full rectangle: one row
-        ops.append(30)
-        sels.append([e, 0, 0, 0])
+        need = [wall(h if e == h - 1 else -1, c) for c in range(w)]
+        if any(need):                     # an all-0 line is already right after the slide
+            ops.append(29)
+            sels.append([s_row, 0, 0, w - 1])
+            ops.append(30)
+            sels.append([e, 0, 0, 0])
 
     ops.append(34)
     sels.append([0, 0, h - 1, w - 1])

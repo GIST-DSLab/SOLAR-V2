@@ -39,108 +39,62 @@ from collections import Counter
 from maker.sel_helpers import sel_of
 
 
-# ----------------------------------------------------------------------------
-# 1. colors
-# ----------------------------------------------------------------------------
 def sample_colors(num_examples=None) -> dict:
-    # generator samples 5 distinct colors: bgc + 4 corner-piece colors.
-    # piece colors are kept non-zero so ARCLE object-ops (Move) can grab them
-    # (ARCLE treats 0 as "nothing" in object/clipboard mode).
-    bgc = random.choice(list(range(10)))
-    others = [c for c in range(1, 10) if c != bgc]
-    c1, c2, c3, c4 = random.sample(others, 4)
+    cols = list(range(10))
+    bgc, c1, c2, c3, c4 = random.sample(cols, 5)
     return {"bgc": bgc, "c1": c1, "c2": c2, "c3": c3, "c4": c4}
 
 
-# ----------------------------------------------------------------------------
-# 2. generator
-# ----------------------------------------------------------------------------
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int, c1: int, c2: int, c3: int, c4: int) -> dict:
-    hmax = max(4, min(15, max_h // 2))
-    wmax = max(4, min(15, max_w // 2))
-    h = unifint(diff_lb, diff_ub, (4, hmax))
-    w = unifint(diff_lb, diff_ub, (4, wmax))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc, c1, c2, c3, c4) -> dict:
+    hub = max(4, min(15, max_h // 2))
+    wub = max(4, min(15, max_w // 2))
+    h = unifint(diff_lb, diff_ub, (4, hub))
+    w = unifint(diff_lb, diff_ub, (4, wub))
     lociL = randint(2, h - 2)
     lociR = randint(2, h - 2)
     locjT = randint(2, w - 2)
     locjB = randint(2, w - 2)
-
     ulco = connect((0, 0), (lociL - 1, 0)) | connect((0, 0), (0, locjT - 1))
     urco = connect((0, w - 1), (0, locjT)) | connect((0, w - 1), (lociR - 1, w - 1))
     llco = connect((h - 1, 0), (lociL, 0)) | connect((h - 1, 0), (h - 1, locjB - 1))
     lrco = connect((h - 1, w - 1), (h - 1, locjB)) | connect((h - 1, w - 1), (lociR, w - 1))
-
     go = canvas(bgc, (h, w))
     go = fill(go, c1, ulco)
     go = fill(go, c2, urco)
     go = fill(go, c3, llco)
     go = fill(go, c4, lrco)
-
-    fullh = unifint(diff_lb, diff_ub, (2 * h, max(2 * h, max_h)))
-    fullw = unifint(diff_lb, diff_ub, (2 * w, max(2 * w, max_w)))
+    fullh = unifint(diff_lb, diff_ub, (min(2 * h, max_h), max_h))
+    fullw = unifint(diff_lb, diff_ub, (min(2 * w, max_w), max_w))
     gi = canvas(bgc, (fullh, fullw))
-
     objs = (ulco, urco, llco, lrco)
     ocols = (c1, c2, c3, c4)
-
-    def has_empty_window(occ, H, W, hh, ww):
-        occm = [[0] * W for _ in range(H)]
-        for (r, c) in occ:
-            occm[r][c] = 1
-        pref = [[0] * (W + 1) for _ in range(H + 1)]
-        for r in range(H):
-            for c in range(W):
-                pref[r + 1][c + 1] = (pref[r][c + 1] + pref[r + 1][c]
-                                      - pref[r][c] + occm[r][c])
-        for R in range(H - hh + 1):
-            for C in range(W - ww + 1):
-                s = pref[R + hh][C + ww] - pref[R][C + ww] - pref[R + hh][C] + pref[R][C]
-                if s == 0:
-                    return True
-        return False
-
-    locs = []
-    for _attempt in range(60):
-        while True:
-            inds = asindices(gi)
-            locs = []
-            for o in objs:
-                cands = sfilter(inds, lambda ij: shift(o, ij).issubset(inds))
-                if len(cands) == 0:
-                    break
-                loc = choice(totuple(cands))
-                locs.append(loc)
-                inds = inds - shift(o, loc)
-            if len(locs) == 4:
+    while True:
+        inds = asindices(gi)
+        locs = []
+        for o, c in zip(objs, ocols):
+            cands = sfilter(inds, lambda ij: shift(o, ij).issubset(inds))
+            if len(cands) == 0:
                 break
-        occupied = set()
-        for o, l in zip(objs, locs):
-            occupied |= shift(o, l)
-        # keep a placement that leaves at least one fully empty h x w window,
-        # so the reassembly region can be filled without object collisions
-        if has_empty_window(occupied, fullh, fullw, h, w):
+            loc = choice(totuple(cands))
+            locs.append(loc)
+            inds = inds - shift(o, loc)
+        if len(locs) == 4:
             break
-
     for o, c, l in zip(objs, ocols, locs):
         gi = fill(gi, c, shift(o, l))
-
     return {'input': gi, 'output': go}
 
 
-# ----------------------------------------------------------------------------
-# 3. operations
-# ----------------------------------------------------------------------------
-def derive_operations(I, O):
+def derive_operations(I, O=None, examples=None):
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     fh, fw = I.shape
-    ho, wo = O.shape
     ops, sels = [], []
 
+    # background: the colour the generator paints the canvas with; it covers
+    # almost the whole input (four thin L pieces sit on it)
     bgc = int(Counter(I.flatten().tolist()).most_common(1)[0][0])
 
-    # --- collect the four corner pieces (one per non-background color) -------
+    # --- the four corner pieces (one per non-background colour) ------------
     cellmap = {}
     for r in range(fh):
         for c in range(fw):
@@ -154,7 +108,7 @@ def derive_operations(I, O):
         cs = [c for _, c in cells]
         r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
         s = set(cells)
-        # an L-shaped corner piece misses exactly the bbox corner opposite to it
+        # an L-shaped corner piece misses exactly the bbox corner opposite its elbow
         if (r1, c1) not in s:
             kind = 'UL'
         elif (r1, c0) not in s:
@@ -168,9 +122,8 @@ def derive_operations(I, O):
 
     KINDS = ['UL', 'UR', 'LL', 'LR']
     if not all(k in pieces for k in KINDS):
-        # degenerate safety net: rebuild output shape from O
         ops.append(34)
-        sels.append([0, 0, ho - 1, wo - 1])
+        sels.append([0, 0, fh - 1, fw - 1])
         return ops, sels
 
     h = pieces['UL']['h'] + pieces['LL']['h']
@@ -218,12 +171,21 @@ def derive_operations(I, O):
             rem.remove(pick)
         return order
 
-    # choose the cheapest placement of the h x w reassembly window that can be
-    # filled without an object ever being overwritten before it is moved
+    # cheapest placement of the h x w reassembly window that can be filled
+    # without a piece ever landing on one that has not moved yet
     cands = sorted(((cost_of(R, C), R, C)
                     for R in range(fh - h + 1) for C in range(fw - w + 1)))
     R = C = 0
     order = None
+    # A piece coloured 0 cannot be carried by ARCLE (0 reads as "nothing"), so
+    # when one exists, first try assembling the frame right where it lies.
+    zero = [k for k in KINDS if int(pieces[k]['color']) == 0]
+    if zero:
+        k0 = zero[0]
+        ar = pieces[k0]['r0'] - (h - pieces[k0]['h'] if k0 in ('LL', 'LR') else 0)
+        ac = pieces[k0]['c0'] - (w - pieces[k0]['w'] if k0 in ('UR', 'LR') else 0)
+        if 0 <= ar <= fh - h and 0 <= ac <= fw - w:
+            cands = [(-1, ar, ac)] + cands
     for _cost, rr, cc in cands:
         if rect_sum(rr, cc) == 0:
             R, C, order = rr, cc, list(KINDS)
@@ -236,26 +198,31 @@ def derive_operations(I, O):
     dorg = dest_origins(R, C)
 
     if order is None:
-        # last-resort fallback (no collision-free ordering exists): repaint
-        R, C = cands[0][1], cands[0][2]
+        # last resort (no collision-free ordering exists): repaint
+        R, C = min(cands)[1:] if cands[0][0] >= 0 else cands[1][1:]
         dorg = dest_origins(R, C)
         for k in KINDS:
-            cells = sorted(pieces[k]['cells'])
             ops.append(bgc)
-            sels.append(sel_of(cells))
+            sels.append(sel_of(sorted(pieces[k]['cells'])))
         for k in KINDS:
             dr = dorg[k][0] - pieces[k]['r0']
             dc = dorg[k][1] - pieces[k]['c0']
-            cells = sorted((r + dr, c + dc) for (r, c) in pieces[k]['cells'])
             ops.append(int(pieces[k]['color']))
-            sels.append(sel_of(cells))
+            sels.append(sel_of(sorted((r + dr, c + dc) for (r, c) in pieces[k]['cells'])))
         ops.append(33)
         sels.append([R, C, h - 1, w - 1])
         ops.append(34)
         sels.append([0, 0, h - 1, w - 1])
         return ops, sels
 
-    used = set(I.flatten().tolist()) | set(O.flatten().tolist())
+    # Only the INTERIOR of the reassembly window survives the final crop as
+    # background: cells outside the window are discarded by the crop, and the
+    # window's border is exactly the closed frame the four pieces slide onto.
+    # So a vacated footprint needs a bgc repair only where it lies inside the
+    # frame's interior.
+    interior = {(r, c) for r in range(R + 1, R + h - 1) for c in range(C + 1, C + w - 1)}
+
+    used = set(int(v) for v in I.flatten().tolist())
     temp = next((t for t in range(1, 10) if t not in used), 1)
 
     for k in order:
@@ -268,7 +235,7 @@ def derive_operations(I, O):
         color = int(p['color'])
 
         # ARCLE object-ops ignore 0-valued cells: lift such a piece to a spare
-        # color so it can actually be grabbed and moved
+        # colour so it can actually be grabbed and moved, then set it back
         recolored = (color == 0)
         if recolored:
             ops.append(temp)
@@ -276,30 +243,25 @@ def derive_operations(I, O):
 
         cur = list(src)
         grabbed = False
-
-        def step(op, vr, vc):
-            nonlocal cur, grabbed
-            ops.append(op)
-            sels.append(sel_of(cur) if not grabbed else sel_of([]))
-            grabbed = True
-            cur = [(r + vr, c + vc) for r, c in cur]
-
-        for _ in range(abs(dr)):
-            step(20 if dr < 0 else 21, -1 if dr < 0 else 1, 0)
-        for _ in range(abs(dc)):
-            step(23 if dc < 0 else 22, 0, -1 if dc < 0 else 1)
-
-        # only the vacated original footprint reads 0 after a slide
-        hole = sorted(set(src) - set(cur))
-        if bgc != 0 and hole:
-            ops.append(bgc)
-            sels.append(sel_of(hole))
+        for vr, vc, n, op in ((-1 if dr < 0 else 1, 0, abs(dr), 20 if dr < 0 else 21),
+                              (0, -1 if dc < 0 else 1, abs(dc), 23 if dc < 0 else 22)):
+            for _ in range(n):
+                ops.append(op)
+                sels.append(sel_of([]) if grabbed else sel_of(cur))
+                grabbed = True
+                cur = [(r + vr, c + vc) for r, c in cur]
 
         if recolored:
             ops.append(0)
             sels.append(sel_of(sorted(cur)))
 
-    # the reassembled frame region is exactly this full rectangle -> bbox is fine
+        # vacated original footprint reads 0; repair it only inside the frame
+        hole = sorted((set(src) - set(cur)) & interior)
+        if bgc != 0 and hole:
+            ops.append(bgc)
+            sels.append(sel_of(hole))
+
+    # the closed frame is exactly this full rectangle -> bbox selection is right
     ops.append(33)
     sels.append([R, C, h - 1, w - 1])
     ops.append(34)
@@ -347,7 +309,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

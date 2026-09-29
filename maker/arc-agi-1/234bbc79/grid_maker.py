@@ -107,7 +107,6 @@ def _plan(I):
         return None
     comps.sort(key=lambda cells: min(c for (_, c) in cells))
 
-    # marker colour: present 1 or 2 times in every piece, rarest overall
     cands = []
     for col in sorted(set(flat) - {bgc}):
         ok = True
@@ -194,6 +193,11 @@ def _plan(I):
     return {"bgc": int(bgc), "dotc": int(dotc), "W": int(W), "steps": steps, "out": out}
 
 
+def steps_iter(steps):
+    for st in steps:
+        yield st
+
+
 # ----------------------------------------------------------------------------- colors
 def sample_colors(num_examples=None) -> dict:
     bgc = random.choice(list(range(10)))
@@ -222,7 +226,6 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, dotc=None, pool=None, **k
         h = _unifint(diff_lb, diff_ub, (5, hmax))
         w = _unifint(diff_lb, diff_ub, (6, wcap))
 
-        # --- grow the snake (right / up / down, never revisiting) ---
         spi = random.randint(0, h - 1)
         snek = [(spi, 0)]
         occ = {(spi, 0)}
@@ -243,7 +246,6 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, dotc=None, pool=None, **k
             snek.append(loc)
             occ.add(loc)
 
-        # --- cut into segments at rightward steps ---
         objs, cobj = [], []
         for idx, cel in enumerate(snek):
             cw = (max(c for (_, c) in cobj) - min(c for (_, c) in cobj)) if cobj else 0
@@ -288,12 +290,10 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, dotc=None, pool=None, **k
             if i < n - 1:
                 spacings[i] += 1
 
-        # --- colours per segment ---
         ncols = _unifint(diff_lb, diff_ub, (1, len(pool)))
         ccols = random.sample(pool, ncols)
         segcols = [random.choice(ccols) for _ in objs]
 
-        # --- scatter the segments over the input canvas ---
         gi = [[bgc] * fullw for _ in range(h)]
         nextcol = 0
         placed_fail = False
@@ -328,7 +328,6 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, dotc=None, pool=None, **k
         if placed_fail:
             continue
 
-        # --- reference reassembly (the original snake, markers absorbed) ---
         go = [[bgc] * sw for _ in range(h)]
         for i, ob in enumerate(objs):
             for (pr, pc) in ob:
@@ -393,7 +392,9 @@ def derive_operations(I, O):
             cur = [(r + sr, c + sc) for (r, c) in cur]
 
         if seq:
-            hole = sorted(set(src) - set(cur))
+            # only the vacated footprint inside the kept columns matters: the
+            # final crop to width W (measured from I) discards everything right of it
+            hole = sorted(p for p in set(src) - set(cur) if p[1] < W)
             if bgc != 0 and hole:
                 ops.append(bgc)
                 sels.append(sel_of(hole))
@@ -414,11 +415,6 @@ def derive_operations(I, O):
     ops.append(34)
     sels.append([0, 0, hi - 1, W - 1])
     return ops, sels
-
-
-def steps_iter(steps):
-    for st in steps:
-        yield st
 
 
 # ── GridMaker ─────────────────────────────────────────────────────────────────

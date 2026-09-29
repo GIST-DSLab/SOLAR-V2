@@ -38,93 +38,91 @@ import numpy as np
 from collections import Counter
 from maker.sel_helpers import sel_of
 
-# ---------------------------------------------------------------- #
-# Discrete structural variants: bar orientation + which side the
-# object sits on.  Base construction = vertical bar, object to the
-# RIGHT of it; the other three are reached by mirroring.
-# ---------------------------------------------------------------- #
-VARIANTS = [
-    {"axis": "v", "side": "right"},   # identity
-    {"axis": "v", "side": "left"},    # vmirror
-    {"axis": "h", "side": "below"},   # dmirror
-    {"axis": "h", "side": "above"},   # dmirror then hmirror
-]
+
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        b = a
+    d = random.uniform(diff_lb, diff_ub)
+    lo = a + int(round((b - a) * max(0.0, min(1.0, diff_lb))))
+    hi = a + int(round((b - a) * max(0.0, min(1.0, diff_ub))))
+    lo = max(a, min(lo, b))
+    hi = max(lo, min(hi, b))
+    return random.randint(lo, hi)
 
 
 def sample_colors(num_examples=None) -> dict:
     cols = [c for c in range(10) if c not in (2, 8)]
-    bgc = random.choice(cols)
-    # objc must be non-zero: ARCLE object-grab only picks up nonzero cells
-    objc = random.choice([c for c in cols if c != bgc and c != 0])
-
-    n_ex = num_examples if num_examples else 4
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
-    else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "objc": objc, "instance_plan": plan}
+    bgc, objc = random.sample(cols, 2)
+    return {"bgc": bgc, "objc": objc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc, axis=None, side=None) -> dict:
-    if axis is None or side is None:
-        v = random.choice(VARIANTS)
-        axis, side = v["axis"], v["side"]
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, objc=None, **kwargs) -> dict:
+    cols = [c for c in range(10) if c not in (2, 8)]
+    if bgc is None:
+        bgc = random.choice(cols)
+    if objc is None or objc == bgc:
+        objc = random.choice([c for c in cols if c != bgc])
+    h = _unifint(diff_lb, diff_ub, (4, max(4, max_h)))
+    w = _unifint(diff_lb, diff_ub, (6, max(6, max_w)))
+    oh = _unifint(diff_lb, diff_ub, (1, h))
+    ow = _unifint(diff_lb, diff_ub, (1, max(1, (w - 1) // 2 - 1)))
+    bb = set((i, j) for i in range(oh) for j in range(ow))
+    sp = random.choice(sorted(bb))
+    obj = {sp}
+    bb.discard(sp)
+    ncellsd = _unifint(diff_lb, diff_ub, (0, (oh * ow) // 2))
+    ncells = random.choice((ncellsd, oh * ow - ncellsd))
+    ncells = min(max(0, ncells), oh * ow - 1)
+    for _ in range(ncells):
+        cand = set()
+        for (i, j) in obj:
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    if di == 0 and dj == 0:
+                        continue
+                    cand.add((i + di, j + dj))
+        cand = sorted((bb - obj) & cand)
+        if not cand:
+            break
+        obj.add(random.choice(cand))
+    mi = min(i for i, j in obj); mj = min(j for i, j in obj)
+    obj = {(i - mi, j - mj) for i, j in obj}
+    oh = max(i for i, j in obj) + 1
+    ow = max(j for i, j in obj) + 1
+    loci = random.randint(0, h - oh)
+    locj = _unifint(diff_lb, diff_ub, (1, w - ow))
+    gi = np.full((h, w), bgc, dtype=int)
+    barlocji = _unifint(diff_lb, diff_ub, (0, locj))
+    barlocj = locj - barlocji
+    barlocj = min(max(0, barlocj), locj - 1)
+    gi[:, barlocj] = 2
+    go = gi.copy()
+    for i, j in obj:
+        go[loci + i, barlocj + 1 + j] = objc
+    if barlocj + ow + 1 < w:
+        go[:, barlocj + ow + 1] = 8
+    for i, j in obj:
+        gi[loci + i, locj + j] = objc
+    mfs = [lambda g: g, lambda g: g.T, lambda g: np.rot90(g, 2).T,
+           np.fliplr, np.flipud, lambda g: np.rot90(g, 3),
+           lambda g: np.rot90(g, 2), lambda g: np.rot90(g, 1)]
+    nmfs = random.choice((1, 2))
+    for fn in random.sample(mfs, nmfs):
+        gi = fn(gi)
+        go = fn(go)
+    return {"input": np.ascontiguousarray(gi).tolist(),
+            "output": np.ascontiguousarray(go).tolist()}
 
-    while True:
-        h = unifint(diff_lb, diff_ub, (4, max_h))
-        w = unifint(diff_lb, diff_ub, (6, max_w))
-        oh = unifint(diff_lb, diff_ub, (1, h))
-        ow = unifint(diff_lb, diff_ub, (1, (w - 1) // 2 - 1))
-        bb = asindices(canvas(-1, (oh, ow)))
-        sp = choice(totuple(bb))
-        obj = {sp}
-        bb = remove(sp, bb)
-        ncellsd = unifint(diff_lb, diff_ub, (0, (oh * ow) // 2))
-        ncells = choice((ncellsd, oh * ow - ncellsd))
-        ncells = min(max(0, ncells), oh * ow - 1)
-        for k in range(ncells):
-            obj.add(choice(totuple((bb - obj) & mapply(neighbors, obj))))
-        obj = normalize(obj)
-        oh, ow = shape(obj)
-        loci = randint(0, h - oh)
-        locj = unifint(diff_lb, diff_ub, (1, w - ow))
-        barlocji = unifint(diff_lb, diff_ub, (0, locj))
-        barlocj = locj - barlocji
-        barlocj = min(max(0, barlocj), locj - 1)
-        # the 8-frontier must actually fit on the canvas, else I == O
-        if barlocj + ow + 1 > w - 1:
-            continue
-        break
 
-    gi = canvas(bgc, (h, w))
-    gi = fill(gi, 2, connect((0, barlocj), (h - 1, barlocj)))
-    go = fill(gi, objc, shift(obj, (loci, barlocj + 1)))
-    go = fill(go, 8, connect((0, barlocj + ow + 1), (h - 1, barlocj + ow + 1)))
-    gi = fill(gi, objc, shift(obj, (loci, locj)))
-
-    if axis == "v":
-        if side == "left":
-            gi, go = vmirror(gi), vmirror(go)
-    else:
-        gi, go = dmirror(gi), dmirror(go)
-        if side == "above":
-            gi, go = hmirror(gi), hmirror(go)
-
-    return {'input': gi, 'output': go}
-
-
-def derive_operations(I, O):
+def derive_operations(I, O, examples=None):
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ho, wo = O.shape
     ops, sels = [], []
 
-    # background = the colour the generator paints the canvas with; it is a
-    # strict majority here (object width < half the grid).
+    # background = canvas colour (strict majority: object width < half grid)
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
     twos = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == 2]
@@ -133,17 +131,18 @@ def derive_operations(I, O):
     vertical_bar = (len(two_cols) == 1)
 
     obj = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] not in (bgc, 2)]
+    objc = int(I[obj[0]])
     r0 = min(r for r, c in obj); r1 = max(r for r, c in obj)
     c0 = min(c for r, c in obj); c1 = max(c for r, c in obj)
 
     if vertical_bar:
         b = next(iter(two_cols))
         ow = c1 - c0 + 1
-        if c0 > b:                      # object right of the bar -> slide left
+        if c0 > b:
             steps = c0 - (b + 1)
             move_op, dstep = 23, (0, -1)
             line_idx = b + ow + 1
-        else:                           # object left of the bar -> slide right
+        else:
             steps = (b - 1) - c1
             move_op, dstep = 22, (0, 1)
             line_idx = b - ow - 1
@@ -151,32 +150,36 @@ def derive_operations(I, O):
     else:
         b = next(iter(two_rows))
         oh = r1 - r0 + 1
-        if r0 > b:                      # object below the bar -> slide up
+        if r0 > b:
             steps = r0 - (b + 1)
             move_op, dstep = 20, (-1, 0)
             line_idx = b + oh + 1
-        else:                           # object above the bar -> slide down
+        else:
             steps = (b - 1) - r1
             move_op, dstep = 21, (1, 0)
             line_idx = b - oh - 1
         line_cells = [(line_idx, c) for c in range(wi) if 0 <= line_idx < hi]
 
-    # 1) slide the object until it touches the 2-line: one grab, then empties
-    cur = list(obj)
     if steps > 0:
-        ops.append(move_op); sels.append(sel_of(cur))          # grab the object
-        cur = [(r + dstep[0], c + dstep[1]) for r, c in cur]
-        for _ in range(steps - 1):
-            ops.append(move_op); sels.append(sel_of([]))        # keep it grabbed
-            cur = [(r + dstep[0], c + dstep[1]) for r, c in cur]
+        dest = [(r + dstep[0] * steps, c + dstep[1] * steps) for r, c in obj]
+        hole = sorted(set(obj) - set(dest))
+        if objc != 0:
+            # slide the object until it touches the 2-line: one grab, then empties
+            ops.append(move_op); sels.append(sel_of(obj))
+            for _ in range(steps - 1):
+                ops.append(move_op); sels.append(sel_of([]))
+            # repair only the vacated footprint (ARCLE left it at 0)
+            if bgc != 0 and hole:
+                ops.append(int(bgc)); sels.append(sel_of(hole))
+        else:
+            # colour-0 object: ARCLE Move cannot carry 0 cells, so put the
+            # object down at its landing place with Color0, then clear the
+            # vacated footprint to background.
+            ops.append(0); sels.append(sel_of(sorted(dest)))
+            if hole:
+                ops.append(int(bgc)); sels.append(sel_of(hole))
 
-        # 2) repair only the footprint the object no longer covers (ARCLE
-        #    zeroed the grabbed cells; the path it glided over is restored)
-        hole = sorted(set(obj) - set(cur))
-        if bgc != 0 and hole:
-            ops.append(int(bgc)); sels.append(sel_of(hole))
-
-    # 3) draw the 8 frontier just beyond the object's far edge
+    # draw the 8 frontier just beyond the object's far edge
     if line_cells:
         ops.append(8); sels.append(sel_of(line_cells))
 
@@ -224,7 +227,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

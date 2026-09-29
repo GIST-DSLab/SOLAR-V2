@@ -36,6 +36,7 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter, deque
+from maker.sel_helpers import sel_of
 
 
 def sample_colors(num_examples=None) -> dict:
@@ -44,7 +45,11 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "objc": objc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, objc: int) -> dict:
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, objc=None, **kwargs) -> dict:
+    from utils import unifint, canvas, asindices, sfilter, shift, totuple, fill, mapply, rbind, shoot, dneighbors, decrement, multiply, add, invert
+    if bgc is None or objc is None:
+        cols = [c for c in range(10) if c != 2]
+        bgc, objc = random.sample(cols, 2)
     h = unifint(diff_lb, diff_ub, (5, max_h))
     w = unifint(diff_lb, diff_ub, (5, max_w))
     gi = canvas(bgc, (h, w))
@@ -56,45 +61,24 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, o
         cands = sfilter(inds, lambda ij: shift(set(obj), ij).issubset(inds))
         if len(cands) == 0:
             break
-        loc = choice(totuple(cands))
+        loc = random.choice(totuple(cands))
         plcd = shift(obj, loc)
         nred = unifint(diff_lb, diff_ub, (1, 3))
-        reds = sample(totuple(plcd), nred)
+        reds = random.sample(totuple(plcd), nred)
         gi = fill(gi, objc, plcd)
         gi = fill(gi, 2, reds)
         for idx in reds:
             direc = decrement(multiply(2, add(idx, invert(loc))))
             go = fill(go, objc, mapply(rbind(shoot, direc), frozenset(plcd)))
         inds = (inds - plcd) - mapply(dneighbors, set(plcd))
-    return {'input': gi, 'output': go}
+    return {"input": gi, "output": go}
 
 
-def derive_operations(I, O):
-    """Rule (read off I): every non-background blob is a 2x2 block whose corners are
-    marked red (2). Each red corner names a diagonal direction (its offset inside the
-    block, mapped 0->-1, 1->+1). The whole 2x2 block then slides in that direction,
-    stamping itself in objc at every step until it leaves the grid. The k=0 stamp
-    repaints the block itself, which is why the reds vanish.
-    Ops are grouped per object, per direction, marching outward from the block."""
-    I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
+def _block_stamps(I, bgc, objc):
+    """Rule read off I: each 2x2 block's red corners name diagonal directions; the block
+    slides that way, stamping itself in objc at each step until it leaves the grid.
+    Stamps are grouped per block, per direction, marching outward."""
     hi, wi = I.shape
-
-    # background: canvas colour, guaranteed majority (blob cells <= h*w/6)
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
-    # object colour: the third palette entry (never 2, never bgc)
-    objc = None
-    for v in sorted(set(I.flatten().tolist())):
-        if v != bgc and v != 2:
-            objc = v
-    if objc is None:
-        for v in sorted(set(O.flatten().tolist())):
-            if v != bgc:
-                objc = v
-    if objc is None:
-        return [34], [[0, 0, hi - 1, wi - 1]]
-
-    # 4-connected components of non-background cells = the 2x2 blocks
     seen = np.zeros((hi, wi), dtype=bool)
     blocks = []
     for r in range(hi):
@@ -116,29 +100,74 @@ def derive_operations(I, O):
             reds = sorted((p[0] - r0, p[1] - c0) for p in comp if I[p[0], p[1]] == 2)
             if reds:
                 blocks.append((r0, c0, reds))
-
     blocks.sort()
     G = I.copy()
-    ops, sels = [], []
-
+    stamps = []
     for r0, c0, reds in blocks:
         for dr, dc in reds:
-            di = 2 * dr - 1
-            dj = 2 * dc - 1
+            di, dj = 2 * dr - 1, 2 * dc - 1
             k = 0
             while True:
-                br = r0 + k * di
-                bc = c0 + k * dj
+                br, bc = r0 + k * di, c0 + k * dj
                 rr0, rr1 = max(br, 0), min(br + 1, hi - 1)
                 cc0, cc1 = max(bc, 0), min(bc + 1, wi - 1)
                 if rr0 > rr1 or cc0 > cc1:
-                    break  # block has fully left the grid
+                    break
                 if not np.all(G[rr0:rr1 + 1, cc0:cc1 + 1] == objc):
-                    ops.append(int(objc))
-                    sels.append([rr0, cc0, rr1 - rr0, cc1 - cc0])
+                    stamps.append([rr0, cc0, rr1 - rr0, cc1 - cc0])
                     G[rr0:rr1 + 1, cc0:cc1 + 1] = objc
                 k += 1
+    return stamps
 
+
+def _replay(I, stamps, objc):
+    G = I.copy()
+    for r, c, h, w in stamps:
+        G[r:r + h + 1, c:c + w + 1] = objc
+    return G
+
+
+def derive_operations(I, O, examples=None):
+    I = np.asarray(I, dtype=int)
+    hi, wi = I.shape
+
+    # background: canvas colour, guaranteed majority (blob cells <= h*w/6)
+    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # object colour: the non-bg, non-red colour (from I, else from the demonstrations)
+    objc = None
+    for v in sorted(set(I.flatten().tolist())):
+        if v != bgc and v != 2:
+            objc = v
+    if objc is None and examples:
+        for ei, _eo in examples:
+            ei = np.asarray(ei, dtype=int)
+            eb = Counter(ei.flatten().tolist()).most_common(1)[0][0]
+            for v in sorted(set(ei.flatten().tolist())):
+                if v != eb and v != 2:
+                    objc = v
+            if objc is not None:
+                break
+    if objc is None:
+        return [34], [[0, 0, hi - 1, wi - 1]]
+
+    stamps = _block_stamps(I, bgc, objc)
+    # the rule's own full picture (derived from I alone)
+    F = _replay(I, stamps, objc)
+    # a stamp whose every changed cell is re-stamped by a later step of the rule adds
+    # nothing: drop it (same order, same grouping otherwise)
+    i = 0
+    while i < len(stamps):
+        trial = stamps[:i] + stamps[i + 1:]
+        if np.array_equal(_replay(I, trial, objc), F):
+            stamps = trial
+        else:
+            i += 1
+
+    ops, sels = [], []
+    for s in stamps:
+        # full (clipped) 2x2 stamp rectangle — the block's footprint at this step
+        ops.append(int(objc))
+        sels.append(list(s))
     ops.append(34)
     sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
@@ -184,7 +213,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

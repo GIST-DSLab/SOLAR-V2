@@ -35,173 +35,138 @@ from dsl import *    # noqa: F401,F403
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
 import numpy as np
-from collections import Counter
-
-# ---------------------------------------------------------------- helpers
-
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    lo = a + int((b - a) * diff_lb)
-    hi = a + int((b - a) * diff_ub)
-    if hi < lo:
-        hi = lo
-    return random.randint(lo, hi)
-
-
-def _mostcommon(vals):
-    return Counter(list(vals)).most_common(1)[0][0]
-
-
-# ---------------------------------------------------------------- 1. colors
-
-# The only discrete structural variant of this task is the orientation of the
-# stripes: the generator transposes (dmirror) the pair with probability 1/2,
-# turning row-bands into column-bands.  The rule itself does not depend on any
-# particular colour (each band is painted with its own majority colour), so no
-# colour role needs to be fixed - but BOTH orientations must be visible in the
-# examples, otherwise a transposed test instance would be unlearnable.
-VARIANTS = [{"mirrored": False}, {"mirrored": True}]
 
 
 def sample_colors(num_examples=None) -> dict:
+    # Every band colour is drawn fresh for each instance, and the rule does not
+    # depend on colour. The only discrete structural case is the orientation
+    # (horizontal or vertical bands), so the plan covers both.
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
+    variants = [{"transpose": False}, {"transpose": True}]
+    if n_ex >= 2:
+        ex = [dict(v) for v in variants] + [dict(random.choice(variants)) for _ in range(n_ex - 2)]
+        random.shuffle(ex)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"instance_plan": plan}
+        ex = [dict(random.choice(variants))]
+    return {"instance_plan": ex + [dict(random.choice(ex))]}
 
 
-# ---------------------------------------------------------------- 2. generate
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b <= a:
+        return a
+    d = random.uniform(diff_lb, diff_ub)
+    return min(max(a, round(a + (b - a) * d)), b)
 
-def generate(diff_lb, diff_ub, max_h, max_w, mirrored=None, **kw) -> dict:
-    if mirrored is None:
-        mirrored = random.choice([True, False])
 
+def generate(diff_lb, diff_ub, max_h=30, max_w=30, transpose=None, **kwargs) -> dict:
+    if transpose is None:
+        transpose = random.choice((True, False))
     cols = list(range(10))
-
-    # dimensions of the un-mirrored (row-band) grid
-    H = max_w if mirrored else max_h     # total number of rows
-    W = max_h if mirrored else max_w     # number of columns
-
-    H = max(4, min(30, H))
-    W = max(4, min(30, W))
-
-    maxnr = max(1, min(10, H // 2))
-    nr = _unifint(diff_lb, diff_ub, (1, maxnr))
-    w = _unifint(diff_lb, diff_ub, (4, W))
-
+    long_max = max_w if transpose else max_h   # axis the bands are stacked along
+    wid_max = max_h if transpose else max_w
+    nr = _unifint(diff_lb, diff_ub, (1, max(1, min(10, long_max // 2))))
+    w = _unifint(diff_lb, diff_ub, (4, max(4, wid_max)))
     scols = random.sample(cols, nr)
-    sgs = [[[c] * w for _ in range(2)] for c in scols]     # each band: 2 rows
-
-    max_exp = min(30 - nr, H - 2 * nr)
-    if max_exp < 0:
-        max_exp = 0
-    numexp = _unifint(diff_lb, diff_ub, (0, max_exp))
+    heights = [2] * nr
+    numexp = _unifint(diff_lb, diff_ub, (0, max(0, long_max - 2 * nr)))
     for _ in range(numexp):
-        idx = random.randint(0, nr - 1)
-        sgs[idx].append(list(sgs[idx][-1]))
-
-    sgs2 = []
-    for idx, col in enumerate(scols):
-        sg = [list(r) for r in sgs[idx]]
-        a, b = len(sg), len(sg[0])
-        ub = max(0, (a * b) // 2 - 1)
-        nnoise = _unifint(diff_lb, diff_ub, (0, ub))
-        inds = [(i, j) for i in range(a) for j in range(b)]
-        noise = random.sample(inds, nnoise)
+        heights[random.randint(0, nr - 1)] += 1
+    gi_rows, go_rows = [], []
+    for col, a in zip(scols, heights):
+        sg = [[col] * w for _ in range(a)]
+        ub = (a * w) // 2 - 1
+        nnoise = _unifint(diff_lb, diff_ub, (0, max(0, ub)))
+        inds = [(i, j) for i in range(a) for j in range(w)]
         oc = [c for c in cols if c != col]
-        for (i, j) in noise:
-            sg[i][j] = random.choice(oc)
-        # first and last row of every band keep at least half band-colour cells
-        for idxx in (0, -1):
-            while sum(1 for e in sg[idxx] if e == col) < b // 2:
-                locs = [j for j, e in enumerate(sg[idxx]) if e != col]
-                if not locs:
-                    break
-                sg[idxx][random.choice(locs)] = col
-        sgs2.append(sg)
-
-    gi = [row for sg in sgs2 for row in sg]
-    go = [row for sg in sgs for row in sg]
-
-    if mirrored:
-        gi = [list(r) for r in zip(*gi)]
-        go = [list(r) for r in zip(*go)]
-
-    return {"input": gi, "output": go}
+        sg2 = [row[:] for row in sg]
+        for (i, j) in random.sample(inds, nnoise):
+            sg2[i][j] = random.choice(oc)
+        for idxx in [0, -1]:
+            while sum(e == col for e in sg2[idxx]) < w // 2:
+                locs = [j for j, e in enumerate(sg2[idxx]) if e != col]
+                sg2[idxx][random.choice(locs)] = col
+        gi_rows += sg2
+        go_rows += sg
+    gi = np.array(gi_rows, dtype=int)
+    go = np.array(go_rows, dtype=int)
+    if transpose:
+        gi, go = gi.T, go.T
+    return {"input": gi.tolist(), "output": go.tolist()}
 
 
-# ---------------------------------------------------------------- 3. ops
-
-def _segment_bands(G):
-    """Segment a row-band grid into (start, end, colour) bands, using ONLY G.
-
-    Band colours are sampled WITHOUT replacement and every band's first/last row
-    holds at least half band-colour cells, while noise rows inside a band rarely
-    concentrate one foreign colour that far.  So: a new band starts at row r when
-    r's dominant colour is fresh (unused), reaches >= w//2 cells, and the current
-    band is already at least 2 rows long (bands are built from >= 2 rows).
-    """
+def _segment(G):
+    # Split the rows into contiguous bands, each at least 2 rows and one colour.
+    # Pick the split that leaves the most cells already holding their band's
+    # colour. Noise counts are taken over the whole band, not row by row, so a
+    # middle row that is mostly noise cannot break a band apart.
     h, w = G.shape
-    thr = max(2, w // 2)
+    cnt = np.zeros((h + 1, 10), dtype=int)
+    for r in range(h):
+        cnt[r + 1] = cnt[r] + np.bincount(G[r], minlength=10)
+    NEG = -10 ** 9
+    best = [NEG] * (h + 1)
+    back = [None] * (h + 1)
+    best[0] = 0
+    for e in range(2, h + 1):
+        for s in range(0, e - 1):
+            if best[s] == NEG:
+                continue
+            seg = cnt[e] - cnt[s]
+            col = int(np.argmax(seg))
+            sc = best[s] + int(seg[col])
+            if sc > best[e]:
+                best[e] = sc
+                back[e] = (s, col)
     bands = []
-    start = 0
-    used = set()
-    cur = _mostcommon(G[0].tolist())
-    used.add(cur)
-    r = 1
-    while r < h:
-        cnt = Counter(G[r].tolist())
-        top, n = cnt.most_common(1)[0]
-        if top != cur and top not in used and n >= thr and (r - start) >= 2 and (h - r) >= 2:
-            block = G[start:r].flatten().tolist()
-            bands.append((start, r - 1, _mostcommon(block)))
-            start = r
-            cur = top
-            used.add(cur)
-        r += 1
-    block = G[start:h].flatten().tolist()
-    bands.append((start, h - 1, _mostcommon(block)))
-    return bands
+    e = h
+    while e > 0:
+        s, col = back[e]
+        bands.append((s, e - 1, col))
+        e = s
+    bands.reverse()
+    merged = []
+    for b in bands:
+        if merged and merged[-1][2] == b[2]:
+            merged[-1] = (merged[-1][0], b[1], b[2])
+        else:
+            merged.append(b)
+    return merged, best[h]
 
 
-def derive_operations(I, O):
+def derive_operations(I, O=None, examples=None):
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
     ops, sels = [], []
 
-    # --- orientation, measured from I only -------------------------------
-    row_maj = [_mostcommon(I[r].tolist()) for r in range(hi)]
-    col_maj = [_mostcommon(I[:, c].tolist()) for c in range(wi)]
-    vertical = len(set(col_maj)) > len(set(row_maj))
+    # --- orientation, measured from I only: the axis whose band split fits best
+    if hi < 2 or wi < 2:
+        vertical = hi < 2
+    else:
+        _, sh = _segment(I)
+        _, sv = _segment(I.T)
+        vertical = sv > sh
 
-    # work in "row-band" coordinates
     G = I.T if vertical else I
-    bands = _segment_bands(G)
+    if G.shape[0] >= 2:
+        bands, _ = _segment(G)
+    else:
+        bands = [(0, G.shape[0] - 1, int(np.bincount(G.flatten(), minlength=10).argmax()))]
 
-    # --- paint every band with its own majority colour, one op per band ---
+    # --- paint every band with its own colour, one Color op per band ---
+    # Color<n> writes n straight onto the grid, including n == 0, so a band
+    # whose colour is 0 needs no special handling. No Paste/Move/Copy is used.
     for (s, e, col) in bands:
-        region = G[s:e + 1, :]
-        if np.all(region == col):
-            continue                     # band already uniform: nothing to do
+        if np.all(G[s:e + 1, :] == col):
+            continue                      # band already uniform: nothing to do
         ops.append(int(col))
         if vertical:
-            # exact full rectangle: columns s..e, all rows
-            sels.append([0, s, hi - 1, e - s])
+            sels.append([0, s, hi - 1, e - s])   # exact full rectangle: columns s..e
         else:
-            # exact full rectangle: rows s..e, all columns
-            sels.append([s, 0, e - s, wi - 1])
+            sels.append([s, 0, e - s, wi - 1])   # exact full rectangle: rows s..e
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
@@ -245,7 +210,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

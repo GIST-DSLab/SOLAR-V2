@@ -36,6 +36,7 @@ from dsl import *    # noqa: F401,F403
 import random
 import numpy as np
 from collections import Counter, deque
+from maker.sel_helpers import sel_of
 
 
 def sample_colors(num_examples=None) -> dict:
@@ -45,40 +46,69 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "fgc": fgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc, fgc) -> dict:
-    base = (ORIGIN, RIGHT, DOWN, UNITY)
-    h = unifint(diff_lb, diff_ub, (3, max_h))
-    w = unifint(diff_lb, diff_ub, (3, max_w))
-    gi = canvas(bgc, (h, w))
-    inds = totuple(asindices(gi))
-    maxnum = ((h * w) // 2) // 3
-    num = unifint(diff_lb, diff_ub, (1, max(1, maxnum)))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, fgc=None, **kwargs) -> dict:
+    def unifint(lb, ub, rng):
+        a, b = rng
+        if b < a:
+            b = a
+        lo = a + (b - a) * lb
+        hi = a + (b - a) * ub
+        return int(round(random.uniform(lo, hi)))
+
+    cols = [c for c in range(10) if c != 1]
+    if bgc is None:
+        bgc = random.choice(cols)
+    if fgc is None:
+        fgc = random.choice([c for c in cols if c != bgc])
+    base = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    h = unifint(diff_lb, diff_ub, (3, max(3, max_h)))
+    w = unifint(diff_lb, diff_ub, (3, max(3, max_w)))
+    gi = np.full((h, w), bgc, dtype=int)
+    inds = set((r, c) for r in range(h) for c in range(w))
+    maxnum = max(1, ((h * w) // 2) // 3)
+    num = unifint(diff_lb, diff_ub, (1, maxnum))
     kk, tr = 0, 0
     maxtrials = num * 2
     binds = set()
     while kk < num and tr < maxtrials:
-        loc = choice(inds)
-        ooo = choice(base)
-        oo = remove(ooo, base)
-        oop = shift(oo, loc)
-        if set(oop).issubset(inds):
-            inds = difference(inds, totuple(combine(oop, totuple(mapply(dneighbors, oop)))))
-            gi = fill(gi, fgc, oop)
-            binds.add(add(ooo, loc))
+        loc = random.choice(sorted(inds)) if inds else (0, 0)
+        ooo = random.choice(base)
+        oop = [(loc[0] + d[0], loc[1] + d[1]) for d in base if d != ooo]
+        if all(p in inds for p in oop):
+            rem = set(oop)
+            for (y, x) in oop:
+                for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    rem.add((y + dy, x + dx))
+            inds -= rem
+            for (y, x) in oop:
+                gi[y, x] = fgc
+            binds.add((loc[0] + ooo[0], loc[1] + ooo[1]))
             kk += 1
         tr += 1
-    go = fill(gi, 1, binds)
-    return {'input': gi, 'output': go}
+    go = gi.copy()
+    for (y, x) in binds:
+        if 0 <= y < h and 0 <= x < w and go[y, x] == bgc:
+            go[y, x] = 1
+    return {"input": gi.tolist(), "output": go.tolist()}
 
 
-def derive_operations(I, O):
+def derive_operations(I, O, examples=None):
     # Rule read off I: every foreground component is a 2x2 square with exactly one
     # corner missing (an L-tromino). The hole of each square becomes color 1.
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     h, w = I.shape
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+    # background: shared across the episode, so pool the demonstration inputs with I
+    cnt = Counter(I.flatten().tolist())
+    if examples:
+        for ex in examples:
+            try:
+                ei = ex[0] if not isinstance(ex, dict) else ex["input"]
+                cnt.update(np.asarray(ei, dtype=int).flatten().tolist())
+            except Exception:
+                pass
+    bgc = cnt.most_common(1)[0][0]
 
     seen = np.zeros((h, w), dtype=bool)
     groups = {}
@@ -86,7 +116,6 @@ def derive_operations(I, O):
         for c in range(w):
             if I[r, c] == bgc or seen[r, c]:
                 continue
-            # collect one whole object (4-connected, same color) before doing anything
             comp = []
             dq = deque([(r, c)])
             seen[r, c] = True
@@ -109,15 +138,18 @@ def derive_operations(I, O):
             if len(missing) != 1:
                 continue
             my, mx = missing[0]
-            # group objects by which corner of their 2x2 square is open
             groups.setdefault((my == r0, mx == c0), []).append((my, mx))
 
     ops, sels = [], []
-    # emit one corner-orientation family at a time
+    painted = set()
     for key in ((True, True), (True, False), (False, True), (False, False)):
         for (my, mx) in groups.get(key, []):
+            # two squares can share one hole (pinwheel); it is already 1 after the first paint
+            if (my, mx) in painted:
+                continue
+            painted.add((my, mx))
             ops.append(1)
-            sels.append([my, mx, 0, 0])
+            sels.append(sel_of([(my, mx)]))
 
     ops.append(34)
     sels.append([0, 0, h - 1, w - 1])
@@ -164,7 +196,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

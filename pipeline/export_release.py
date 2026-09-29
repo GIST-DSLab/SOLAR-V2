@@ -104,7 +104,14 @@ SUBSETS = {
         # the release for months. b782dc8a's repair costs it a little of the
         # zero axis (1.00 to 0.86) and is taken anyway -- reading the answer is
         # the heavier fault.
-        root=DATA_ROOT / "ARC_rearc_draw18" / "whole",
+        # draw19 closes the rest of what that first full sweep found. Eight
+        # makers that lost cells wherever 0 was a colour, thirteen that emitted
+        # an operation the route reaches the answer without, and the three left
+        # consulting the answer on one pair in eight. Two of the ten the zero
+        # axis had named were not faults at all: they read their demonstrations,
+        # and the axis was handing them demonstrations built from other drawn
+        # pairs, each with its own palette.
+        root=DATA_ROOT / "ARC_rearc_draw19" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # what the maker set is called in the release; the working tree keeps its

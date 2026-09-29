@@ -433,16 +433,41 @@ def copy_pairs(pairs):
     return out
 
 
-def zero_rate(derive, pairs):
-    """Solved, over the drawn instances whose target carries a 0.
+def zero_rate(derive, pairs, eps=None):
+    """Solved, over the instances whose target carries a 0.
 
     Paste, CopyI and CopyO treat 0 as nothing there, so a maker that replicates
     a region drops whatever role the palette gave 0 to. The palette gives it
     only sometimes, which is why the miss survived a release: seven makers
     solve every instance without a 0 in the target and as little as none of the
-    ones with. Measured on drawn instances rather than on episodes, because a
-    rollout keeps only what solved.
+    ones with. Drawn instances are the right place to look, because a rollout
+    keeps only what solved and so cannot show a failure.
+
+    But a maker that reads its demonstrations cannot be handed demonstrations
+    built out of other drawn pairs: each pair draws its own palette, so the
+    convention the maker is reading is not the one its test was coloured with.
+    That is the fault holds.py exists to prevent, reintroduced here. d13f3404
+    and d23f8c26 scored 0.27 and 0.24 on invented demonstrations and answer
+    every zero-carrying episode in the real draw. So a maker that takes them is
+    measured on real episodes instead, and the answer says so: episodes cannot
+    show a failure the rollout already dropped, and a rate from them is a lower
+    bound on the trouble, not a measurement of it.
     """
+    reads_demos = False
+    try:
+        reads_demos = len(inspect.signature(derive).parameters) >= 3
+    except (TypeError, ValueError):
+        pass
+    if reads_demos:
+        if not eps:
+            return 0, 0                     # unmeasurable, not clean
+        cases = [(ex, t) for ex, t in eps if 0 in np.unique(t[1])]
+        solved = 0
+        for ex, (I, O) in cases:
+            shown = [(a.tolist(), b.tolist()) for a, b in ex]
+            g, _, _ = replay(derive, I, O, shown)
+            solved += g is not None and g.shape == O.shape and bool((g == O).all())
+        return solved, len(cases)
     solved = seen = 0
     for i, (I, O) in enumerate(pairs):
         if 0 not in np.unique(O):
@@ -506,7 +531,7 @@ def score(task: str, maker_path: Path, pairs, cpairs, want: set[int],
                                    for i, n in found]
         else:
             missed.append(i)
-    zsolved, zseen = zero_rate(derive, drawn)
+    zsolved, zseen = zero_rate(derive, drawn, eps)
     dep = depends_on_O(derive, pairs[:8], np.random.default_rng(0))
     copied = 0
     for I, P in cpairs:
@@ -716,7 +741,14 @@ def pick(scores: dict, incumbent: str, order: list,
     zs = [v["zero"] for v in good.values() if v.get("zero") is not None]
     if zs:
         zv = max(zs)
-        if base is None or base.get("zero") is None or zv > base["zero"] + 0.15:
+        # A candidate that answers every one of them is exempt from the margin.
+        # The margin exists because a rate on twenty-odd instances moves by a
+        # few points on noise; reaching 1.00 is not a few points, it is no
+        # failures left. b782dc8a's repair went 0.86 to 1.00 and the margin
+        # refused it by a point.
+        if (base is None or base.get("zero") is None
+                or zv >= 1.0 - 1e-9 > base["zero"]
+                or zv > base["zero"] + 0.15):
             good = {k: v for k, v in good.items()
                     if v.get("zero") is None or v["zero"] >= zv - 1e-9}
     sv = max(v["solve"] for v in good.values())

@@ -132,10 +132,14 @@ def derive_operations(I, O, examples=None):
                     all(I[r1, j] == c for j in range(c0, c1 + 1))
         cols_full = all(I[i, c0] == c for i in range(r0, r1 + 1)) and \
                     all(I[i, c1] == c for i in range(r0, r1 + 1))
-        if rows_full and len(pts) == 2 * ww + 4:
+        stubs_h = hh >= 4 and ww >= 3 and all(
+            I[a, b] == c for a, b in ((r0 + 1, c0), (r0 + 1, c1), (r1 - 1, c0), (r1 - 1, c1)))
+        stubs_v = ww >= 4 and hh >= 3 and all(
+            I[a, b] == c for a, b in ((r0, c0 + 1), (r1, c0 + 1), (r0, c1 - 1), (r1, c1 - 1)))
+        if rows_full and stubs_h and len(pts) == 2 * ww + 4:
             boxc, horizontal = c, True
             break
-        if cols_full and len(pts) == 2 * hh + 4:
+        if cols_full and stubs_v and len(pts) == 2 * hh + 4:
             boxc, horizontal = c, False
             break
     if boxc is None:
@@ -157,6 +161,7 @@ def derive_operations(I, O, examples=None):
     else:
         groups = [[p for p in obj if p[1] < bc0], [p for p in obj if p[1] > bc1]]
 
+    clip = None   # what the clipboard currently holds (visible state)
     for gi, cells in enumerate(groups):
         if not cells:
             continue
@@ -181,8 +186,25 @@ def derive_operations(I, O, examples=None):
         do_paste = not np.array_equal(np.where(rect != 0, rect, tgt), tgt)
 
         # 1. grab the region from the input (whole rectangle, background included)
-        if do_paste:
+        #    -- unless the clipboard already lays down exactly the same thing at the
+        #    destination (e.g. the other side's pattern was identical): then a fresh
+        #    copy would change nothing.
+        def _paste(grid, src):
+            out = grid.copy()
+            sh = min(src.shape[0], H - dest_r)
+            sw = min(src.shape[1], W - dest_c)
+            blk = out[dest_r:dest_r + sh, dest_c:dest_c + sw]
+            s_ = src[:sh, :sw]
+            out[dest_r:dest_r + sh, dest_c:dest_c + sw] = np.where(s_ != 0, s_, blk)
+            return out
+        after_erase = G.copy()
+        for r, c in cells:
+            after_erase[r, c] = bgc
+        clip_same = clip is not None and \
+            np.array_equal(_paste(after_erase, clip), _paste(after_erase, rect))
+        if do_paste and not clip_same:
             ops.append(28); sels.append([r0, c0, hh - 1, ww - 1])
+            clip = rect.copy()
 
         # 2. the pattern leaves its place outside the frame
         ops.append(int(bgc)); sels.append(sel_of(cells))

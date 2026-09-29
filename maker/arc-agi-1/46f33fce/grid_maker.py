@@ -33,41 +33,60 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
+from collections import Counter
+
+import numpy as np
+
+
 def sample_colors(num_examples=None) -> dict:
-    cols = list(range(10))
-    bgc = choice(cols)
+    # Only the background is sampled once per episode. Each pixel's colour is drawn
+    # at random for every instance, and the rule copies whatever colour it finds.
+    bgc = random.choice(list(range(10)))
     return {"bgc": bgc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int) -> dict:
-    cols = interval(0, 10, 1)
-    h_ub = max(2, min(7, max_h // 4))
-    w_ub = max(2, min(7, max_w // 4))
-    h = unifint(diff_lb, diff_ub, (2, h_ub))
-    w = unifint(diff_lb, diff_ub, (2, w_ub))
-    nc = unifint(diff_lb, diff_ub, (0, (h * w) // 2 - 1))
-    remcols = remove(bgc, cols)
-    go = canvas(bgc, (h, w))
-    gi = canvas(bgc, (h * 2, w * 2))
-    inds = totuple(asindices(go))
-    locs = sample(inds, nc)
-    objo = frozenset({(choice(remcols), ij) for ij in locs})
-    f = lambda cij: (cij[0], double(cij[1]))
-    obji = shift(apply(f, objo), (1, 1))
-    gi = paint(gi, obji)
-    go = paint(go, objo)
-    go = upscale(go, 4)
-    return {'input': gi, 'output': go}
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, **kwargs) -> dict:
+    def unifint(lb, ub, rng):
+        a, b = rng
+        if b < a:
+            b = a
+        lo = a + (b - a) * lb
+        hi_ = a + (b - a) * ub
+        return max(a, min(b, round(random.uniform(lo, hi_))))
+
+    cols = list(range(10))
+    if bgc is None:
+        bgc = random.choice(cols)
+    # The output is 4x the logical size, so keep it inside max_h / max_w.
+    hub = max(2, min(7, max_h // 4))
+    wub = max(2, min(7, max_w // 4))
+    h = unifint(diff_lb, diff_ub, (2, hub))
+    w = unifint(diff_lb, diff_ub, (2, wub))
+    nc = unifint(diff_lb, diff_ub, (0, max(0, (h * w) // 2 - 1)))
+    remcols = [c for c in cols if c != bgc]
+
+    go = [[bgc] * w for _ in range(h)]
+    gi = [[bgc] * (w * 2) for _ in range(h * 2)]
+    inds = [(i, j) for i in range(h) for j in range(w)]
+    locs = random.sample(inds, nc)
+    for (i, j) in locs:
+        col = random.choice(remcols)
+        go[i][j] = col
+        gi[2 * i + 1][2 * j + 1] = col
+
+    out = [[go[r // 4][c // 4] for c in range(w * 4)] for r in range(h * 4)]
+    return {"input": gi, "output": out}
 
 
-def derive_operations(I, O):
+def derive_operations(I, O, examples=None):
     import numpy as np
     from collections import Counter
 
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
+    # The output size comes from the rule applied to I (the canvas doubles), not from O.
+    ho, wo = 2 * hi, 2 * wi
 
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
@@ -78,24 +97,23 @@ def derive_operations(I, O):
 
     ops, sels = [], []
 
-    # Canvas doubles to (2*hi, 2*wi).
+    # Canvas doubles to (2*hi, 2*wi). This is the full canvas rectangle.
     ops.append(33)
     sels.append([0, 0, ho - 1, wo - 1])
 
     if bgc != 0:
         # Resize left the new area at 0; the whole canvas must become background
-        # before the scaled blocks are placed on top.
+        # before the scaled blocks are placed on top. This is the full canvas rectangle.
         ops.append(bgc)
         sels.append([0, 0, ho - 1, wo - 1])
     else:
         # Zero padding already IS background; only the original pixels are stale.
+        # Clear every one of them as the base layer; the blocks are drawn on top afterwards.
         for (r, c, _v) in pixels:
-            if O[r, c] != 0:
-                continue  # a block will overwrite this cell anyway
             ops.append(0)
             sels.append([r, c, 0, 0])
 
-    # Place each pixel's 4x4 block at its scaled position.
+    # Place each pixel's 4x4 block at its scaled position (each block is a full rectangle).
     for (r, c, v) in pixels:
         ops.append(v)
         sels.append([2 * r - 2, 2 * c - 2, 3, 3])
@@ -145,7 +163,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

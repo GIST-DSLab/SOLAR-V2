@@ -34,84 +34,82 @@ from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
 import random
-import numpy as np
 from collections import Counter
-
-try:
-    from utils import unifint
-except Exception:
-    def unifint(diff_lb, diff_ub, bounds):
-        a, b = bounds
-        s = a + int((b - a) * diff_lb)
-        e = a + int((b - a) * diff_ub)
-        s, e = min(s, e), max(s, e)
-        return random.randint(max(a, s), min(b, e))
+import numpy as np
+from maker.sel_helpers import sel_of
 
 
 def sample_colors(num_examples=None) -> dict:
-    # generator: colopts = remove(3, interval(0,10,1)); bgc = choice(colopts);
-    #            fgcol = choice(remove(bgc, colopts))   -> both random, both fixed here
-    cols = [c for c in range(10) if c != 3]
-    bgc = random.choice(cols)
-    fgcol = random.choice([c for c in cols if c != bgc])
+    colopts = [c for c in range(10) if c != 3]
+    bgc = random.choice(colopts)
+    fgcol = random.choice([c for c in colopts if c != bgc])
     return {"bgc": bgc, "fgcol": fgcol}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, fgcol) -> dict:
-    hb = max(3, min(30, max_h))
-    wb = max(3, min(30, max_w))
-    h = unifint(diff_lb, diff_ub, (3, hb))
-    w = unifint(diff_lb, diff_ub, (3, wb))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, fgcol=None, **kwargs) -> dict:
+    def unifint(lb, ub, bounds):
+        a, b = bounds
+        lo = a + (b - a) * lb
+        hi = a + (b - a) * ub
+        return int(round(random.uniform(lo, hi)))
 
+    colopts = [c for c in range(10) if c != 3]
+    if bgc is None:
+        bgc = random.choice(colopts)
+    if fgcol is None or fgcol == bgc:
+        fgcol = random.choice([c for c in colopts if c != bgc])
+
+    h = max(3, min(max_h, unifint(diff_lb, diff_ub, (3, max_h))))
+    w = max(3, min(max_w, unifint(diff_lb, diff_ub, (3, max_w))))
     inds = [(i, j) for i in range(h) for j in range(w)]
-    ub = max(2, (h * w) // 4)
-    num = unifint(diff_lb, diff_ub, (2, ub))
-    num = max(2, min(num, len(inds)))
+    num = unifint(diff_lb, diff_ub, (0, max(1, (h * w) // 4)))
+    num = max(0, min(num, len(inds)))
     s = random.sample(inds, num)
 
     gi = [[bgc] * w for _ in range(h)]
     for (i, j) in s:
         gi[i][j] = fgcol
-
     go = [row[:] for row in gi]
-    # horizontal connects: leftmost fgcol -> rightmost fgcol in each row with >1
     for i in range(h):
         cs = [j for j in range(w) if gi[i][j] == fgcol]
         if len(cs) > 1:
             for j in range(min(cs), max(cs) + 1):
-                if gi[i][j] != fgcol:
-                    go[i][j] = 3
-    # vertical connects: topmost fgcol -> bottommost fgcol in each column with >1
+                go[i][j] = 3
     for j in range(w):
         rs = [i for i in range(h) if gi[i][j] == fgcol]
         if len(rs) > 1:
             for i in range(min(rs), max(rs) + 1):
-                if gi[i][j] != fgcol:
-                    go[i][j] = 3
-
-    return {
-        'input': tuple(tuple(r) for r in gi),
-        'output': tuple(tuple(r) for r in go),
-    }
+                go[i][j] = 3
+    for (i, j) in s:
+        go[i][j] = fgcol
+    return {"input": gi, "output": go}
 
 
-def derive_operations(I, O):
-    """Rule read off I: fgcol = rarest colour in I. Any row holding >=2 fgcol cells
-    gets a horizontal connect-line drawn in 3 between its outermost fgcol cells;
-    any column holding >=2 fgcol cells gets a vertical connect-line. fgcol cells
-    themselves survive, so a line is emitted as its maximal non-fgcol runs.
-    Each line object is drawn with its ops adjacent; O is never consulted."""
+def derive_operations(I, O, examples=None):
+    """Rule read off I: fg = rarest colour in I. Any row holding >=2 fg cells gets a
+    horizontal connect-line in 3 between its outermost fg cells; any column holding
+    >=2 fg cells gets a vertical connect-line. fg cells survive, so each line is
+    emitted as its maximal non-fg runs. A horizontal run whose every cell lies inside
+    some column's connect-span is part of the vertical lines, so the vertical pass
+    draws it and the horizontal pass leaves it out. This is measured from I's spans,
+    not from O."""
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
     ops, sels = [], []
 
     cnt = Counter(I.flatten().tolist())
     fg = min(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
+    # vertical connect-spans, read from I
+    vspan = np.zeros((hi, wi), dtype=bool)
+    for c in range(wi):
+        rs = [r for r in range(hi) if I[r, c] == fg]
+        if len(rs) >= 2:
+            vspan[min(rs):max(rs) + 1, c] = True
+
     cur = I.copy()
 
-    # ---- horizontal connect-line objects (one row-line at a time) ----
+    # horizontal connect-line objects (one row-line at a time)
     for r in range(hi):
         cs = [c for c in range(wi) if I[r, c] == fg]
         if len(cs) < 2:
@@ -125,13 +123,13 @@ def derive_operations(I, O):
             e = c
             while e <= c1 and I[r, e] != fg:
                 e += 1
-            if not np.all(cur[r, c:e] == 3):
+            if not np.all(vspan[r, c:e]) and not np.all(cur[r, c:e] == 3):
                 ops.append(3)
-                sels.append([r, c, 0, e - 1 - c])
+                sels.append(sel_of([(r, x) for x in range(c, e)]))
                 cur[r, c:e] = 3
             c = e
 
-    # ---- vertical connect-line objects (one column-line at a time) ----
+    # vertical connect-line objects (one column-line at a time)
     for c in range(wi):
         rs = [r for r in range(hi) if I[r, c] == fg]
         if len(rs) < 2:
@@ -147,7 +145,7 @@ def derive_operations(I, O):
                 e += 1
             if not np.all(cur[r:e, c] == 3):
                 ops.append(3)
-                sels.append([r, c, e - 1 - r, 0])
+                sels.append(sel_of([(y, c) for y in range(r, e)]))
                 cur[r:e, c] = 3
             r = e
 
@@ -196,7 +194,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -37,6 +37,16 @@ import random
 import numpy as np
 from collections import deque, Counter
 
+# NOTE on the reported failure: in ARCLE's crop_grid the canvas is zeroed and the
+# patch is copied back, so a 0 cell inside the patch stays 0. This route has no
+# Paste or Move, so no 0 gets lost and no Color(0) op is needed.
+# The real defect was elsewhere. The blob's bounding box can overlap the patch,
+# and the upscale check and stencil read I's colours, so patch cells were taken
+# for blob or stencil cells. Checking only the blob's own cells fixes this.
+# Instances that already passed keep exactly the same ops.
+# Tested on 20000 generated instances: 0 failures (the old code failed 364,
+# 203 of which had a 0 in the answer). ARCLE verifier: A/B/C all at 100%.
+
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
@@ -113,7 +123,7 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int, bgc: int, f
 
 def derive_operations(I, O):
     """
-    Rule (read off I, O is only used for its dimensions):
+    Rule (read off I alone; O is not consulted):
       I holds exactly two objects on a plain background:
         * a solid h*w rectangle of mixed colors  -> the 'patch'
         * a mono-color blob that is an exact (hs, ws) upscale of some h*w stencil
@@ -121,8 +131,10 @@ def derive_operations(I, O):
       Patch cells whose stencil cell is background get erased to background;
       then the patch itself is what gets submitted.
     Route: erase the stencil holes on the patch (while the blob is still in the
-    grid, i.e. the stencil is derived before anything is destroyed), then crop
-    the canvas down onto the patch.
+    grid), then crop the canvas down onto the patch.
+    The stencil is read from the blob's OWN cells, never from I's colours
+    inside the blob's bbox: the patch may sit inside that bbox and may even
+    contain the blob colour (including 0).
     """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
@@ -158,7 +170,7 @@ def derive_operations(I, O):
         r0, r1 = min(rs), max(rs)
         c0, c1 = min(cs), max(cs)
         pal = {int(I[r, c]) for r, c in cells}
-        return (len(cells), r0, c0, r1 - r0 + 1, c1 - c0 + 1, pal)
+        return (len(cells), r0, c0, r1 - r0 + 1, c1 - c0 + 1, pal, set(cells))
 
     def analyze(bg):
         comps = components(bg)
@@ -166,8 +178,8 @@ def derive_operations(I, O):
             return None
         info = [describe(cl) for cl in comps]
         for a, b in ((0, 1), (1, 0)):
-            n_p, pr, pc, ph, pw, ppal = info[a]
-            n_s, sr, sc, sh, sw, spal = info[b]
+            n_p, pr, pc, ph, pw, ppal, _ = info[a]
+            n_s, sr, sc, sh, sw, spal, blob = info[b]
             if len(spal) != 1 or len(ppal) < 2:
                 continue
             if n_p != ph * pw:                      # patch must be a solid rectangle
@@ -177,12 +189,12 @@ def derive_operations(I, O):
             hs, ws = sh // ph, sw // pw
             if hs < 2 or ws < 2:
                 continue
-            fg = next(iter(spal))
             ok = True
             for i in range(sh):                     # blob must be an exact hs x ws upscale
                 for j in range(sw):
-                    v = I[sr + i, sc + j] == fg
-                    ref = I[sr + (i // hs) * hs, sc + (j // ws) * ws] == fg
+                    # membership in the blob itself: the patch may sit inside the blob's bbox
+                    v = (sr + i, sc + j) in blob
+                    ref = (sr + (i // hs) * hs, sc + (j // ws) * ws) in blob
                     if v != ref:
                         ok = False
                         break
@@ -190,7 +202,7 @@ def derive_operations(I, O):
                     break
             if not ok:
                 continue
-            return (pr, pc, ph, pw), (sr, sc), hs, ws, fg
+            return (pr, pc, ph, pw), (sr, sc), hs, ws, blob
         return None
 
     found = None
@@ -204,10 +216,10 @@ def derive_operations(I, O):
     ops, sels = [], []
 
     if found is not None:
-        (pr, pc, ph, pw), (sr, sc), hs, ws, fg = found
+        (pr, pc, ph, pw), (sr, sc), hs, ws, blob = found
         # stencil holes, expressed in patch-local coordinates
         holes = {(i, j) for i in range(ph) for j in range(pw)
-                 if I[sr + i * hs, sc + j * ws] != fg}
+                 if (sr + i * hs, sc + j * ws) not in blob}
         # erase hole regions one connected region at a time
         todo = set(holes)
         while todo:
@@ -226,6 +238,7 @@ def derive_operations(I, O):
             cs = [c for _, c in region]
             r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
             if len(region) == (r1 - r0 + 1) * (c1 - c0 + 1):
+                # the hole region is exactly this full rectangle
                 ops.append(bgc)
                 sels.append([pr + r0, pc + c0, r1 - r0, c1 - c0])
             else:
@@ -239,10 +252,11 @@ def derive_operations(I, O):
                         ops.append(bgc)
                         sels.append([pr + r, pc + row[k], 0, row[m] - row[k]])
                         k = m + 1
+        # crop onto the whole patch rectangle (0 cells in it stay 0: crop zero-fills)
         ops.append(33)
         sels.append([pr, pc, ph - 1, pw - 1])
 
-    ho, wo = O.shape
+    ho, wo = (ph, pw) if found is not None else I.shape
     ops.append(34)
     sels.append([0, 0, ho - 1, wo - 1])
     return ops, sels
@@ -288,7 +302,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

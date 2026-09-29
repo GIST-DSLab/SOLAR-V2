@@ -33,18 +33,17 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-# ----------------------------------------------------------------- variants
+from maker.sel_helpers import sel_of
+from collections import Counter
+import numpy as np
+import random
+
 # The only discrete structure is WHICH WAY the 5-cell arrow points, i.e. on
 # which side of the object its mirrored copy is laid down.  sgn picks the
 # arrow's handedness (left/right before the whole-grid rotation), rot_idx the
 # rotation.  These four entries already realise all four visible directions:
 #   (sgn +1, rot 0) -> right   (sgn -1, rot 0) -> left
 #   (sgn +1, rot 1) -> down    (sgn +1, rot 3) -> up
-from maker.sel_helpers import sel_of
-from collections import Counter
-import numpy as np
-import random
-
 CORE_VARIANTS = [
     {"sgn": 1,  "rot_idx": 0},
     {"sgn": -1, "rot_idx": 0},
@@ -61,7 +60,7 @@ VARIANTS = CORE_VARIANTS + [
 
 def sample_colors(num_examples=None) -> dict:
     cols = list(range(10))
-    bgc, objc, indc = sample(cols, 3)
+    bgc, objc, indc = random.sample(cols, 3)
 
     n_ex = num_examples if num_examples else 3
     if n_ex >= len(CORE_VARIANTS):
@@ -198,46 +197,57 @@ def _copy_cells(cells, d):
     return out, (r0 + dr * oh, c0 + dc * ow, oh, ow)
 
 
-def derive_operations(I, O):
+def derive_operations(I, O, examples=None):
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
     ops, sels = [], []
 
-    diff = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] != O[r, c]]
+    # background: the colour every demonstration input is drawn on
+    cnt = Counter(I.flatten().tolist())
+    for ex_i, _ in (examples or []):
+        cnt.update(np.asarray(ex_i, dtype=int).flatten().tolist())
+    bgc = cnt.most_common(1)[0][0]
 
-    bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
     groups = {}
     for r in range(hi):
         for c in range(wi):
             v = int(I[r, c])
             if v != bgc:
                 groups.setdefault(v, set()).add((r, c))
+    if not groups:
+        return [34], [[0, 0, hi - 1, wi - 1]]
 
-    # the object that gets duplicated is the one the new cells are made of
-    main_col = int(O[diff[0][0], diff[0][1]]) if diff else None
-    if main_col not in groups:
-        if not groups:
-            return [34], [[0, 0, ho - 1, wo - 1]]
-        main_col = max(groups, key=lambda k: len(groups[k]))
+    # the duplicated object's colour is the one the demonstrations grow
+    main_col = None
+    grown = Counter()
+    for ex_i, ex_o in (examples or []):
+        ex_i = np.asarray(ex_i, dtype=int)
+        ex_o = np.asarray(ex_o, dtype=int)
+        if ex_i.shape != ex_o.shape:
+            continue
+        for v in np.unique(ex_o).tolist():
+            if int((ex_o == v).sum()) > int((ex_i == v).sum()):
+                grown[int(v)] += 1
+    for v, _ in grown.most_common():
+        if v in groups:
+            main_col = v
+            break
+    if main_col is None:
+        # no usable demonstration: the marker is the arrow-shaped object
+        arrows = [k for k in groups if _is_arrow_like(groups[k])]
+        rest = [k for k in groups if k not in arrows]
+        if rest:
+            main_col = max(rest, key=lambda k: len(groups[k]))
+        else:
+            main_col = max(groups, key=lambda k: len(groups[k]))
     others = [k for k in groups if k != main_col]
     main = groups[main_col]
     arrow = groups[others[0]] if others else set()
 
-    # direction: read it off the arrow; keep the reading that actually
-    # reproduces the new cells when the arrow shape is ambiguous
-    cands = (_edge_direction(arrow) if arrow else []) or \
-        [(1, 0), (-1, 0), (0, 1), (0, -1)]
-    d, cells, box = None, None, None
-    for cand in cands:
-        cc, bb = _copy_cells(main, cand)
-        on = {(r, c) for (r, c) in cc if 0 <= r < hi and 0 <= c < wi}
-        if not diff or on == set(diff):
-            d, cells, box = cand, cc, bb
-            break
-    if d is None:
-        d, cells, box = cands[0], *_copy_cells(main, cands[0])
+    # direction: the side of the arrow's 3x3 box holding two of its cells
+    cands = (_edge_direction(arrow) if arrow else []) or [(1, 0)]
+    d = cands[0]
+    cells, box = _copy_cells(main, d)
 
     dst_r, dst_c, oh, ow = box
     on_grid = sorted((r, c) for (r, c) in cells if 0 <= r < hi and 0 <= c < wi)
@@ -259,7 +269,7 @@ def derive_operations(I, O):
         # cannot be pasted — draw the mirrored object directly instead.
         ops.append(main_col); sels.append(sel_of(on_grid))
 
-    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 

@@ -67,7 +67,6 @@ def _e67_halves(I):
     for A, B in opts:
         a, b = sub(A), sub(B)
         ca, cb = _e67_most(a), _e67_most(b)
-        # true split: each panel's dominant colour is wholly absent from the other
         if ca != cb and not (a == cb).any() and not (b == ca).any():
             good.append((A, B))
     if len(good) != 1:
@@ -105,8 +104,7 @@ def _e67_comps(g, bg):
 
 def _e67_boxes(lg, cv):
     """Legend background = the colour (absent from the canvas panel) whose
-    complement is exactly a set of solid, two-coloured rectangles = the boxes.
-    Never assume it is the majority colour: dense boxes can outnumber it."""
+    complement is exactly a set of solid, two-coloured rectangles = the boxes."""
     lgc = set(lg.flatten().tolist())
     cvc = set(cv.flatten().tolist())
     for bg in sorted(lgc - cvc, key=lambda c: -int((lg == c).sum())):
@@ -129,12 +127,20 @@ def _e67_boxes(lg, cv):
 
 
 def _e67_find(cv, bg, rh, rw, obj):
-    """Where this box's marks sit on the canvas: marks matching, and every other
-    cell of the box footprint plus its surrounding ring still plain background."""
+    """Every place this box's marks sit on the canvas: marks matching, and every
+    other cell of the box footprint plus its surrounding ring plain background."""
     H, W = cv.shape
+    rel = sorted(obj.keys())
+    ar, ac = rel[0]
+    acol = obj[(ar, ac)]
     hits = []
-    for dr in range(H - rh + 1):
-        for dc in range(W - rw + 1):
+    for r in range(H):
+        for c in range(W):
+            if cv[r, c] != acol:
+                continue
+            dr, dc = r - ar, c - ac
+            if dr < 0 or dc < 0 or dr + rh > H or dc + rw > W:
+                continue
             ok = True
             for i in range(rh):
                 for j in range(rw):
@@ -157,12 +163,48 @@ def _e67_find(cv, bg, rh, rw, obj):
                     break
             if ok:
                 hits.append((dr, dc))
-                if len(hits) > 1:
-                    return hits
     return hits
 
 
+def _e67_cover(marks, cands):
+    """Pick the placements that account for the canvas marks: every mark cell
+    claimed by exactly one box, no box used twice, no two boxes overlapping."""
+    by_cell = {}
+    for k, (_bi, _dr, _dc, cells, _foot) in enumerate(cands):
+        for cell in cells:
+            by_cell.setdefault(cell, []).append(k)
+    sols = []
+    budget = [50000]
+
+    def dfs(covered, usedbox, usedfoot, acc):
+        nxt = None
+        for cell in marks:
+            if cell not in covered:
+                nxt = cell
+                break
+        if nxt is None:
+            sols.append(list(acc))
+            return
+        for k in by_cell.get(nxt, ()):
+            budget[0] -= 1
+            if budget[0] <= 0 or len(sols) >= 2:
+                return
+            bi, _dr, _dc, cells, foot = cands[k]
+            if bi in usedbox or (cells & covered) or (foot & usedfoot):
+                continue
+            acc.append(k)
+            dfs(covered | cells, usedbox | {bi}, usedfoot | foot, acc)
+            acc.pop()
+            if len(sols) >= 2:
+                return
+
+    dfs(frozenset(), frozenset(), frozenset(), [])
+    return sols, budget[0] <= 0
+
+
 def _e67_plan(I):
+    """Read the rule off the input alone: the canvas panel, the box fill colour,
+    and every (template box -> place on the canvas) stamp it asks for."""
     I = np.asarray(I, dtype=int)
     C, L = _e67_halves(I)
     cv = I[C[0]:C[0] + C[2], C[1]:C[1] + C[3]]
@@ -170,8 +212,8 @@ def _e67_plan(I):
     bg_cv = _e67_most(cv)
     comps = _e67_boxes(lg, cv)
     cnt = Counter(int(lg[y, x]) for cells in comps for y, x in cells)
-    sqc = cnt.most_common(1)[0][0] if cnt else bg_cv   # box fill dominates the boxes
-    stamps, amb = [], False
+    sqc = cnt.most_common(1)[0][0] if cnt else bg_cv
+    boxes, cands = [], []
     for cells in comps:
         ys = [y for y, _ in cells]
         xs = [x for _, x in cells]
@@ -180,11 +222,23 @@ def _e67_plan(I):
         obj = {(y - r0, x - c0): int(lg[y, x]) for y, x in cells if lg[y, x] != sqc}
         if not obj:
             continue
-        hits = _e67_find(cv, bg_cv, rh, rw, obj)
-        if len(hits) > 1:
-            amb = True
-        if hits:
-            stamps.append((hits[0][0], hits[0][1], L[0] + r0, L[1] + c0, rh, rw, obj))
+        bi = len(boxes)
+        boxes.append((L[0] + r0, L[1] + c0, rh, rw, obj))
+        for (dr, dc) in _e67_find(cv, bg_cv, rh, rw, obj):
+            mcells = frozenset((dr + i, dc + j) for (i, j) in obj)
+            foot = frozenset((dr + i, dc + j)
+                             for i in range(rh) for j in range(rw))
+            cands.append((bi, dr, dc, mcells, foot))
+    marks = sorted((r, c) for r in range(cv.shape[0]) for c in range(cv.shape[1])
+                   if cv[r, c] != bg_cv)
+    sols, spent = _e67_cover(marks, cands)
+    amb = spent or len(sols) != 1
+    stamps = []
+    if sols:
+        for k in sols[0]:
+            bi, dr, dc, _mc, _ft = cands[k]
+            sr, sc, rh, rw, obj = boxes[bi]
+            stamps.append((dr, dc, sr, sc, rh, rw, obj))
     stamps.sort(key=lambda s: (s[0], s[1]))
     return C, sqc, stamps, amb
 
@@ -260,7 +314,7 @@ def _e67_build(diff_lb, diff_ub, max_h, max_w, bgc1, bgc2, sqc):
 
 
 def generate(diff_lb, diff_ub, max_h, max_w, bgc1, bgc2, sqc) -> dict:
-    # a mark pattern that fits the canvas in two places makes the instance
+    # a mark pattern that fits the canvas in two ways makes the instance
     # unsolvable-in-principle -> resample until the rule pins one answer
     for _ in range(200):
         gi, go = _e67_build(diff_lb, diff_ub, max_h, max_w, bgc1, bgc2, sqc)
@@ -271,23 +325,23 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc1, bgc2, sqc) -> dict:
     raise ValueError("no unambiguous instance")
 
 
-def derive_operations(I, O):
+def derive_operations(I, O=None, examples=None):
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    ho, wo = O.shape
     ops, sels = [], []
     C, sqc, stamps, _amb = _e67_plan(I)
-    # 1. keep the canvas panel, drop the legend panel
-    ops.append(33); sels.append([C[0], C[1], C[2] - 1, C[3] - 1])
+    ch, cw = C[2], C[3]
+    # 1. keep the canvas panel, drop the legend panel (exact rectangle -> bbox)
+    ops.append(33); sels.append([C[0], C[1], ch - 1, cw - 1])
     # 2. per matched box: copy that box out of the input, paste it over its marks.
-    #    Paste is mark-transparent, so marks already on the canvas stay put.
-    #    Only when the box fill is 0 (which Paste cannot write) clear it first.
+    #    Paste is mark-transparent, so marks already on the canvas stay put
+    #    (a mark of colour 0 is already 0 there, so it needs no extra op).
+    #    Only when the box fill is 0 (which Paste cannot write) lay it down first.
     for dr, dc, sr, sc, rh, rw, obj in stamps:
         if sqc == 0:
             ops.append(0); sels.append([dr, dc, rh - 1, rw - 1])
         ops.append(28); sels.append([sr, sc, rh - 1, rw - 1])
         ops.append(30); sels.append([dr, dc, 0, 0])
-    ops.append(34); sels.append([0, 0, ho - 1, wo - 1])
+    ops.append(34); sels.append([0, 0, ch - 1, cw - 1])
     return ops, sels
 
 
@@ -331,7 +385,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

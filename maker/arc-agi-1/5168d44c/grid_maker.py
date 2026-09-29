@@ -55,9 +55,7 @@ def sample_colors(num_examples=None) -> dict:
     bgc = random.choice(cols)
     rem = [c for c in cols if c != bgc]
     dotcol = random.choice(rem)
-    # boxcol must be non-zero: ARCLE object ops (Move) only grab NON-ZERO cells,
-    # and the box is the object that translates.
-    rem2 = [c for c in rem if c != dotcol and c != 0]
+    rem2 = [c for c in rem if c != dotcol]
     boxcol = random.choice(rem2)
 
     n_ex = num_examples if num_examples else 3
@@ -96,7 +94,6 @@ def generate(diff_lb, diff_ub, max_h, max_w, bgc, dotcol, boxcol, direc=None, **
     offc = dj * (dotw + borderw)
 
     gi = [[bgc] * w for _ in range(h)]
-    # periodic dots along the direction
     for k in range(-15, 16):
         r0 = dotloci + k * offr
         c0 = dotlocj + k * offc
@@ -203,7 +200,6 @@ def derive_operations(I, O):
                      for c in range(max(C0, 0), min(C1, w - 1) + 1)} - set(comp)
             if recon != bcells:
                 continue
-            # which direction does the dot lattice run in?
             found = None
             for name in ("unity", "down", "right"):
                 di, dj = _DVEC[name]
@@ -253,19 +249,30 @@ def derive_operations(I, O):
     dest -= {(r, c) for r in range(ar0 + orr, ar0 + orr + ah)
              for c in range(ac0 + occ, ac0 + occ + aw)}
 
+    # ARCLE's Move only grabs NON-ZERO cells. A ring coloured 0 would not travel,
+    # so give it a stand-in colour first (one no cell of I uses); the moves then
+    # carry it, and it is put down as colour 0 where it lands.
+    carry = boxcol
+    state = I.copy()
+    if boxcol == 0:
+        carry = next(c for c in range(1, 10) if c not in colors)
+        ops.append(carry)
+        sels.append(sel_of(src))
+        for (r, c) in src:
+            state[r, c] = carry
+
     # --- slide the frame: ONE grab, then empty selections (ARCLE keeps it grabbed)
-    bgsnap = I.copy()
+    bgsnap = state.copy()
     for (r, c) in src:
         bgsnap[r, c] = 0
 
     def render(objset):
         g = bgsnap.copy()
         for (r, c) in objset:
-            g[r, c] = boxcol
+            g[r, c] = carry
         return g
 
     obj = set(src)
-    state = I.copy()
     first = True
     for (sr, sc, cnt) in ((1, 0, orr), (0, 1, occ)):
         mop = 21 if sr else 22            # 21 = MoveD, 22 = MoveR
@@ -283,7 +290,12 @@ def derive_operations(I, O):
 
     # part of the frame that scrolled in from off-canvas (had no source pixels)
     missing = sorted(dest - obj)
-    if missing:
+    if boxcol == 0:
+        # the carried ring lands in stand-in colour: put it down as 0, together
+        # with the part of the ring that scrolled in from off-canvas
+        ops.append(0)
+        sels.append(sel_of(sorted(dest)))
+    elif missing:
         ops.append(boxcol)
         sels.append(sel_of(missing))
 
@@ -338,7 +350,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

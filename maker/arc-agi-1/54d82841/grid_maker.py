@@ -37,114 +37,87 @@ import random
 import numpy as np
 from collections import Counter
 
-VARIANTS = [{"rot": 0}, {"rot": 1}, {"rot": 2}, {"rot": 3}]
-
 
 def sample_colors(num_examples=None) -> dict:
     cols = [c for c in range(10) if c != 4]
-    bgc = random.choice(cols)
-    n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
-    else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-    plan = examples + [dict(random.choice(examples))]
-    return {"bgc": bgc, "instance_plan": plan}
+    return {"bgc": random.choice(cols)}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, rot=None) -> dict:
-    def unifint(lb, ub, bounds):
-        a, b = bounds
-        if b < a:
-            b = a
-        return random.randint(a + int((b - a) * lb), a + int((b - a) * ub))
+def generate(diff_lb, diff_ub, max_h=30, max_w=30, bgc=None, **kw) -> dict:
+    cols = [c for c in range(10) if c != 4]
+    if bgc is None:
+        bgc = random.choice(cols)
 
-    if rot is None:
-        rot = random.choice([0, 1, 2, 3])
+    def unif(lo, hi):
+        d = random.uniform(diff_lb, diff_ub)
+        return max(lo, min(hi, int(round(lo + d * (hi - lo)))))
 
-    remcols = [c for c in range(10) if c != 4 and c != bgc]
-
-    # sample pre-rotation dims so post-rotation grid fits max_h x max_w
-    hb = max_h if rot % 2 == 0 else max_w
-    wb = max_w if rot % 2 == 0 else max_h
-    h = unifint(diff_lb, diff_ub, (5, hb))
-    w = unifint(diff_lb, diff_ub, (5, wb))
-
-    nshps = unifint(diff_lb, diff_ub, (1, max(1, w // 3)))
-
-    gi = [[bgc] * w for _ in range(h)]
-    go = [[bgc] * w for _ in range(h)]
-
+    h = unif(5, max(5, max_h))
+    w = unif(5, max(5, max_w))
+    remcols = [c for c in cols if c != bgc]
+    nshps = unif(1, max(1, w // 3))
+    gi = np.full((h, w), bgc, dtype=int)
+    go = gi.copy()
     locs = list(range(1, w - 1))
     for _ in range(nshps):
-        if len(locs) == 0:
+        if not locs:
             break
         loc = random.choice(locs)
-        locs = [x for x in locs if abs(x - loc) > 2]
+        locs = [l for l in locs if abs(l - loc) > 2]
         loci = random.randint(1, h - 1)
         col = random.choice(remcols)
-        # neighbors(loci, loc) minus the three cells below -> U opening downward
-        cells = [(loci - 1, loc - 1), (loci - 1, loc), (loci - 1, loc + 1),
-                 (loci, loc - 1), (loci, loc + 1)]
-        for (r, c) in cells:
-            gi[r][c] = col
-            go[r][c] = col
-        go[h - 1][loc] = 4
+        shp = [(loci - 1, loc - 1), (loci - 1, loc), (loci - 1, loc + 1),
+               (loci, loc - 1), (loci, loc + 1)]
+        for r, c in shp:
+            gi[r, c] = col
+            go[r, c] = col
+        go[h - 1, loc] = 4
+    k = random.choice([0, 1, 2, 3])
+    gi = np.rot90(gi, k)
+    go = np.rot90(go, k)
+    return {"input": gi.tolist(), "output": go.tolist()}
 
-    ai = np.rot90(np.array(gi, dtype=int), k=rot)
-    ao = np.rot90(np.array(go, dtype=int), k=rot)
-    return {"input": ai.tolist(), "output": ao.tolist()}
 
-
-def derive_operations(I, O):
+def derive_operations(I, O=None, examples=None):
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     h, w = I.shape
-
     bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
 
-    # --- find each U-shaped object; its missing bbox cell is the mouth ---
-    seen = np.zeros((h, w), dtype=bool)
+    # Each U-shape is recognised by its mouth cell (a background cell) plus the
+    # five wall cells around it, all of one non-background colour. Matching the
+    # template directly (instead of connected components) keeps two adjacent
+    # same-coloured U's from merging into one blob and being skipped.
+    TEMPL = {
+        "down":  [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1)],
+        "up":    [(1, -1), (1, 0), (1, 1), (0, -1), (0, 1)],
+        "right": [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0)],
+        "left":  [(-1, 1), (0, 1), (1, 1), (-1, 0), (1, 0)],
+    }
+    found = {k: [] for k in TEMPL}
+    for r in range(h):
+        for c in range(w):
+            if I[r, c] != bgc:
+                continue
+            for k, offs in TEMPL.items():
+                cells = [(r + dr, c + dc) for dr, dc in offs]
+                if not all(0 <= y < h and 0 <= x < w for y, x in cells):
+                    continue
+                vals = {int(I[y, x]) for y, x in cells}
+                if len(vals) == 1 and bgc not in vals:
+                    found[k].append((r, c))
+
+    # the whole grid shares one orientation: take the one the objects agree on
+    d = max(found, key=lambda k: len(found[k]))
     targets = []
-    for r0 in range(h):
-        for c0 in range(w):
-            if I[r0, c0] == bgc or seen[r0, c0]:
-                continue
-            col = I[r0, c0]
-            stack = [(r0, c0)]
-            seen[r0, c0] = True
-            comp = []
-            while stack:
-                y, x = stack.pop()
-                comp.append((y, x))
-                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                    ny, nx = y + dy, x + dx
-                    if 0 <= ny < h and 0 <= nx < w and not seen[ny, nx] and I[ny, nx] == col:
-                        seen[ny, nx] = True
-                        stack.append((ny, nx))
-            cset = set(comp)
-            rs = [p[0] for p in comp]
-            cs = [p[1] for p in comp]
-            rmin, rmax, cmin, cmax = min(rs), max(rs), min(cs), max(cs)
-            holes = [(y, x) for y in range(rmin, rmax + 1) for x in range(cmin, cmax + 1)
-                     if (y, x) not in cset]
-            if len(holes) != 1:
-                continue
-            hy, hx = holes[0]
-            # portrait bbox -> mouth faces left/right ; landscape -> up/down
-            if (rmax - rmin) > (cmax - cmin):
-                if hx == cmin:
-                    tgt, dist = (hy, 0), hx
-                else:
-                    tgt, dist = (hy, w - 1), w - 1 - hx
-            else:
-                if hy == rmin:
-                    tgt, dist = (0, hx), hy
-                else:
-                    tgt, dist = (h - 1, hx), h - 1 - hy
-            targets.append((dist, tgt))
+    for (r, c) in found[d]:
+        if d == "down":
+            targets.append((h - 1 - r, (h - 1, c)))
+        elif d == "up":
+            targets.append((r, (0, c)))
+        elif d == "right":
+            targets.append((w - 1 - c, (r, w - 1)))
+        else:
+            targets.append((c, (r, 0)))
 
     # project each object's mouth onto the border it faces, nearest object first
     targets.sort(key=lambda t: t[0])
@@ -199,7 +172,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:
