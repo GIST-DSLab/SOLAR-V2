@@ -1621,7 +1621,11 @@ def process_task(tid: str) -> str:
         return f"WARN {tid}: {reason} (candidate not written)"
 
     content = TEMPLATE.format(task_id=tid, derive_fn=code)
-    (OUTPUT_DIR / tid).mkdir(exist_ok=True)
+    # parents=True because the worker can be the first to need the set's
+    # directory: with --write_only_valid this line is reached only by a task
+    # that passed, and a whole 65-task round died here with FileNotFoundError
+    # when maker/<set>/ was not already there.
+    (OUTPUT_DIR / tid).mkdir(parents=True, exist_ok=True)
     out_path.write_text(content, encoding="utf-8")
 
     if ok:

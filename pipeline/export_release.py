@@ -27,6 +27,7 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+import preflight
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -114,6 +115,12 @@ SUBSETS = {
         root=DATA_ROOT / "ARC_rearc_draw19" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
+        # Every maker is scored against this draw before it is packed, and a
+        # failure stops the export. The nine answer-readers draw18 removed had
+        # been published for months because the gate was only ever asked about
+        # the tasks a promotion was being decided for; leaving the sweep to be
+        # remembered is what let that happen. See pipeline/preflight.py.
+        gate="strict",
         # what the maker set is called in the release; the working tree keeps its
         # own name, so renaming for publication does not disturb generation
         label="arc-agi-1",
@@ -134,6 +141,12 @@ SUBSETS = {
         root=DATA_ROOT / "ARC_handcraft_h15" / "whole",
         makers="maker/handcraft",
         episodes=10,
+        # Reported, not enforced. These makers are a control: a `half` variant
+        # is written to solve only part of what its task asks, so `solve` under
+        # 1 is the subset's purpose rather than a fault, and the release bar
+        # does not describe them. The sweep still runs so a regression in one
+        # of them is visible in the manifest.
+        gate="report",
         # 74dd1130-half is a transpose: FlipV, Rotate90, Submit, the same three
         # actions on all 25 rollouts. There is no route to read off it, which is
         # what this subset is for. It is not one of the ten makers this repository
@@ -359,6 +372,26 @@ def retarget(data_root: Path) -> None:
             cfg[key] = data_root / p.relative_to(DEFAULT_DATA_ROOT)
 
 
+def run_gate(name: str, cfg: dict, out_root: Path, reuse: bool) -> dict:
+    """Score `cfg`'s makers against `cfg`'s draw; abort the export on a fault.
+
+    A subset marked `gate="report"` is swept and recorded but never blocks --
+    see the comment on that subset for why the release bar does not describe
+    it. Everything else must come back clean.
+    """
+    makers = SOLAR_ROOT / cfg["makers"]
+    report = out_root / "preflight" / f"{name}.json"
+    summary = preflight.check(cfg["root"], makers, cfg["label"], report,
+                              exclude=cfg.get("exclude"), reuse=reuse)
+    print(preflight.render(summary))
+    if summary["failed"] and cfg["gate"] == "strict":
+        raise SystemExit(
+            f"[{name}] {len(summary['failed'])} task(s) fail the release bar; "
+            f"nothing was exported. Repair them, or re-run with --no_preflight "
+            f"if you mean to publish them anyway. Report: {report}")
+    return summary
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_root", default=str(DEFAULT_DATA_ROOT),
@@ -374,6 +407,14 @@ def main() -> None:
     ap.add_argument("--maker_version", action="store_true",
                     help="stamp rows with the per-task generation round from "
                          "best_manifest.json instead of the maker set name")
+    ap.add_argument("--no_preflight", action="store_true",
+                    help="pack without scoring the makers against the draw. "
+                         "For re-packing an unchanged draw only: the sweep is "
+                         "what stops a faulty maker reaching the release")
+    ap.add_argument("--reuse_preflight", action="store_true",
+                    help="judge each subset's existing preflight report instead "
+                         "of sweeping again. Only sound if neither the makers "
+                         "nor the draw have moved since it was written")
     args = ap.parse_args()
 
     data_root = Path(args.data_root).expanduser().resolve()
@@ -381,11 +422,17 @@ def main() -> None:
     out_root = Path(args.out) if args.out else data_root / "release"
     out_root.mkdir(parents=True, exist_ok=True)
     stats = {}
+    gates = {}
     for name in args.subsets:
         print(f"[{name}]")
-        s = export_subset(name, SUBSETS[name], out_root, args.shard_rows,
+        cfg = SUBSETS[name]
+        if not args.no_preflight and cfg.get("gate"):
+            g = run_gate(name, cfg, out_root, reuse=args.reuse_preflight)
+            gates[name] = g
+        s = export_subset(name, cfg, out_root, args.shard_rows,
                           args.verify, maker_version=args.maker_version)
         if s:
+            s["preflight"] = gates.get(name)
             stats[name] = s
 
     manifest_path = out_root / "release_manifest.json"

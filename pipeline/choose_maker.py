@@ -333,13 +333,30 @@ def cancels(ops, sels) -> bool:
     all. The same edits could have been made in the original frame.
     """
     turns, moves = collections.defaultdict(list), collections.defaultdict(list)
+    # Which object the action addresses, not which selection was passed. An
+    # empty selection is how ARCLE says "the object already grabbed" -- object
+    # ops take the previous bounding box -- and every other operation is
+    # wrapped in reset_sel, which drops the grab. Keying on the selection as
+    # written put every empty one in a single bucket, so an object slid three
+    # down and a different object slid three up shared a key and summed to
+    # zero: 1caeab9d was reported as cancelling for a year of drawing on that.
+    # The mask, not the selection's spelling, is the key: a bbox and the cell
+    # list that covers the same cells are the same region, and were not.
+    live = None
     for op, sel in zip(ops, sels):
         nm = NAME.get(int(op))
-        key = tuple(sel) if isinstance(sel, (list, tuple)) else str(sel)
-        if nm in TURN:
-            turns[key].append(nm)
-        elif nm in MOVE:
-            moves[key].append(nm)
+        if nm not in TURN and nm not in MOVE:
+            live = None
+            continue
+        mask = solar_utils.to_sel_mask(sel, MAX_GRID_DIM).astype(bool)
+        if mask.any():
+            live = mask.tobytes()
+        elif live is None:
+            # No object is grabbed and nothing is selected: ARCLE ignores the
+            # action outright. That is one operation performing nothing, which
+            # is what this function exists to report.
+            return True
+        (turns if nm in TURN else moves)[live].append(nm)
     for seq in turns.values():
         m = I2
         for nm in seq:
