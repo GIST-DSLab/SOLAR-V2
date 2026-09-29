@@ -141,12 +141,14 @@ SUBSETS = {
         root=DATA_ROOT / "ARC_handcraft_h15" / "whole",
         makers="maker/handcraft",
         episodes=10,
-        # Reported, not enforced. These makers are a control: a `half` variant
-        # is written to solve only part of what its task asks, so `solve` under
-        # 1 is the subset's purpose rather than a fault, and the release bar
-        # does not describe them. The sweep still runs so a regression in one
-        # of them is visible in the manifest.
-        gate="report",
+        # No gate. Not an exemption granted on trust: the gate cannot address
+        # these makers at all. It scores a task by drawing instances from that
+        # task's RE-ARC generator and keeping the ones its verifier approves,
+        # and `74dd1130-half` is not a RE-ARC task id -- every one of them
+        # comes back with no instances, which the sweep would report as ten
+        # tasks passing out of zero. The release bar would not describe them
+        # either: a `half` variant is written to solve only part of what its
+        # task asks, so `solve` under 1 is what the subset is for.
         # 74dd1130-half is a transpose: FlipV, Rotate90, Submit, the same three
         # actions on all 25 rollouts. There is no route to read off it, which is
         # what this subset is for. It is not one of the ten makers this repository
@@ -379,7 +381,10 @@ def run_gate(name: str, cfg: dict, out_root: Path, reuse: bool) -> dict:
     see the comment on that subset for why the release bar does not describe
     it. Everything else must come back clean.
     """
-    makers = SOLAR_ROOT / cfg["makers"]
+    # SOLAR_ROOT here is the pipeline directory, not the repository -- the
+    # maker paths in SUBSETS are written relative to the repository, which is
+    # what preflight resolves against.
+    makers = preflight.SOLAR_ROOT / cfg["makers"]
     report = out_root / "preflight" / f"{name}.json"
     summary = preflight.check(cfg["root"], makers, cfg["label"], report,
                               exclude=cfg.get("exclude"), reuse=reuse)

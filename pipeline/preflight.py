@@ -118,15 +118,29 @@ def check(episodes_root: Path, makers_dir: Path, label: str, report: Path,
     """
     rows = (json.loads(report.read_text()) if reuse and report.is_file()
             else sweep(episodes_root, makers_dir, label, report, exclude))
+    if not rows:
+        # A sweep that scored nothing is not a sweep that found nothing. The
+        # gate skips a task it cannot draw instances for, and if it skips all
+        # of them the summary reads "0/0 passed", which is how an unchecked
+        # release would come to carry a clean bill.
+        raise SystemExit(
+            f"the gate scored no tasks under {makers_dir}; it draws instances "
+            f"from each task's RE-ARC generator, so a maker set whose names "
+            f"are not RE-ARC task ids cannot be swept")
     bad, unmeasured = faults(rows, label)
+    # The draw's folder name, not its path: this summary is written into
+    # release_manifest.json, which is published, and nobody downloading the
+    # dataset needs the directory layout of the machine that built it.
+    draw = Path(str(episodes_root).rstrip("/"))
     return {
         "tasks": len(rows),
         "passed": len(rows) - len({f["task_id"] for f in bad}),
         "failed": sorted({f["task_id"] for f in bad}),
         "findings": bad,
         "unmeasured": len(unmeasured),
-        "episodes_root": str(episodes_root),
-        "report": str(report),
+        "draw": (draw.parent if draw.name == "whole" else draw).name,
+        "bar": {"solve": 1.0, "copy": 0.0, "idle": 0.0, "dep": 0.0,
+                "spare": f"< {SPARE_MIN}", "zero": 1.0},
     }
 
 
