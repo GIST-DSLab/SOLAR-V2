@@ -20,9 +20,28 @@ release bar -- which is the promotion bar with no incumbent to be better than:
     spare <  0.5    no operation the route reaches the answer without
     zero  == 1      loses no cell to ARCLE reading colour 0 as nothing there
 
-`zero` is None wherever no target in the draw holds a 0, and `spare` is None
-wherever the route was too long to ablate. An axis that could not be measured
-fails nobody; it is reported as unmeasured so the count is honest.
+Those six are all about the maker: given the answer, does it reach it honestly.
+Three more are about the episode, and nothing above can see them, because the
+maker is handed I and O and the reader is not. The reader gets three worked
+pairs and a test input, and an episode that does not pin the rule is
+unanswerable however clean its trajectory is:
+
+    split    == 0   the colour roles are the same in all four pairs
+    constant == 0   the three demonstrations do not all show the same answer
+    cover    == 0   the test's answer is one the demonstrations have shown
+
+`constant` is d9fac9be, where every episode gives the same one-cell answer four
+times over: copying a demonstration is always right, so nothing in the episode
+has to be read. `cover` is 27a28665, where the demonstrations answer 3, 3 and 6
+and the test wants 1 -- a colour never attached to a shape. Both were found by
+reading the released episodes, not by any check that existed.
+
+`cover` only means something where the task hands back one of a few small
+answers; where each answer is its own large grid, a test answer unlike the
+demonstrations' is the normal case and the axis is None. `zero` is None
+wherever no target in the draw holds a 0, and `spare` is None wherever the
+route was too long to ablate. An axis that could not be measured fails nobody;
+it is reported as unmeasured so the count is honest.
 
     python pipeline/preflight.py --episodes_root $SOLAR_DATA_ROOT/ARC_rearc_draw19 \
         --makers maker/arc-agi-1 --report /path/to/preflight.json
@@ -44,6 +63,14 @@ SOLAR_ROOT = Path(__file__).parent.parent.resolve()
 # given, which is the maker's.
 SPARE_MIN = 0.5
 
+# `cover` is only asked of tasks that answer with one of a few small grids.
+# Above these two the answers are individual pictures rather than a vocabulary,
+# and "the test's answer was never demonstrated" stops being a defect.
+SMALL_CELLS = 9        # a 3x3 answer or smaller
+SMALL_VOCAB = 12       # distinct answers across the task's whole draw
+
+EPISODE_AXES = ("split", "constant", "cover")
+
 # axis -> (test, one-line name for the report)
 BARS = {
     "solve": (lambda v: v is not None and v >= 1.0 - 1e-9, "생성된 에피소드를 다 못 맞춤"),
@@ -52,7 +79,74 @@ BARS = {
     "dep":   (lambda v: v is None or v <= 1e-9, "정답을 흐트러뜨리면 경로가 바뀜"),
     "spare": (lambda v: v is None or v < SPARE_MIN, "빼도 정답에 닿는 동작이 있음"),
     "zero":  (lambda v: v is None or v >= 1.0 - 1e-9, "색 0을 가진 칸을 잃음"),
+    "split": (lambda v: v is None or v <= 1e-9, "쌍마다 색 역할이 갈림"),
+    "constant": (lambda v: v is None or v <= 1e-9,
+                 "예시 세 답이 서로 같아 무엇이 답을 가르는지 안 보임"),
+    "cover": (lambda v: v is None or v <= 1e-9, "test의 답을 예시가 보여준 적 없음"),
 }
+
+
+PAD = 10               # the value every grid is padded to 30x30 with
+
+
+def _grid(flat, dim) -> tuple:
+    """One grid out of a published episode, unpadded.
+
+    The output's extent is the LAST step's grid_dim, not the input's: a task
+    that resizes would otherwise be read at the input's shape and the padding
+    counted as a colour. That mistake turned one real finding into a hundred
+    and six the first time these episodes were measured.
+    """
+    h, w = dim
+    return tuple(tuple(c for c in row[:w] if c != PAD) for row in flat[:h])
+
+
+def _cells(g) -> int:
+    return sum(len(r) for r in g)
+
+
+def episode_axes(episodes_root: Path, tid: str) -> dict:
+    """What the published episodes of one task look like to a reader.
+
+    Read off the episode files rather than recomputed: these are the four
+    pairs someone downloading the dataset is shown, and the question is
+    whether those four pin the rule.
+    """
+    base = str(episodes_root).rstrip("/")
+    if base.endswith("/whole"):
+        base = base[: -len("/whole")]
+    hits = sorted(Path(base).glob(f"whole/test.{tid}.*"))
+    if not hits:
+        return {"split": None, "constant": None, "cover": None, "episodes": 0}
+    eps, splits = [], []
+    for f in sorted(hits[0].glob("*.json"), key=lambda q: int(q.stem)):
+        e = json.loads(f.read_text())
+        exo = [_grid(g, d) for g, d in zip(e["ex_out"], e["ex_out_grid_dim"])]
+        to = _grid(e["out_grid"], e["grid_dim"][-1])
+        eps.append((exo, to))
+        hold = (e.get("desc") or {}).get("palette_hold")
+        if hold:
+            # Compare only the prefix every pair captured. Past it the entries
+            # are per-instance object colours whose count follows the picture,
+            # and a pair that drew fewer would read as a disagreement on
+            # length alone.
+            k = min(len(q) for q in hold)
+            splits.append(k == 0 or len({tuple(q[:k]) for q in hold}) > 1)
+    if not eps:
+        return {"split": None, "constant": None, "cover": None, "episodes": 0}
+    n = len(eps)
+    out = {
+        "episodes": n,
+        "split": (sum(splits) / len(splits)) if splits else None,
+        "held": len(splits),
+        "constant": sum(1 for exo, _ in eps if len(set(exo)) == 1) / n,
+        "cover": None,
+    }
+    answers = [o for exo, to in eps for o in exo] + [to for _, to in eps]
+    if max(_cells(o) for o in answers) <= SMALL_CELLS \
+            and len(set(answers)) <= SMALL_VOCAB:
+        out["cover"] = sum(1 for exo, to in eps if to not in set(exo)) / n
+    return out
 
 
 def task_ids(makers_dir: Path, exclude: set[str] | None = None) -> list[str]:
@@ -99,7 +193,8 @@ def faults(rows: list[dict], label: str) -> tuple[list[dict], list[dict]]:
                         "value": None, "why": "maker가 로드되지 않음"})
             continue
         for axis, (ok, why) in BARS.items():
-            v = s.get(axis)
+            v = (row.get("episode") or {}).get(axis, s.get(axis)) \
+                if axis in EPISODE_AXES else s.get(axis)
             if v is None:
                 unmeasured.append({"task_id": tid, "axis": axis})
             elif not ok(v):
@@ -118,6 +213,8 @@ def check(episodes_root: Path, makers_dir: Path, label: str, report: Path,
     """
     rows = (json.loads(report.read_text()) if reuse and report.is_file()
             else sweep(episodes_root, makers_dir, label, report, exclude))
+    for row in rows:
+        row["episode"] = episode_axes(episodes_root, row["task_id"])
     if not rows:
         # A sweep that scored nothing is not a sweep that found nothing. The
         # gate skips a task it cannot draw instances for, and if it skips all
@@ -128,6 +225,9 @@ def check(episodes_root: Path, makers_dir: Path, label: str, report: Path,
             f"from each task's RE-ARC generator, so a maker set whose names "
             f"are not RE-ARC task ids cannot be swept")
     bad, unmeasured = faults(rows, label)
+    by_axis: dict[str, int] = {}
+    for u in unmeasured:
+        by_axis[u["axis"]] = by_axis.get(u["axis"], 0) + 1
     # The draw's folder name, not its path: this summary is written into
     # release_manifest.json, which is published, and nobody downloading the
     # dataset needs the directory layout of the machine that built it.
@@ -138,18 +238,40 @@ def check(episodes_root: Path, makers_dir: Path, label: str, report: Path,
         "failed": sorted({f["task_id"] for f in bad}),
         "findings": bad,
         "unmeasured": len(unmeasured),
+        "unmeasured_by_axis": by_axis,
+        # Not a fault, and not silence either. A task whose maker declares no
+        # colour roles is indistinguishable here from one whose roles the hold
+        # failed to capture, and the difference matters, so the count is
+        # carried rather than folded into the unmeasured total.
+        "no_hold": sum(1 for r in rows
+                       if (r.get("episode") or {}).get("split") is None
+                       and (r.get("episode") or {}).get("episodes")),
         "draw": (draw.parent if draw.name == "whole" else draw).name,
         "bar": {"solve": 1.0, "copy": 0.0, "idle": 0.0, "dep": 0.0,
-                "spare": f"< {SPARE_MIN}", "zero": 1.0},
+                "spare": f"< {SPARE_MIN}", "zero": 1.0,
+                "split": 0.0, "constant": 0.0, "cover": 0.0},
     }
 
 
 def render(summary: dict) -> str:
-    lines = [f"  {summary['passed']}/{summary['tasks']} 통과"
-             f" (측정 불가 축 {summary['unmeasured']}개)"]
+    """The verdict, then the faults, then what could not be looked at.
+
+    The unmeasured count is broken out per axis rather than given as one
+    number: `cover` is None on nearly every task by design -- it only means
+    something where the answers are a small vocabulary -- and a single total
+    of four hundred makes that read as four hundred blind spots.
+    """
+    lines = [f"  {summary['passed']}/{summary['tasks']} 통과"]
     for f in summary["findings"]:
         v = "" if f["value"] is None else f" {f['value']:.2f}"
         lines.append(f"  {f['task_id']}  {f['axis']}{v}  — {f['why']}")
+    un = summary.get("unmeasured_by_axis") or {}
+    if un:
+        lines.append("  측정 불가: " + ", ".join(
+            f"{a} {n}" for a, n in sorted(un.items(), key=lambda kv: -kv[1])))
+    if summary.get("no_hold"):
+        lines.append(f"  색 유지 장치가 안 걸린 과제 {summary['no_hold']} "
+                     f"— 역할이 없는 과제인지 놓친 것인지 여기서는 못 가림")
     return "\n".join(lines)
 
 
