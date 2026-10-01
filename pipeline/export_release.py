@@ -112,7 +112,25 @@ SUBSETS = {
         # axis had named were not faults at all: they read their demonstrations,
         # and the axis was handing them demonstrations built from other drawn
         # pairs, each with its own palette.
-        root=DATA_ROOT / "ARC_rearc_draw19" / "whole",
+        # draw20 repairs what the six maker axes could not see, because they
+        # are not about the maker. The reader is given three worked pairs and a
+        # test input, and three tasks did not pin the rule from those: every
+        # one of d9fac9be's episodes answered the same one cell four times
+        # over, so copying a demonstration was always right; 27a28665 asked for
+        # a shape-to-colour label its demonstrations never attached; and
+        # 0b148d64's four pairs came out on four different backgrounds, because
+        # the hold's colour test ran to the end of the line and could never
+        # match the `choice(itv)` that draws it. The rollout now checks the
+        # episode it assembled, makes a different pair the test where that is
+        # enough, and redraws without the hold where the hold itself was what
+        # removed the variation. Seven tasks change; the other 392 come out
+        # byte-identical to draw19.
+        # bb43febb is draw19's, and its folder still carries that date. The
+        # task cannot be redrawn reproducibly -- twice from the same seed it
+        # shares no episode with itself, because the palette hold races a ten
+        # second budget it cannot meet -- so the published episodes are kept
+        # rather than swapped for an equally arbitrary set.
+        root=DATA_ROOT / "ARC_rearc_draw20" / "whole",
         makers="maker/arc-agi-1",
         episodes=10,
         # Every maker is scored against this draw before it is packed, and a

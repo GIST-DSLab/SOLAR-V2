@@ -27,6 +27,19 @@ PIPELINE_DIR = __file__.rsplit("/", 1)[0]
 # the inconsistency a reader found in the published data. Twenty-one tasks draw
 # a role through a wrapper like this.
 COLOUR_ARGS = re.compile(r"(?:choice|sample)\((.*)")
+# ...and the first argument on its own. COLOUR_ARGS runs to the end of the
+# line, so `choice(itv)` is offered to the name test as "itv)" and the two
+# anchored alternatives below could never match anything: 0b148d64's
+# background was drawn by `choice(itv)` and was never held, which is why its
+# four pairs came out on four different backgrounds. Widening the capture
+# instead of adding this one loses `sample((c2, c3, c4), nkeepcols)`, where
+# the name that says "colour" sits past a closing paren. Both are asked, so
+# nothing that matched before stops matching.
+#
+# `choice` only. A bare `choice(itv)` takes one value out of the colour
+# interval; `sample(itv, n)` takes n positions out of a range that happens to
+# be written the same way, and `alocs = sample(itv, na)` is not a palette.
+COLOUR_FIRST = re.compile(r"choice\(([^),]*)")
 COLOUR_NAME = re.compile(r"col|^itv$|^remitv$", re.I)
 
 
@@ -72,7 +85,10 @@ def _asks_for_colour():
     if hit is None:                      # one call site, one answer, decided once
         line = linecache.getline(*key)
         m = COLOUR_ARGS.search(line)
-        hit = _COLOUR_SITE[key] = bool(m and COLOUR_NAME.search(m.group(1)))
+        m1 = COLOUR_FIRST.search(line)
+        hit = _COLOUR_SITE[key] = bool(
+            (m and COLOUR_NAME.search(m.group(1)))
+            or (m1 and COLOUR_NAME.search(m1.group(1))))
     return hit
 
 

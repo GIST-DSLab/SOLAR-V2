@@ -273,6 +273,75 @@ def _episode_pool(genfn, need, max_hw, vfn, ufn, unify, perm=None, roles=0,
     return pool if len(pool) >= need else None
 
 
+def _cells(o) -> int:
+    return int(np.asarray(o).size)
+
+
+def _label_like(pairs, seen=(0, 0)) -> bool:
+    """Are the answers arbitrary labels rather than selections from the input?
+
+    27a28665 answers a shape drawn in 6s and 9s with the colour 1. Nothing in
+    the input says 1, so the pairing of shape to colour exists only in the
+    demonstrations. de1cd16c picks a colour out of its own grid instead, and
+    there an answer no demonstration used is the rule working rather than a
+    gap -- so the two have to be told apart before anything is rejected.
+
+    Asked of the task, not of the episode, which is what `seen` carries: four
+    pairs are too few to tell. One episode of 27a28665 came out with three of
+    its four answers in colours its inputs happened to hold as well, read as a
+    selection task on that evidence alone, and shipped -- the one episode in
+    the whole draw that the release gate then rejected, because the gate was
+    looking at all sixty of the task's answers.
+    """
+    if not pairs or max(_cells(o) for _, o in pairs) > 9:
+        return False
+    lab = sum(1 for i, o in pairs
+              if not set(np.unique(o).tolist()) <= set(np.unique(i).tolist()))
+    return (seen[0] + lab) * 2 > (seen[1] + len(pairs))
+
+
+def _reads(pairs, n_ex, seen=(0, 0)) -> bool:
+    """Do these pairs, in this order, show what the answer depends on?
+
+    The maker is handed I and O. The reader is handed three worked pairs and a
+    test input, and an episode that does not pin the rule is unanswerable
+    however clean its trajectory is. Two ways it fails, both found by reading
+    the released draw rather than by anything that was being checked:
+
+    d9fac9be gives the same one-cell answer in all four pairs, so nothing
+    shows what makes the answer differ -- and copying a demonstration is
+    always right, which is why the solve probe scored it as readable.
+    27a28665 demonstrates the labels 3, 3 and 6 and then asks for 1.
+    """
+    outs = [tuple(map(tuple, np.asarray(o).tolist())) for _, o in pairs]
+    demos, test = outs[:n_ex], outs[n_ex]
+    if max(_cells(o) for _, o in pairs) <= 9 and len(set(demos)) == 1:
+        return False
+    if _label_like(pairs, seen) and test not in set(demos):
+        return False
+    return True
+
+
+def _arrange(pairs, n_ex, held=None, seen=(0, 0)):
+    """The same pairs with a test that the rest of them account for.
+
+    Which pair is the test is the draw's choice, not the task's, so the
+    cheapest repair is to make a different one the test. Across the released
+    draw that alone fixes six of the twenty-six episodes this rejects. Returns
+    None when no choice works -- then the episode itself has to be redrawn.
+    """
+    # The draw's own order first. Every other candidate moves a pair, and an
+    # episode that already reads must come back exactly as it was drawn --
+    # otherwise this rejects twenty-six episodes in six tasks and quietly
+    # rewrites the other five thousand nine hundred and seventy-two.
+    for t in [n_ex] + [k for k in range(len(pairs)) if k != n_ex]:
+        order = [k for k in range(len(pairs)) if k != t] + [t]
+        cand = [pairs[k] for k in order]
+        if _reads(cand, n_ex, seen):
+            return cand, ([held[k] for k in order] if held else None)
+    return None
+
+
 def call_derive(derive, I, O, examples=None):
     """derive_operations, given the episode's demonstrations when it takes them.
 
@@ -308,6 +377,7 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     _random.seed(args.rand_seed)
     need = n_examples + 1
     samples = []
+    seen = [0, 0]           # label pairs, pairs, over this task's episodes
     # Unification needs the verifier whether or not --verify_filter asked for
     # one: it is what decides that a recolouring left the task alone.
     ufn = vfn if vfn is not None else _get_verifier(tid)
@@ -349,6 +419,29 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
                                  plan=_maker_plan(gm_mod))
         if pool is None:
             continue
+        held = _HELD_LOG
+        # Evidence about the task, carried across its episodes. Every pool is
+        # counted whether or not it is kept, so the reading of what kind of
+        # answers this task gives only gets firmer.
+        seen[0] += sum(1 for i, o in pool
+                       if not set(np.unique(o).tolist()) <= set(np.unique(i).tolist()))
+        seen[1] += len(pool)
+        got = _arrange(pool, n_examples, held, tuple(seen))
+        if got is None and holds:
+            # The hold is what removed the variation. d9fac9be's answer IS one
+            # of the roles, so pinning it across the episode makes all four
+            # answers the same colour and the rule stops being visible -- the
+            # device that exists to make an episode readable is what made this
+            # one unreadable. Drawing it plainly restores the variation, and
+            # the fallback for that is already here.
+            plain = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=False,
+                                  plan=_maker_plan(gm_mod))
+            if plain is not None:
+                held = _HELD_LOG
+                got = _arrange(plain, n_examples, held, tuple(seen))
+        if got is None:
+            continue
+        pool, held = got
         ex, (I, O) = pool[:n_examples], pool[n_examples]
         shown = [(a.tolist(), b.tolist()) for a, b in ex]
         try:
@@ -358,7 +451,7 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
         ei = [p[0].astype(np.uint8) for p in ex]
         eo = [p[1].astype(np.uint8) for p in ex]
         desc = {"operations": ops, "selections": sels, "id": str(s),
-                "palette_hold": _HELD_LOG}
+                "palette_hold": held}
         samples.append((ei, eo, [I.astype(np.uint8)], [O.astype(np.uint8)], desc))
     return samples
 
