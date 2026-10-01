@@ -322,6 +322,26 @@ def _reads(pairs, n_ex, seen=(0, 0)) -> bool:
     return True
 
 
+def _why(pairs, n_ex, seen=(0, 0)):
+    """Which reading an episode fails, so the redraw can address that one.
+
+    The two failures have opposite repairs. An episode whose demonstrations
+    all give the same answer is usually the colour hold's doing -- d9fac9be's
+    answer is one of the roles, so pinning the roles pins the answer -- and
+    only letting the palette go restores the variation. An episode that asks
+    for a label its demonstrations never attached has nothing to do with the
+    hold, and dropping the palette there buys nothing and costs the colour
+    convention: three of 27a28665's fifteen episodes came out on four
+    different backgrounds that way.
+    """
+    outs = [tuple(map(tuple, np.asarray(o).tolist())) for _, o in pairs]
+    if max(_cells(o) for _, o in pairs) <= 9 and len(set(outs[:n_ex])) == 1:
+        return "constant"
+    if _label_like(pairs, seen) and outs[n_ex] not in set(outs[:n_ex]):
+        return "cover"
+    return None
+
+
 def _arrange(pairs, n_ex, held=None, seen=(0, 0)):
     """The same pairs with a test that the rest of them account for.
 
@@ -427,18 +447,26 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
                        if not set(np.unique(o).tolist()) <= set(np.unique(i).tolist()))
         seen[1] += len(pool)
         got = _arrange(pool, n_examples, held, tuple(seen))
-        if got is None and holds:
-            # The hold is what removed the variation. d9fac9be's answer IS one
-            # of the roles, so pinning it across the episode makes all four
-            # answers the same colour and the rule stops being visible -- the
-            # device that exists to make an episode readable is what made this
-            # one unreadable. Drawing it plainly restores the variation, and
-            # the fallback for that is already here.
-            plain = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=False,
-                                  plan=_maker_plan(gm_mod))
-            if plain is not None:
-                held = _HELD_LOG
-                got = _arrange(plain, n_examples, held, tuple(seen))
+        # Redraw this episode, addressing the reason it failed: let the palette
+        # go only where the palette is what removed the variation, and keep it
+        # otherwise, so an episode rejected for its labels does not pay for it
+        # with four different backgrounds.
+        for _ in range(3):
+            if got is not None:
+                break
+            keep = holds and _why(pool, n_examples, tuple(seen)) != "constant"
+            fresh = _maker_palette(gm_mod) if keep else None
+            pool = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=keep,
+                                 perm=fresh[0] if fresh else None,
+                                 roles=fresh[1] if fresh else 0,
+                                 plan=_maker_plan(gm_mod))
+            if pool is None:
+                break
+            held = _HELD_LOG
+            seen[0] += sum(1 for i, o in pool
+                           if not set(np.unique(o).tolist()) <= set(np.unique(i).tolist()))
+            seen[1] += len(pool)
+            got = _arrange(pool, n_examples, held, tuple(seen))
         if got is None:
             continue
         pool, held = got
