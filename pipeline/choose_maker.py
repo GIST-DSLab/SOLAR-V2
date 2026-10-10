@@ -46,6 +46,8 @@ import inspect
 import json
 import random
 import shutil
+import signal
+import os
 import sys
 from pathlib import Path
 
@@ -217,7 +219,18 @@ def _draw_one(task: str, n: int, seed: int):
 
 
 def load_derive(maker_path: Path):
-    sys.path.insert(0, str(maker_path.parent))
+    """The maker's derive_operations, with the import path put back.
+
+    The entry has to be on sys.path while the module executes -- makers import
+    `generators` and `sel_helpers` from beside themselves -- and it has to come
+    off afterwards. It used to stay: a sweep of four hundred tasks across every
+    maker set calls this some fifty thousand times, and sys.path grew an entry
+    each time, so every import after that walked a list of fifty thousand
+    directories. Memory was not the problem (46 KB a call, measured); the
+    slowdown was.
+    """
+    here = str(maker_path.parent)
+    sys.path.insert(0, here)
     try:
         spec = importlib.util.spec_from_file_location(
             f"gm_{maker_path.parent.parent.name}_{maker_path.parent.name}", maker_path)
@@ -226,7 +239,35 @@ def load_derive(maker_path: Path):
         return getattr(mod, "derive_operations", None)
     except Exception:
         return None
+    finally:
+        try:
+            sys.path.remove(here)
+        except ValueError:
+            pass
 
+
+
+class DeriveTimeout(Exception):
+    """A maker that did not come back."""
+
+
+def _derive_timeout(signum, frame):
+    raise DeriveTimeout()
+
+
+# A maker is someone else's code and can run away. cg_oxjam/150deff5 memoises a
+# tiling search on frozensets of the cells still to cover, so every key is a
+# copy of the state and the subsets multiply: one 23x27 instance passed 24 GB
+# without finishing, and the sweep that reached that task took the machine with
+# it. The two guards keep one maker's fault to one maker.
+#
+# The memory half is not here. It belongs to the process, as
+# resource.setrlimit(RLIMIT_AS, ...), because a limit set per call cannot be
+# lifted safely afterwards. Whatever runs a sweep sets it once; a runaway then
+# raises MemoryError, which every caller here already reads as "this maker did
+# not answer". Measured: under a 3 GB address space 150deff5 raises in seconds
+# and the process carries on at 427 MB.
+DERIVE_SECONDS = int(os.environ.get("SOLAR_DERIVE_SECONDS", "60"))
 
 
 def call_derive(derive, I, O, examples=None):
@@ -241,9 +282,18 @@ def call_derive(derive, I, O, examples=None):
         n = len(inspect.signature(derive).parameters)
     except (TypeError, ValueError):
         n = 2
-    if n >= 3 and examples is not None:
-        return derive(I, O, examples)
-    return derive(I, O)
+    # A maker can also hang without allocating, and then no memory limit helps.
+    prev = signal.signal(signal.SIGALRM, _derive_timeout) if DERIVE_SECONDS else None
+    if DERIVE_SECONDS:
+        signal.alarm(DERIVE_SECONDS)
+    try:
+        if n >= 3 and examples is not None:
+            return derive(I, O, examples)
+        return derive(I, O)
+    finally:
+        if DERIVE_SECONDS:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, prev)
 
 
 def replay(derive, I, O_shown, examples=None):
