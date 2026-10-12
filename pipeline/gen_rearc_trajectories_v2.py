@@ -29,6 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 import gymnasium as gym
+import hashlib as _hashlib
 import numpy as np
 from tqdm import tqdm
 
@@ -49,6 +50,10 @@ sys.path.insert(0, str(SOLAR_ROOT / "re-arc"))
 # ── args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser()
 parser.add_argument("--num_samples",   type=int, default=10)
+parser.add_argument(
+    "--dup_tries", type=int, default=40,
+    help="redraws allowed when an episode's test pair repeats one this "
+         "task already shipped (default: 40, 0 disables the check)")
 parser.add_argument("--num_examples",  type=int, default=3)
 parser.add_argument("--rand_seed",     type=int, default=0)
 parser.add_argument("--max_grid_dim",  nargs=2, type=int, default=[30, 30])
@@ -88,6 +93,7 @@ parser.add_argument("--rearc_generate", action="store_true", default=False,
                          "adjustment is capping grids to --max_grid_dim. The maker still "
                          "supplies derive_operations for the trajectory.")
 args = parser.parse_args()
+DUP_TRIES = args.dup_tries
 
 MAX_GRID_DIM = tuple(args.max_grid_dim)
 H, W = MAX_GRID_DIM
@@ -342,6 +348,17 @@ def _why(pairs, n_ex, seen=(0, 0)):
     return None
 
 
+def _pair_hash(I, O) -> str:
+    """A pair's identity. SHA256 of the two grids written out.
+
+    The same scheme generate_trajectory.py used, so a draw made here and an
+    older eval set can be compared without re-hashing either.
+    """
+    return _hashlib.sha256(
+        (str(np.asarray(I).tolist()) + str(np.asarray(O).tolist())).encode()
+    ).hexdigest()
+
+
 def _arrange(pairs, n_ex, held=None, seen=(0, 0)):
     """The same pairs with a test that the rest of them account for.
 
@@ -398,6 +415,14 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
     need = n_examples + 1
     samples = []
     seen = [0, 0]           # label pairs, pairs, over this task's episodes
+    # The test pair this task has already shipped. Ten episodes never collided
+    # -- measured ten distinct grids out of ten on every task of a sixty-task
+    # sample -- but a thousand will, and a repeated test pair is a repeated
+    # trajectory wearing a different episode number. Demonstrations are allowed
+    # to repeat: they are context, and a task with a small instance space would
+    # otherwise run out of episodes rather than run out of tests.
+    used_tests = set()
+    dup_skipped = 0
     # Unification needs the verifier whether or not --verify_filter asked for
     # one: it is what decides that a recolouring left the task alone.
     ufn = vfn if vfn is not None else _get_verifier(tid)
@@ -471,6 +496,29 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
             continue
         pool, held = got
         ex, (I, O) = pool[:n_examples], pool[n_examples]
+        # A test pair already shipped by this task: draw again rather than ship
+        # it twice. Bounded, because a saturated generator would otherwise spin
+        # here forever; past the bound the episode is dropped and the count is
+        # reported, so a short task is visible instead of silent.
+        tries = 0
+        while _pair_hash(I, O) in used_tests and tries < DUP_TRIES:
+            tries += 1
+            fresh = _maker_palette(gm_mod) if holds else None
+            again = _episode_pool(genfn, need, max_hw, vfn, ufn, unify=holds,
+                                  perm=fresh[0] if fresh else None,
+                                  roles=fresh[1] if fresh else 0,
+                                  plan=_maker_plan(gm_mod))
+            if again is None:
+                break
+            got2 = _arrange(again, n_examples, _HELD_LOG, tuple(seen))
+            if got2 is None:
+                continue
+            pool, held = got2
+            ex, (I, O) = pool[:n_examples], pool[n_examples]
+        if _pair_hash(I, O) in used_tests:
+            dup_skipped += 1
+            continue
+        used_tests.add(_pair_hash(I, O))
         shown = [(a.tolist(), b.tolist()) for a, b in ex]
         try:
             ops, sels = call_derive(derive, I.tolist(), O.tolist(), shown)
@@ -481,6 +529,9 @@ def _build_rearc_samples(tid, gm_mod, n_samples, n_examples, max_hw):
         desc = {"operations": ops, "selections": sels, "id": str(s),
                 "palette_hold": held}
         samples.append((ei, eo, [I.astype(np.uint8)], [O.astype(np.uint8)], desc))
+    if dup_skipped:
+        print(f"  {tid}: {dup_skipped} episode(s) dropped as duplicate test pairs "
+              f"({len(samples)}/{n_samples} kept)")
     return samples
 
 MAKER_BASE = SOLAR_ROOT / "maker" / args.subfolder

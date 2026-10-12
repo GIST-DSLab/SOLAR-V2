@@ -8,9 +8,10 @@ value fits in a byte, so each array becomes a raw uint8 blob plus its shape, and
 the shards come out ~50x smaller with no loss: `--verify` round-trips rows back
 to the original JSON and compares element by element.
 
-Provenance the records did not carry is injected here: `maker_version` per task
-(from best_manifest.json, i.e. which arm the bestof judge picked), the subset
-name, and the source folder date. `rand_seed` is deliberately absent — see
+Provenance stays out of the rows and lives in release_manifest.json: which arm
+each task's maker came from, the maker set, the source folder and the rollout
+command. A row carries only what a consumer reads -- the task, the episode, and
+the trajectory. `rand_seed` is deliberately absent -- see
 release_manifest.json:caveats.
 
     export SOLAR_DATA_ROOT=<where the rollouts landed>
@@ -217,16 +218,23 @@ def unpack(name: str, blob: bytes, shape: list[int]) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.dtype(COL_DTYPE[name])).reshape(shape)
 
 
-def row_of(path: Path, subset: str, task_id: str, date: str, version: str) -> dict:
+def row_of(path: Path, task_id: str, episode: int) -> dict:
+    """One trajectory as a row.
+
+    Four strings used to ride along -- subset, concept, maker_version,
+    source_date. Each held one value for the whole file, so parquet stored
+    them for nothing, and on the Hub they were four more columns to scroll
+    past in a table that already has fifty. The subset is the directory name,
+    the concept was always empty, and which maker set and which build date a
+    row came from is in release_manifest.json, where provenance belongs.
+
+    `id` was the episode number written as a string. It is an integer named
+    `episode` now, so that task_id + episode addresses a row without parsing.
+    """
     d = json.loads(path.read_text())
-    desc = d.get("desc") or {}
     row = {
-        "id": desc.get("id", path.stem),
         "task_id": task_id,
-        "subset": subset,
-        "concept": desc.get("concept", ""),
-        "maker_version": version,
-        "source_date": date,
+        "episode": episode,
         "n_steps": len(d["operation"]),
         "operation_name": list(d["operation_name"]),
     }
@@ -253,7 +261,7 @@ def row_of(path: Path, subset: str, task_id: str, date: str, version: str) -> di
 def rebuild(row: dict) -> dict:
     """Inverse of row_of, back to the on-disk JSON structure."""
     out = {
-        "desc": {"id": row["id"], "concept": row["concept"]},
+        "desc": {"id": str(row["episode"]), "concept": ""},
         "operation_name": list(row["operation_name"]),
     }
     for col in COL_DTYPE:
@@ -263,9 +271,7 @@ def rebuild(row: dict) -> dict:
 
 def arrow_schema() -> pa.Schema:
     fields = [
-        pa.field("id", pa.string()), pa.field("task_id", pa.string()),
-        pa.field("subset", pa.string()), pa.field("concept", pa.string()),
-        pa.field("maker_version", pa.string()), pa.field("source_date", pa.string()),
+        pa.field("task_id", pa.string()), pa.field("episode", pa.int32()),
         pa.field("n_steps", pa.int32()),
         pa.field("operation_name", pa.list_(pa.string())),
     ]
@@ -319,8 +325,8 @@ def export_subset(name: str, cfg: dict, out_root: Path, shard_rows: int,
                     f"rollout with a larger --num_samples; do not ship a short task."
                 )
             files = files[:want]
-        for f in files:
-            jobs.append((f, task, date, version))
+        for ep, f in enumerate(files):
+            jobs.append((f, task, ep, version))
 
     out_dir = out_root / "data" / name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -337,9 +343,9 @@ def export_subset(name: str, cfg: dict, out_root: Path, shard_rows: int,
         if not batch:
             continue
         rows = []
-        for f, task, date, version in batch:
+        for f, task, ep, version in batch:
             raw_bytes += f.stat().st_size
-            r = row_of(f, name, task, date, version)
+            r = row_of(f, task, ep)
             rows.append(r)
             tasks_seen.add(task)
             ver_count[version] = ver_count.get(version, 0) + 1
