@@ -1,0 +1,54 @@
+[10-11 13:23] fill start
+[10-11 13:23] group3  0/37  35 left, chunk 10
+[10-11 13:30] group3  6/38  28 left, chunk 10
+[10-11 13:38] group3  10/38  20 left, chunk 10
+[10-11 13:45] group3  14/39  11 left, chunk 10
+[10-11 13:50] group3  18/39  2 left, chunk 2
+[10-11 13:51] group3  19/39  1 left, chunk 1
+  no progress in 71s -- throttled, waiting 20m
+[10-11 14:12] group3  19/39  1 left, chunk 1
+  no progress in 66s -- throttled, waiting 20m
+[10-11 14:33] group3  19/39  1 left, chunk 1
+  no progress in 67s -- throttled, waiting 20m
+[10-11 14:55] group3  19/39  1 left, chunk 1
+  no progress in 61s -- throttled, waiting 20m
+[10-11 15:16] group3  20/39  1 left, chunk 1
+  no progress in 65s -- throttled, waiting 20m
+[10-11 15:37] group3  20/39  1 left, chunk 1
+  group3: done
+[10-11 15:38] golf292  20/39  109 left, chunk 10
+[10-11 15:48] golf292  27/40  99 left, chunk 10
+[10-11 15:53] golf292  31/41  89 left, chunk 10
+[10-11 15:56] golf292  34/41  80 left, chunk 10
+[10-11 16:00] golf292  37/41  70 left, chunk 10
+[10-11 16:06] golf292  40/42  60 left, chunk 10
+[10-11 16:10] golf292  43/42  51 left, chunk 10
+  [10-11 16:13] PAUSE 걸림, 5분 대기
+  [10-11 16:18] PAUSE 걸림, 5분 대기
+  [10-11 16:23] PAUSE 걸림, 5분 대기
+  [10-11 16:28] PAUSE 걸림, 5분 대기
+  [10-11 16:33] PAUSE 걸림, 5분 대기
+  [10-11 16:38] PAUSE 걸림, 5분 대기
+  [10-11 16:43] PAUSE 걸림, 5분 대기
+  [10-11 16:48] PAUSE 걸림, 5분 대기
+  [10-11 16:53] PAUSE 걸림, 5분 대기
+  [10-11 16:58] PAUSE 걸림, 5분 대기
+  [10-11 17:03] PAUSE 걸림, 5분 대기
+  [10-11 17:08] PAUSE 걸림, 5분 대기
+  [10-11 17:13] PAUSE 걸림, 5분 대기
+  [10-11 17:18] PAUSE 걸림, 5분 대기
+  [10-11 17:23] PAUSE 걸림, 5분 대기
+  [10-11 17:28] PAUSE 걸림, 5분 대기
+  [10-11 17:33] PAUSE 걸림, 5분 대기
+  [10-11 17:38] PAUSE 걸림, 5분 대기
+  [10-11 17:43] PAUSE 걸림, 5분 대기
+  [10-11 17:48] PAUSE 걸림, 5분 대기
+  [10-11 17:53] PAUSE 걸림, 5분 대기
+  [10-11 17:58] PAUSE 걸림, 5분 대기
+[10-11 18:03] golf292  0/42  43 left, chunk 10
+[10-11 18:09] golf292  5/43  33 left, chunk 10
+[10-11 18:21] golf292  11/43  23 left, chunk 10
+[10-11 18:25] golf292  15/44  13 left, chunk 10
+[10-11 18:31] golf292  19/44  3 left, chunk 3
+  golf292: done
+[10-11 18:33] fill end

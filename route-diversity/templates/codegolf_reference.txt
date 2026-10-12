@@ -1,0 +1,18 @@
+Task-specific quality requirement: this task's maker already solves it. Its derive_operations is:
+
+```python
+{EXISTING_DERIVE_OPERATIONS}
+```
+
+Here is an entry from a code-golf competition that solves the same task in as few bytes of Python as its author could manage:
+
+```python
+{REFERENCE_SOLUTION}
+```
+
+That is how one code-golf team solved the same task. It is written to be short in bytes, not to be read, so its shape is not the point -- what is worth taking is the reading of the task underneath it.
+Where that reading carves the problem differently from the maker above -- a different thing treated as one unit, a different order, a different quantity held fixed -- write the operations that reading implies. Where the two agree there is nothing to change and you should say so.
+Do not try to make your route short. The reference is short because bytes were the objective there; here they are not. A longer route that follows a different reading is the wanted answer.
+Two limits hold regardless.
+Every selection must be something you can name from the input before you know the answer -- a rectangle, a connected object, all cells of one colour, a row, a column, the cells a copy lands on. A selection assembled by looking at the answer is the answer written into the selection.
+And the operations must be derivable from the input grid and the worked examples alone: handed a different answer grid, this function must return the same operations.

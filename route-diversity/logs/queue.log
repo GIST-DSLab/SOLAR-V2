@@ -1,0 +1,3238 @@
+[10-01 16:27] queue start
+[10-01 16:27] resample_a.json -> resample1, attempt 1, weekly 55%, 84 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   0d3d703e
+OK   0b148d64
+OK   1190e5a7
+OK   1c786137
+OK   1cf80156
+OK   1f85a75f
+OK   00d62c1b
+OK   23b5c85d
+OK   25ff71a9
+OK   025d127b
+OK   2dc579da
+OK   2dee498d
+OK   39a8645d
+OK   25d487eb
+OK   36fdfd69
+OK   3af2c5a8
+OK   42a50994
+OK   3bd67248
+OK   4347f46a
+OK   44d8ac46
+OK   3f7978a0
+OK   48d8fb45
+OK   50cb2852
+OK   56ff96f3
+OK   5bd6f4ac
+OK   5117e062
+OK   6150a2bd
+OK   60b61512
+OK   67385a82
+OK   62c24649
+OK   67a3c6ac
+OK   67e8384a
+OK   228f6490
+OK   6d0aefbc
+OK   6cdd2623
+OK   6fa7a44f
+OK   776ffc46
+OK   7447852a
+OK   7b7f7511
+OK   780d0b14
+OK   5daaa586
+OK   88a62173
+OK   8efcae92
+OK   91413438
+OK   99fa7670
+OK   952a094c
+OK   a5313dff
+WARN 963e52fc: example 1: redundant op at index 3: op=28, selection=[0, 0, 19, 3]; deleting it still produces O (candidate not written)
+OK   a1570a43
+OK   ac0a08a4
+OK   ae4f1146
+OK   a87f7484
+OK   90f3ed37
+OK   aedd82e4
+OK   b9b7f026
+OK   b230c067
+OK   ba26e723
+OK   bb43febb
+OK   c909285e
+OK   c9e6f938
+OK   c1d99e64
+OK   ce602527
+OK   cf98881b
+OK   d10ecb37
+OK   d511f180
+OK   ce9e57f2
+OK   d631b094
+OK   b190f7f5
+OK   d89b689b
+OK   a78176bb
+OK   d9fac9be
+OK   de1cd16c
+OK   e50d258f
+OK   e9afcf9a
+OK   ea32f347
+OK   e3497940
+OK   eb281b96
+OK   ed36ccf7
+OK   e48d4e1a
+OK   f25ffba3
+OK   f8b3ba0a
+OK   fcc82909
+OK   f8c80d96
+OK   e73095fd
+
+Done - OK=83  WARN=1
+[10-01 16:58] resample_a.json -> resample1, attempt 2, weekly 57%, 1 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   963e52fc
+
+Done - OK=1
+  resample_a.json -> resample1 : done
+[10-01 17:00] resample_b.json -> resample1, attempt 1, weekly 57%, 316 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   007bbfb7
+OK   045e512c
+OK   017c7c7b
+OK   0520fde7
+OK   08ed6ac7
+OK   05269061
+OK   0962bcdd
+OK   06df4c85
+OK   09629e4f
+OK   0ca9ddb6
+OK   0a938d79
+OK   10fcaaa3
+OK   05f2a901
+OK   0dfd9992
+OK   11852cab
+OK   178fcbfb
+OK   150deff5
+OK   1b2d62fb
+OK   1a07d186
+OK   1bfc4729
+WARN 0e206a2e: example 2: trajectory produced wrong output (6 cells wrong). First mismatches (row,col,got,want): (1,8,3,7), (1,9,3,7), (1,11,3,7), (2,9,3,7), (2,10,3,7), (2,11,3,7). Hint: FlipH/V operates on the ENTIRE region including pre-existing non-bgc cells — if a non-bgc cell (e.g. marker) sits inside a flip selection it gets displaced to the wrong position. Fix: (1) clear target region with bgc before each paste+flip, (2) after all paste+flip ops restore preserved cells (same non-bgc color in I and O) with Color ops (Pattern 7). (candidate not written)
+OK   1caeab9d
+OK   1b60fb0c
+OK   1e32b0e9
+OK   1e0a9b12
+OK   1f642eb9
+OK   1f876c06
+OK   1fad071e
+OK   1f0c79e5
+OK   2013d3e2
+OK   2204b7a8
+OK   22233c11
+OK   2281f1f4
+OK   22eb0ac0
+OK   22168020
+OK   23581191
+OK   253bf280
+OK   239be575
+OK   25d8a9c8
+OK   272f95fa
+OK   27a28665
+OK   28bf18c6
+OK   28e73c20
+OK   29623171
+OK   29c11459
+OK   137eaa0f
+OK   264363fd
+OK   234bbc79
+OK   29ec7d0e
+OK   2bee17df
+OK   2c608aff
+OK   31aa019c
+OK   32597951
+OK   2bcee788
+OK   321b1fc6
+OK   2dd70a9a
+OK   3428a4f5
+OK   3345333e
+OK   363442ee
+OK   3618c87e
+OK   36d67576
+OK   3906de3d
+OK   3ac3eb23
+OK   3631a71a
+WARN 3aa6fb7a: generate/sample_colors error: cannot import name 'choice' from 'dsl' (/hdd_data/yunho/solar-traj/re-arc/dsl.py) (candidate not written)
+OK   3bdb4ada
+OK   3c9b0459
+OK   3befdf3e
+OK   3de23699
+OK   40853293
+OK   3eda0437
+OK   39e1d7f9
+OK   41e4d17e
+OK   4258a5f9
+OK   3e980e27
+OK   445eab21
+OK   444801d8
+OK   447fd412
+OK   44f52bb0
+OK   4612dd53
+OK   4290ef0e
+OK   46442a0e
+OK   46f33fce
+OK   4093f84a
+OK   4522001f
+OK   469497ad
+OK   47c1f68c
+OK   496994bd
+OK   49d1d64f
+OK   4be741c5
+OK   4c4377d9
+OK   4c5c2cf0
+OK   4938f0c2
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 50846271: no code extracted
+FAIL 539a4f51: no code extracted
+FAIL 53b68214: no code extracted
+FAIL 543a7ed5: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 54d9e175: no code extracted
+FAIL 5521c0d9: no code extracted
+FAIL 5582e5ca: no code extracted
+FAIL 5614dbcf: no code extracted
+FAIL 56dc2b01: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 5ad4f10b: no code extracted
+FAIL 5c0a986e: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 63613498: no code extracted
+FAIL 6430c8c4: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 662c240a: no code extracted
+FAIL 673ef223: no code extracted
+FAIL 6773b310: no code extracted
+FAIL 67a423a3: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 68b16354: no code extracted
+FAIL 694f12f3: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 6c434453: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6d0160f0: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 6e02f1e3: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 72322fa7: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL 73251a56: no code extracted
+FAIL 7468f01a: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 74dd1130: no code extracted
+FAIL 75b8110e: no code extracted
+FAIL 760b3cac: no code extracted
+FAIL 77fdfe62: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 794b24be: no code extracted
+FAIL 7b6016b9: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 7ddcd7ec: no code extracted
+FAIL 7df24a62: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 7fe24cdd: no code extracted
+FAIL 80af3007: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL 82819916: no code extracted
+FAIL 83302e8f: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 846bdb03: no code extracted
+FAIL 855e0971: no code extracted
+FAIL 85c4e7cd: no code extracted
+FAIL 868de0fa: no code extracted
+FAIL 8731374e: no code extracted
+FAIL 88a10436: no code extracted
+FAIL 890034e9: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8be77c9e: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 8eb1be9a: no code extracted
+FAIL 8f2ea7aa: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 913fb3ed: no code extracted
+FAIL 91714a58: no code extracted
+FAIL 9172f3a0: no code extracted
+FAIL 928ad970: no code extracted
+FAIL 93b581b8: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 94f9d214: no code extracted
+FAIL 9565186b: no code extracted
+FAIL 95990924: no code extracted
+FAIL 97999447: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL 98cf29f8: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 99b1bc43: no code extracted
+FAIL 9aec4887: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 9d9215db: no code extracted
+FAIL 9dfd6313: no code extracted
+FAIL 9ecd008a: no code extracted
+FAIL 9edfc990: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a2fd1cf0: no code extracted
+FAIL a3325580: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL a416b8f3: no code extracted
+FAIL a48eeaf7: no code extracted
+FAIL a5f85a15: no code extracted
+FAIL a61ba2ce: no code extracted
+FAIL a61f2674: no code extracted
+FAIL a64e4611: no code extracted
+FAIL a65b410d: no code extracted
+FAIL a68b268e: no code extracted
+FAIL a699fb00: no code extracted
+FAIL a740d043: no code extracted
+FAIL a79310a0: no code extracted
+FAIL a85d4709: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL a8d7556c: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL aabf363d: no code extracted
+FAIL aba27056: no code extracted
+FAIL ae3edfdc: no code extracted
+FAIL af902bf9: no code extracted
+FAIL b0c4d837: no code extracted
+FAIL b1948b0a: no code extracted
+FAIL b27ca6d3: no code extracted
+FAIL b2862040: no code extracted
+FAIL b527c5c6: no code extracted
+FAIL b548a754: no code extracted
+FAIL b60334d2: no code extracted
+FAIL b6afb2da: no code extracted
+FAIL b7249182: no code extracted
+FAIL b775ac94: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL b8825c91: no code extracted
+FAIL b8cdaf2b: no code extracted
+FAIL b91ae062: no code extracted
+FAIL b94a9452: no code extracted
+FAIL ba97ae07: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL bda2d7a6: no code extracted
+FAIL bdad9b1f: no code extracted
+FAIL be94b721: no code extracted
+FAIL beb8660c: no code extracted
+FAIL c0f76784: no code extracted
+FAIL c3e719e8: no code extracted
+FAIL c3f564a4: no code extracted
+FAIL c444b776: no code extracted
+FAIL c59eb873: no code extracted
+FAIL c8cbb738: no code extracted
+FAIL c8f0f002: no code extracted
+FAIL c9f8e694: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL cbded52d: no code extracted
+FAIL cce03e0d: no code extracted
+FAIL cdecee7f: no code extracted
+FAIL ce22a75a: no code extracted
+FAIL ce4f8723: no code extracted
+FAIL d037b0a7: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL d07ae81c: no code extracted
+FAIL d0f5fe59: no code extracted
+FAIL d13f3404: no code extracted
+FAIL d22278a0: no code extracted
+FAIL d23f8c26: no code extracted
+FAIL d2abd087: no code extracted
+FAIL d364b489: no code extracted
+FAIL d406998b: no code extracted
+FAIL d43fd935: no code extracted
+FAIL d4469b4b: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d5d6de2d: no code extracted
+FAIL d687bc17: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d8c310e9: no code extracted
+FAIL d90796e8: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL dae9d2b5: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL db93a21d: no code extracted
+FAIL dbc1a6ce: no code extracted
+FAIL dc0a314f: no code extracted
+FAIL dc1df850: no code extracted
+FAIL dc433765: no code extracted
+FAIL ddf7fa4f: no code extracted
+FAIL ded97339: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL e26a3af2: no code extracted
+FAIL e40b9e2f: no code extracted
+FAIL e5062a87: no code extracted
+FAIL e509e548: no code extracted
+FAIL e6721834: no code extracted
+FAIL e76a88a6: no code extracted
+FAIL e8593010: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL e98196ab: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL ec883f72: no code extracted
+FAIL ecdecbb3: no code extracted
+FAIL ef135b50: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f1cefba8: no code extracted
+FAIL f25fbde4: no code extracted
+FAIL f2829549: no code extracted
+FAIL f35d900a: no code extracted
+FAIL f5b8619d: no code extracted
+FAIL f76d97a5: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f8ff0b80: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL fafffa47: no code extracted
+FAIL fcb5c309: no code extracted
+FAIL feca6190: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL ff805c23: no code extracted
+OK   508bd3b6
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 484b58aa: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 5168d44c: no code extracted
+
+Done - OK=92  WARN=2  FAIL=222
+[10-01 17:42] resample_b.json -> resample1, attempt 2, weekly 61%, 224 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 484b58aa: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 539a4f51: no code extracted
+FAIL 53b68214: no code extracted
+FAIL 543a7ed5: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 54d9e175: no code extracted
+FAIL 5521c0d9: no code extracted
+FAIL 5582e5ca: no code extracted
+FAIL 5614dbcf: no code extracted
+FAIL 56dc2b01: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 5ad4f10b: no code extracted
+FAIL 5c0a986e: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 63613498: no code extracted
+FAIL 6430c8c4: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 50846271: no code extracted
+FAIL 662c240a: no code extracted
+FAIL 673ef223: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 6773b310: no code extracted
+FAIL 67a423a3: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 68b16354: no code extracted
+FAIL 0e206a2e: no code extracted
+FAIL 694f12f3: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 6a1e5592: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 6cf79266: no code extracted
+FAIL 6d0160f0: no code extracted
+FAIL 3aa6fb7a: no code extracted
+FAIL 6c434453: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6e02f1e3: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 7468f01a: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 74dd1130: no code extracted
+FAIL 72322fa7: no code extracted
+FAIL 75b8110e: no code extracted
+FAIL 760b3cac: no code extracted
+FAIL 77fdfe62: no code extracted
+FAIL 794b24be: no code extracted
+FAIL 7b6016b9: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 7ddcd7ec: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 7fe24cdd: no code extracted
+FAIL 80af3007: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL 82819916: no code extracted
+FAIL 83302e8f: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 73251a56: no code extracted
+FAIL 855e0971: no code extracted
+FAIL 846bdb03: no code extracted
+FAIL 85c4e7cd: no code extracted
+FAIL 8731374e: no code extracted
+FAIL 868de0fa: no code extracted
+FAIL 88a10436: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8be77c9e: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 890034e9: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 8eb1be9a: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 8f2ea7aa: no code extracted
+FAIL 91714a58: no code extracted
+FAIL 913fb3ed: no code extracted
+FAIL 928ad970: no code extracted
+FAIL 9172f3a0: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 94f9d214: no code extracted
+FAIL 9565186b: no code extracted
+FAIL 93b581b8: no code extracted
+FAIL 97999447: no code extracted
+FAIL 95990924: no code extracted
+FAIL 98cf29f8: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL 99b1bc43: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 9d9215db: no code extracted
+FAIL 9aec4887: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL 9dfd6313: no code extracted
+FAIL 9edfc990: no code extracted
+FAIL 9f236235: no code extracted
+FAIL 9ecd008a: no code extracted
+FAIL a2fd1cf0: no code extracted
+FAIL a416b8f3: no code extracted
+FAIL a48eeaf7: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL a5f85a15: no code extracted
+FAIL a3325580: no code extracted
+FAIL a61f2674: no code extracted
+FAIL a65b410d: no code extracted
+FAIL a68b268e: no code extracted
+FAIL a699fb00: no code extracted
+FAIL a61ba2ce: no code extracted
+FAIL a64e4611: no code extracted
+FAIL a85d4709: no code extracted
+FAIL a79310a0: no code extracted
+FAIL a8d7556c: no code extracted
+FAIL a740d043: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL aba27056: no code extracted
+FAIL ae3edfdc: no code extracted
+FAIL aabf363d: no code extracted
+FAIL af902bf9: no code extracted
+FAIL b1948b0a: no code extracted
+FAIL 7df24a62: no code extracted
+FAIL b0c4d837: no code extracted
+FAIL b27ca6d3: no code extracted
+FAIL b548a754: no code extracted
+FAIL b60334d2: no code extracted
+FAIL b6afb2da: no code extracted
+FAIL b7249182: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL b8825c91: no code extracted
+FAIL b8cdaf2b: no code extracted
+FAIL b91ae062: no code extracted
+FAIL b94a9452: no code extracted
+FAIL ba97ae07: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL b775ac94: no code extracted
+FAIL bdad9b1f: no code extracted
+FAIL bda2d7a6: no code extracted
+FAIL beb8660c: no code extracted
+FAIL be94b721: no code extracted
+FAIL c3e719e8: no code extracted
+FAIL c0f76784: no code extracted
+FAIL c3f564a4: no code extracted
+FAIL c59eb873: no code extracted
+FAIL c444b776: no code extracted
+FAIL c8cbb738: no code extracted
+FAIL c9f8e694: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL cbded52d: no code extracted
+FAIL c8f0f002: no code extracted
+FAIL cdecee7f: no code extracted
+FAIL cce03e0d: no code extracted
+FAIL b527c5c6: no code extracted
+FAIL ce4f8723: no code extracted
+FAIL ce22a75a: no code extracted
+FAIL b2862040: no code extracted
+FAIL d037b0a7: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL d13f3404: no code extracted
+FAIL d23f8c26: no code extracted
+FAIL d0f5fe59: no code extracted
+FAIL d22278a0: no code extracted
+FAIL d406998b: no code extracted
+FAIL d364b489: no code extracted
+FAIL d43fd935: no code extracted
+FAIL d4469b4b: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d2abd087: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d687bc17: no code extracted
+FAIL d8c310e9: no code extracted
+FAIL d5d6de2d: no code extracted
+FAIL d90796e8: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL dbc1a6ce: no code extracted
+FAIL dae9d2b5: no code extracted
+FAIL db93a21d: no code extracted
+FAIL dc433765: no code extracted
+FAIL dc1df850: no code extracted
+FAIL ded97339: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL ddf7fa4f: no code extracted
+FAIL dc0a314f: no code extracted
+FAIL e26a3af2: no code extracted
+FAIL e40b9e2f: no code extracted
+FAIL e5062a87: no code extracted
+FAIL e76a88a6: no code extracted
+FAIL e6721834: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL d07ae81c: no code extracted
+FAIL e8593010: no code extracted
+FAIL e98196ab: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL e509e548: no code extracted
+FAIL ec883f72: no code extracted
+FAIL ecdecbb3: no code extracted
+FAIL f1cefba8: no code extracted
+FAIL ef135b50: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f5b8619d: no code extracted
+FAIL f2829549: no code extracted
+FAIL f25fbde4: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f76d97a5: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL f35d900a: no code extracted
+FAIL fafffa47: no code extracted
+FAIL feca6190: no code extracted
+FAIL fcb5c309: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL ff805c23: no code extracted
+FAIL f8ff0b80: no code extracted
+
+Done - FAIL=224
+[10-01 17:42] resample_b.json -> resample1, attempt 3, weekly 61%, 224 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 50846271: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 539a4f51: no code extracted
+FAIL 53b68214: no code extracted
+FAIL 543a7ed5: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 54d9e175: no code extracted
+FAIL 5521c0d9: no code extracted
+FAIL 5582e5ca: no code extracted
+FAIL 5614dbcf: no code extracted
+FAIL 56dc2b01: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0e206a2e: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 5ad4f10b: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 484b58aa: no code extracted
+FAIL 6430c8c4: no code extracted
+FAIL 5c0a986e: no code extracted
+FAIL 662c240a: no code extracted
+FAIL 673ef223: no code extracted
+FAIL 6773b310: no code extracted
+FAIL 67a423a3: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 63613498: no code extracted
+FAIL 6855a6e4: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 694f12f3: no code extracted
+FAIL 3aa6fb7a: no code extracted
+FAIL 68b16354: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 6c434453: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6d0160f0: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6e02f1e3: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 72322fa7: no code extracted
+FAIL 7468f01a: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 74dd1130: no code extracted
+FAIL 75b8110e: no code extracted
+FAIL 760b3cac: no code extracted
+FAIL 77fdfe62: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 794b24be: no code extracted
+FAIL 7b6016b9: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 7ddcd7ec: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 7fe24cdd: no code extracted
+FAIL 80af3007: no code extracted
+FAIL 73251a56: no code extracted
+FAIL 82819916: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 846bdb03: no code extracted
+FAIL 855e0971: no code extracted
+FAIL 85c4e7cd: no code extracted
+FAIL 868de0fa: no code extracted
+FAIL 8731374e: no code extracted
+FAIL 83302e8f: no code extracted
+FAIL 88a10436: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8be77c9e: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 8eb1be9a: no code extracted
+FAIL 8f2ea7aa: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 890034e9: no code extracted
+FAIL 91714a58: no code extracted
+FAIL 9172f3a0: no code extracted
+FAIL 928ad970: no code extracted
+FAIL 93b581b8: no code extracted
+FAIL 913fb3ed: no code extracted
+FAIL 94f9d214: no code extracted
+FAIL 9565186b: no code extracted
+FAIL 95990924: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL 97999447: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL 98cf29f8: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 9aec4887: no code extracted
+FAIL 99b1bc43: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 9dfd6313: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 9d9215db: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a2fd1cf0: no code extracted
+FAIL 9edfc990: no code extracted
+FAIL 9ecd008a: no code extracted
+FAIL a3325580: no code extracted
+FAIL a48eeaf7: no code extracted
+FAIL a5f85a15: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL a416b8f3: no code extracted
+FAIL a61f2674: no code extracted
+FAIL a64e4611: no code extracted
+FAIL a68b268e: no code extracted
+FAIL a699fb00: no code extracted
+FAIL a61ba2ce: no code extracted
+FAIL a65b410d: no code extracted
+FAIL a85d4709: no code extracted
+FAIL a740d043: no code extracted
+FAIL a8d7556c: no code extracted
+FAIL a79310a0: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL aba27056: no code extracted
+FAIL ae3edfdc: no code extracted
+FAIL af902bf9: no code extracted
+FAIL b0c4d837: no code extracted
+FAIL b1948b0a: no code extracted
+FAIL b27ca6d3: no code extracted
+FAIL aabf363d: no code extracted
+FAIL 7df24a62: no code extracted
+FAIL b548a754: no code extracted
+FAIL b60334d2: no code extracted
+FAIL b6afb2da: no code extracted
+FAIL b7249182: no code extracted
+FAIL b775ac94: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL b8825c91: no code extracted
+FAIL b8cdaf2b: no code extracted
+FAIL b91ae062: no code extracted
+FAIL b94a9452: no code extracted
+FAIL ba97ae07: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL bda2d7a6: no code extracted
+FAIL bdad9b1f: no code extracted
+FAIL be94b721: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL c0f76784: no code extracted
+FAIL beb8660c: no code extracted
+FAIL c3e719e8: no code extracted
+FAIL c444b776: no code extracted
+FAIL b527c5c6: no code extracted
+FAIL c59eb873: no code extracted
+FAIL c3f564a4: no code extracted
+FAIL c8cbb738: no code extracted
+FAIL c8f0f002: no code extracted
+FAIL c9f8e694: no code extracted
+FAIL cce03e0d: no code extracted
+FAIL cdecee7f: no code extracted
+FAIL ce22a75a: no code extracted
+FAIL ce4f8723: no code extracted
+FAIL d037b0a7: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL cbded52d: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL d13f3404: no code extracted
+FAIL d0f5fe59: no code extracted
+FAIL d23f8c26: no code extracted
+FAIL d22278a0: no code extracted
+FAIL b2862040: no code extracted
+FAIL d2abd087: no code extracted
+FAIL d406998b: no code extracted
+FAIL d364b489: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d5d6de2d: no code extracted
+FAIL d687bc17: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d4469b4b: no code extracted
+FAIL d90796e8: no code extracted
+FAIL d8c310e9: no code extracted
+FAIL dae9d2b5: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL dbc1a6ce: no code extracted
+FAIL dc0a314f: no code extracted
+FAIL dc1df850: no code extracted
+FAIL dc433765: no code extracted
+FAIL ddf7fa4f: no code extracted
+FAIL ded97339: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL e26a3af2: no code extracted
+FAIL d43fd935: no code extracted
+FAIL db93a21d: no code extracted
+FAIL e40b9e2f: no code extracted
+FAIL e6721834: no code extracted
+FAIL e76a88a6: no code extracted
+FAIL e5062a87: no code extracted
+FAIL e8593010: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e98196ab: no code extracted
+FAIL e9614598: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL ec883f72: no code extracted
+FAIL ecdecbb3: no code extracted
+FAIL e509e548: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f25fbde4: no code extracted
+FAIL f1cefba8: no code extracted
+FAIL f2829549: no code extracted
+FAIL f5b8619d: no code extracted
+FAIL f76d97a5: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f35d900a: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL fafffa47: no code extracted
+FAIL ef135b50: no code extracted
+FAIL feca6190: no code extracted
+FAIL fcb5c309: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL d07ae81c: no code extracted
+FAIL ff805c23: no code extracted
+FAIL f8ff0b80: no code extracted
+
+Done - FAIL=224
+[10-01 17:43] resample_b.json -> resample1, attempt 4, weekly 61%, 224 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 3aa6fb7a: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 539a4f51: no code extracted
+FAIL 53b68214: no code extracted
+FAIL 543a7ed5: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 54d9e175: no code extracted
+FAIL 5521c0d9: no code extracted
+FAIL 5582e5ca: no code extracted
+FAIL 5614dbcf: no code extracted
+FAIL 56dc2b01: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 50846271: no code extracted
+FAIL 5ad4f10b: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 57aa92db: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 484b58aa: no code extracted
+FAIL 6430c8c4: no code extracted
+FAIL 5c0a986e: no code extracted
+FAIL 662c240a: no code extracted
+FAIL 673ef223: no code extracted
+FAIL 63613498: no code extracted
+FAIL 6773b310: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 67a423a3: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 68b16354: no code extracted
+FAIL 0e206a2e: no code extracted
+FAIL 694f12f3: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6c434453: no code extracted
+FAIL 6d0160f0: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6e02f1e3: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 72322fa7: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 7468f01a: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 74dd1130: no code extracted
+FAIL 75b8110e: no code extracted
+FAIL 760b3cac: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 77fdfe62: no code extracted
+FAIL 794b24be: no code extracted
+FAIL 7b6016b9: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 7ddcd7ec: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 73251a56: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7fe24cdd: no code extracted
+FAIL 80af3007: no code extracted
+FAIL 82819916: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 83302e8f: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 846bdb03: no code extracted
+FAIL 855e0971: no code extracted
+FAIL 85c4e7cd: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 8731374e: no code extracted
+FAIL 868de0fa: no code extracted
+FAIL 88a10436: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8be77c9e: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL 8eb1be9a: no code extracted
+FAIL 8f2ea7aa: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 890034e9: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 91714a58: no code extracted
+FAIL 928ad970: no code extracted
+FAIL 9172f3a0: no code extracted
+FAIL 913fb3ed: no code extracted
+FAIL 94f9d214: no code extracted
+FAIL 9565186b: no code extracted
+FAIL 95990924: no code extracted
+FAIL 93b581b8: no code extracted
+FAIL 97999447: no code extracted
+FAIL 98cf29f8: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 99b1bc43: no code extracted
+FAIL 9aec4887: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 9dfd6313: no code extracted
+FAIL 9ecd008a: no code extracted
+FAIL 9d9215db: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a2fd1cf0: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL a3325580: no code extracted
+FAIL 9edfc990: no code extracted
+FAIL a416b8f3: no code extracted
+FAIL a5f85a15: no code extracted
+FAIL a61f2674: no code extracted
+FAIL a48eeaf7: no code extracted
+FAIL a65b410d: no code extracted
+FAIL a68b268e: no code extracted
+FAIL a699fb00: no code extracted
+FAIL a740d043: no code extracted
+FAIL a61ba2ce: no code extracted
+FAIL a85d4709: no code extracted
+FAIL a64e4611: no code extracted
+FAIL a8d7556c: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL a79310a0: no code extracted
+FAIL aba27056: no code extracted
+FAIL ae3edfdc: no code extracted
+FAIL af902bf9: no code extracted
+FAIL b0c4d837: no code extracted
+FAIL aabf363d: no code extracted
+FAIL b1948b0a: no code extracted
+FAIL b27ca6d3: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL b548a754: no code extracted
+FAIL b60334d2: no code extracted
+FAIL b6afb2da: no code extracted
+FAIL b7249182: no code extracted
+FAIL b775ac94: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL b8825c91: no code extracted
+FAIL b8cdaf2b: no code extracted
+FAIL b91ae062: no code extracted
+FAIL b94a9452: no code extracted
+FAIL ba97ae07: no code extracted
+FAIL b527c5c6: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL 7df24a62: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bda2d7a6: no code extracted
+FAIL beb8660c: no code extracted
+FAIL bdad9b1f: no code extracted
+FAIL b2862040: no code extracted
+FAIL c3e719e8: no code extracted
+FAIL c444b776: no code extracted
+FAIL c59eb873: no code extracted
+FAIL be94b721: no code extracted
+FAIL c0f76784: no code extracted
+FAIL c9f8e694: no code extracted
+FAIL c8f0f002: no code extracted
+FAIL cbded52d: no code extracted
+FAIL c8cbb738: no code extracted
+FAIL cce03e0d: no code extracted
+FAIL ce22a75a: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL cdecee7f: no code extracted
+FAIL ce4f8723: no code extracted
+FAIL c3f564a4: no code extracted
+FAIL d037b0a7: no code extracted
+FAIL d13f3404: no code extracted
+FAIL d0f5fe59: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL d23f8c26: no code extracted
+FAIL d2abd087: no code extracted
+FAIL d406998b: no code extracted
+FAIL d22278a0: no code extracted
+FAIL d43fd935: no code extracted
+FAIL d4469b4b: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d364b489: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d5d6de2d: no code extracted
+FAIL d8c310e9: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d90796e8: no code extracted
+FAIL dae9d2b5: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL d687bc17: no code extracted
+FAIL dbc1a6ce: no code extracted
+FAIL dc1df850: no code extracted
+FAIL dc433765: no code extracted
+FAIL ddf7fa4f: no code extracted
+FAIL ded97339: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL dc0a314f: no code extracted
+FAIL e26a3af2: no code extracted
+FAIL e40b9e2f: no code extracted
+FAIL e5062a87: no code extracted
+FAIL db93a21d: no code extracted
+FAIL e76a88a6: no code extracted
+FAIL e6721834: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL e98196ab: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL e8593010: no code extracted
+FAIL ec883f72: no code extracted
+FAIL ecdecbb3: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f1cefba8: no code extracted
+FAIL ef135b50: no code extracted
+FAIL f2829549: no code extracted
+FAIL f25fbde4: no code extracted
+FAIL e509e548: no code extracted
+FAIL f76d97a5: no code extracted
+FAIL f35d900a: no code extracted
+FAIL f5b8619d: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL fafffa47: no code extracted
+FAIL feca6190: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL fcb5c309: no code extracted
+FAIL ff805c23: no code extracted
+FAIL d07ae81c: no code extracted
+FAIL f8ff0b80: no code extracted
+
+Done - FAIL=224
+[10-01 17:43] resample_b.json -> resample1, attempt 5, weekly 61%, 224 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 3aa6fb7a: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 539a4f51: no code extracted
+FAIL 53b68214: no code extracted
+FAIL 543a7ed5: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 54d9e175: no code extracted
+FAIL 5521c0d9: no code extracted
+FAIL 5582e5ca: no code extracted
+FAIL 5614dbcf: no code extracted
+FAIL 56dc2b01: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0e206a2e: no code extracted
+FAIL 484b58aa: no code extracted
+FAIL 5ad4f10b: no code extracted
+FAIL 5c2c9af4: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 5c0a986e: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 6430c8c4: no code extracted
+FAIL 63613498: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 662c240a: no code extracted
+FAIL 6773b310: no code extracted
+FAIL 67a423a3: no code extracted
+FAIL 673ef223: no code extracted
+FAIL 50846271: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 694f12f3: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 68b16354: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6d0160f0: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 6e02f1e3: no code extracted
+FAIL 6c434453: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 72322fa7: no code extracted
+FAIL 7468f01a: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 74dd1130: no code extracted
+FAIL 75b8110e: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 77fdfe62: no code extracted
+FAIL 760b3cac: no code extracted
+FAIL 794b24be: no code extracted
+FAIL 73251a56: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 7ddcd7ec: no code extracted
+FAIL 7b6016b9: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7fe24cdd: no code extracted
+FAIL 80af3007: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 82819916: no code extracted
+FAIL 83302e8f: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 846bdb03: no code extracted
+FAIL 855e0971: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL 85c4e7cd: no code extracted
+FAIL 868de0fa: no code extracted
+FAIL 8731374e: no code extracted
+FAIL 88a10436: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8be77c9e: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 8eb1be9a: no code extracted
+FAIL 890034e9: no code extracted
+FAIL 8f2ea7aa: no code extracted
+FAIL 913fb3ed: no code extracted
+FAIL 91714a58: no code extracted
+FAIL 9172f3a0: no code extracted
+FAIL 928ad970: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL 93b581b8: no code extracted
+FAIL 94f9d214: no code extracted
+FAIL 95990924: no code extracted
+FAIL 9565186b: no code extracted
+FAIL 97999447: no code extracted
+FAIL 98cf29f8: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 99b1bc43: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 9d9215db: no code extracted
+FAIL 9dfd6313: no code extracted
+FAIL 9aec4887: no code extracted
+FAIL 9ecd008a: no code extracted
+FAIL 9edfc990: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a2fd1cf0: no code extracted
+FAIL a3325580: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL a5f85a15: no code extracted
+FAIL a48eeaf7: no code extracted
+FAIL a61f2674: no code extracted
+FAIL a416b8f3: no code extracted
+FAIL a65b410d: no code extracted
+FAIL a68b268e: no code extracted
+FAIL a699fb00: no code extracted
+FAIL a61ba2ce: no code extracted
+FAIL a64e4611: no code extracted
+FAIL a85d4709: no code extracted
+FAIL a740d043: no code extracted
+FAIL a8d7556c: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL a79310a0: no code extracted
+FAIL aba27056: no code extracted
+FAIL ae3edfdc: no code extracted
+FAIL aabf363d: no code extracted
+FAIL af902bf9: no code extracted
+FAIL b0c4d837: no code extracted
+FAIL b27ca6d3: no code extracted
+FAIL b1948b0a: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL b548a754: no code extracted
+FAIL b60334d2: no code extracted
+FAIL b6afb2da: no code extracted
+FAIL b7249182: no code extracted
+FAIL b775ac94: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL b2862040: no code extracted
+FAIL b8cdaf2b: no code extracted
+FAIL b91ae062: no code extracted
+FAIL b94a9452: no code extracted
+FAIL ba97ae07: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL b8825c91: no code extracted
+FAIL bdad9b1f: no code extracted
+FAIL be94b721: no code extracted
+FAIL beb8660c: no code extracted
+FAIL bda2d7a6: no code extracted
+FAIL c3e719e8: no code extracted
+FAIL c0f76784: no code extracted
+FAIL c3f564a4: no code extracted
+FAIL c59eb873: no code extracted
+FAIL 7df24a62: no code extracted
+FAIL c8cbb738: no code extracted
+FAIL c444b776: no code extracted
+FAIL c9f8e694: no code extracted
+FAIL c8f0f002: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL cdecee7f: no code extracted
+FAIL ce22a75a: no code extracted
+FAIL cce03e0d: no code extracted
+FAIL d037b0a7: no code extracted
+FAIL cbded52d: no code extracted
+FAIL ce4f8723: no code extracted
+FAIL d0f5fe59: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL d13f3404: no code extracted
+FAIL d23f8c26: no code extracted
+FAIL b527c5c6: no code extracted
+FAIL d364b489: no code extracted
+FAIL d22278a0: no code extracted
+FAIL d43fd935: no code extracted
+FAIL d2abd087: no code extracted
+FAIL d406998b: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d4469b4b: no code extracted
+FAIL d5d6de2d: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d8c310e9: no code extracted
+FAIL d90796e8: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL dae9d2b5: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL d687bc17: no code extracted
+FAIL dbc1a6ce: no code extracted
+FAIL dc1df850: no code extracted
+FAIL dc433765: no code extracted
+FAIL ddf7fa4f: no code extracted
+FAIL ded97339: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL dc0a314f: no code extracted
+FAIL e26a3af2: no code extracted
+FAIL e40b9e2f: no code extracted
+FAIL e5062a87: no code extracted
+FAIL e6721834: no code extracted
+FAIL e76a88a6: no code extracted
+FAIL e8593010: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL e98196ab: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL ec883f72: no code extracted
+FAIL ecdecbb3: no code extracted
+FAIL db93a21d: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL ef135b50: no code extracted
+FAIL f1cefba8: no code extracted
+FAIL e509e548: no code extracted
+FAIL f35d900a: no code extracted
+FAIL f5b8619d: no code extracted
+FAIL f76d97a5: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f25fbde4: no code extracted
+FAIL f2829549: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL fafffa47: no code extracted
+FAIL feca6190: no code extracted
+FAIL d07ae81c: no code extracted
+FAIL fcb5c309: no code extracted
+FAIL ff805c23: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL f8ff0b80: no code extracted
+
+Done - FAIL=224
+[10-01 17:43] resample_b.json -> resample1, attempt 6, weekly 61%, 224 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 3aa6fb7a: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 539a4f51: no code extracted
+FAIL 53b68214: no code extracted
+FAIL 543a7ed5: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 54d9e175: no code extracted
+FAIL 5521c0d9: no code extracted
+FAIL 5582e5ca: no code extracted
+FAIL 5614dbcf: no code extracted
+FAIL 56dc2b01: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0e206a2e: no code extracted
+FAIL 5ad4f10b: no code extracted
+FAIL 57aa92db: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 5c2c9af4: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 63613498: no code extracted
+FAIL 484b58aa: no code extracted
+FAIL 6430c8c4: no code extracted
+FAIL 662c240a: no code extracted
+FAIL 673ef223: no code extracted
+FAIL 6773b310: no code extracted
+FAIL 67a423a3: no code extracted
+FAIL 5c0a986e: no code extracted
+FAIL 6855a6e4: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 681b3aeb: no code extracted
+FAIL 68b16354: no code extracted
+FAIL 694f12f3: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 50846271: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6d0160f0: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 6e02f1e3: no code extracted
+FAIL 6c434453: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 72322fa7: no code extracted
+FAIL 7468f01a: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 74dd1130: no code extracted
+FAIL 75b8110e: no code extracted
+FAIL 760b3cac: no code extracted
+FAIL 77fdfe62: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 794b24be: no code extracted
+FAIL 7b6016b9: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 7ddcd7ec: no code extracted
+FAIL 73251a56: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7fe24cdd: no code extracted
+FAIL 80af3007: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 82819916: no code extracted
+FAIL 83302e8f: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 846bdb03: no code extracted
+FAIL 855e0971: no code extracted
+FAIL 85c4e7cd: no code extracted
+FAIL 868de0fa: no code extracted
+FAIL 8731374e: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8be77c9e: no code extracted
+FAIL 88a10436: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 8eb1be9a: no code extracted
+FAIL 8f2ea7aa: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 913fb3ed: no code extracted
+FAIL 91714a58: no code extracted
+FAIL 9172f3a0: no code extracted
+FAIL 928ad970: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 890034e9: no code extracted
+FAIL 94f9d214: no code extracted
+FAIL 9565186b: no code extracted
+FAIL 93b581b8: no code extracted
+FAIL 97999447: no code extracted
+FAIL 95990924: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 98cf29f8: no code extracted
+FAIL 99b1bc43: no code extracted
+FAIL 9aec4887: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 9d9215db: no code extracted
+FAIL 9dfd6313: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a2fd1cf0: no code extracted
+FAIL 9edfc990: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL a416b8f3: no code extracted
+FAIL a48eeaf7: no code extracted
+FAIL a5f85a15: no code extracted
+FAIL a3325580: no code extracted
+FAIL a61f2674: no code extracted
+FAIL 9ecd008a: no code extracted
+FAIL a65b410d: no code extracted
+FAIL a68b268e: no code extracted
+FAIL a699fb00: no code extracted
+FAIL a64e4611: no code extracted
+FAIL a740d043: no code extracted
+FAIL a85d4709: no code extracted
+FAIL a79310a0: no code extracted
+FAIL a8d7556c: no code extracted
+FAIL a61ba2ce: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL aba27056: no code extracted
+FAIL ae3edfdc: no code extracted
+FAIL af902bf9: no code extracted
+FAIL b0c4d837: no code extracted
+FAIL b1948b0a: no code extracted
+FAIL b27ca6d3: no code extracted
+FAIL 7df24a62: no code extracted
+FAIL aabf363d: no code extracted
+FAIL b548a754: no code extracted
+FAIL b60334d2: no code extracted
+FAIL b6afb2da: no code extracted
+FAIL b7249182: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL b2862040: no code extracted
+FAIL b775ac94: no code extracted
+FAIL b8cdaf2b: no code extracted
+FAIL b94a9452: no code extracted
+FAIL ba97ae07: no code extracted
+FAIL b91ae062: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bdad9b1f: no code extracted
+FAIL b8825c91: no code extracted
+FAIL be94b721: no code extracted
+FAIL beb8660c: no code extracted
+FAIL c3e719e8: no code extracted
+FAIL bda2d7a6: no code extracted
+FAIL c444b776: no code extracted
+FAIL b527c5c6: no code extracted
+FAIL c0f76784: no code extracted
+FAIL c59eb873: no code extracted
+FAIL c3f564a4: no code extracted
+FAIL c9f8e694: no code extracted
+FAIL c8cbb738: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL cdecee7f: no code extracted
+FAIL ce22a75a: no code extracted
+FAIL cce03e0d: no code extracted
+FAIL d037b0a7: no code extracted
+FAIL ce4f8723: no code extracted
+FAIL cbded52d: no code extracted
+FAIL c8f0f002: no code extracted
+FAIL d13f3404: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL d23f8c26: no code extracted
+FAIL d0f5fe59: no code extracted
+FAIL d364b489: no code extracted
+FAIL d406998b: no code extracted
+FAIL d2abd087: no code extracted
+FAIL d4469b4b: no code extracted
+FAIL d43fd935: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d22278a0: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d687bc17: no code extracted
+FAIL d90796e8: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL d8c310e9: no code extracted
+FAIL d5d6de2d: no code extracted
+FAIL dae9d2b5: no code extracted
+FAIL dbc1a6ce: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL dc1df850: no code extracted
+FAIL dc433765: no code extracted
+FAIL dc0a314f: no code extracted
+FAIL ded97339: no code extracted
+FAIL ddf7fa4f: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e26a3af2: no code extracted
+FAIL e21d9049: no code extracted
+FAIL e40b9e2f: no code extracted
+FAIL db93a21d: no code extracted
+FAIL e5062a87: no code extracted
+FAIL e76a88a6: no code extracted
+FAIL e8593010: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL e6721834: no code extracted
+FAIL e98196ab: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL ec883f72: no code extracted
+FAIL ecdecbb3: no code extracted
+FAIL e509e548: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f1cefba8: no code extracted
+FAIL f2829549: no code extracted
+FAIL ef135b50: no code extracted
+FAIL f35d900a: no code extracted
+FAIL f76d97a5: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f25fbde4: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL f5b8619d: no code extracted
+FAIL fafffa47: no code extracted
+FAIL feca6190: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL fcb5c309: no code extracted
+FAIL ff805c23: no code extracted
+FAIL f8ff0b80: no code extracted
+FAIL d07ae81c: no code extracted
+
+Done - FAIL=224
+  barc_pilot.json -> barc1 : done
+[10-01 17:44] barc_rest.json -> barc1, attempt 1, weekly 61%, 131 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 017c7c7b: no code extracted
+FAIL 05269061: no code extracted
+FAIL 05f2a901: no code extracted
+FAIL 06df4c85: no code extracted
+FAIL 08ed6ac7: no code extracted
+FAIL 09629e4f: no code extracted
+FAIL 0962bcdd: no code extracted
+FAIL 0a938d79: no code extracted
+FAIL 0ca9ddb6: no code extracted
+FAIL 0dfd9992: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 045e512c: no code extracted
+FAIL 10fcaaa3: no code extracted
+FAIL 11852cab: no code extracted
+FAIL 137eaa0f: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0520fde7: no code extracted
+FAIL 178fcbfb: no code extracted
+FAIL 1a07d186: no code extracted
+FAIL 1b2d62fb: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 150deff5: no code extracted
+FAIL 1b60fb0c: no code extracted
+FAIL 1bfc4729: no code extracted
+FAIL 1e32b0e9: no code extracted
+FAIL 1caeab9d: no code extracted
+FAIL 1f642eb9: no code extracted
+FAIL 2204b7a8: no code extracted
+FAIL 007bbfb7: no code extracted
+FAIL 23581191: no code extracted
+FAIL 25d8a9c8: no code extracted
+FAIL 0e206a2e: no code extracted
+FAIL 1fad071e: no code extracted
+FAIL 29623171: no code extracted
+FAIL 28e73c20: no code extracted
+FAIL 2bcee788: no code extracted
+FAIL 29c11459: no code extracted
+FAIL 2c608aff: no code extracted
+FAIL 31aa019c: no code extracted
+FAIL 2dd70a9a: no code extracted
+FAIL 264363fd: no code extracted
+FAIL 3618c87e: no code extracted
+FAIL 3345333e: no code extracted
+FAIL 3428a4f5: no code extracted
+FAIL 3bdb4ada: no code extracted
+FAIL 3ac3eb23: no code extracted
+FAIL 3befdf3e: no code extracted
+FAIL 3de23699: no code extracted
+FAIL 4093f84a: no code extracted
+FAIL 41e4d17e: no code extracted
+FAIL 4258a5f9: no code extracted
+FAIL 3e980e27: no code extracted
+FAIL 444801d8: no code extracted
+FAIL 469497ad: no code extracted
+FAIL 44f52bb0: no code extracted
+FAIL 46f33fce: no code extracted
+FAIL 4c5c2cf0: no code extracted
+FAIL 508bd3b6: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 56dc2b01: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 239be575: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 3eda0437: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL aba27056: no code extracted
+FAIL a79310a0: no code extracted
+FAIL af902bf9: no code extracted
+FAIL b7249182: no code extracted
+FAIL aabf363d: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL b775ac94: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL d2abd087: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL feca6190: no code extracted
+FAIL b527c5c6: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL db93a21d: no code extracted
+FAIL e509e548: no code extracted
+
+Done - FAIL=131
+[10-01 17:44] barc_rest.json -> barc1, attempt 2, weekly 61%, 131 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 007bbfb7: no code extracted
+FAIL 05269061: no code extracted
+FAIL 05f2a901: no code extracted
+FAIL 06df4c85: no code extracted
+FAIL 08ed6ac7: no code extracted
+FAIL 09629e4f: no code extracted
+FAIL 0962bcdd: no code extracted
+FAIL 0a938d79: no code extracted
+FAIL 0ca9ddb6: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0dfd9992: no code extracted
+FAIL 045e512c: no code extracted
+FAIL 10fcaaa3: no code extracted
+FAIL 11852cab: no code extracted
+FAIL 137eaa0f: no code extracted
+FAIL 150deff5: no code extracted
+FAIL 178fcbfb: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 1a07d186: no code extracted
+FAIL 1b2d62fb: no code extracted
+FAIL 1b60fb0c: no code extracted
+FAIL 1bfc4729: no code extracted
+FAIL 1caeab9d: no code extracted
+FAIL 1e32b0e9: no code extracted
+FAIL 1f642eb9: no code extracted
+FAIL 017c7c7b: no code extracted
+FAIL 2204b7a8: no code extracted
+FAIL 0520fde7: no code extracted
+FAIL 1fad071e: no code extracted
+FAIL 23581191: no code extracted
+FAIL 25d8a9c8: no code extracted
+FAIL 28e73c20: no code extracted
+FAIL 29623171: no code extracted
+FAIL 29c11459: no code extracted
+FAIL 2bcee788: no code extracted
+FAIL 2c608aff: no code extracted
+FAIL 264363fd: no code extracted
+FAIL 2dd70a9a: no code extracted
+FAIL 31aa019c: no code extracted
+FAIL 3428a4f5: no code extracted
+FAIL 3618c87e: no code extracted
+FAIL 3345333e: no code extracted
+FAIL 3ac3eb23: no code extracted
+FAIL 3bdb4ada: no code extracted
+FAIL 3de23699: no code extracted
+FAIL 3befdf3e: no code extracted
+FAIL 239be575: no code extracted
+FAIL 3e980e27: no code extracted
+FAIL 4093f84a: no code extracted
+FAIL 41e4d17e: no code extracted
+FAIL 4258a5f9: no code extracted
+FAIL 44f52bb0: no code extracted
+FAIL 469497ad: no code extracted
+FAIL 46f33fce: no code extracted
+FAIL 444801d8: no code extracted
+FAIL 508bd3b6: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 4c5c2cf0: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 56dc2b01: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 3eda0437: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 0e206a2e: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL a79310a0: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL aba27056: no code extracted
+FAIL af902bf9: no code extracted
+FAIL aabf363d: no code extracted
+FAIL b7249182: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL b775ac94: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL d2abd087: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL b527c5c6: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL db93a21d: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL feca6190: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL e509e548: no code extracted
+
+Done - FAIL=131
+[10-01 17:44] barc_rest.json -> barc1, attempt 3, weekly 61%, 131 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 017c7c7b: no code extracted
+FAIL 05269061: no code extracted
+FAIL 05f2a901: no code extracted
+FAIL 06df4c85: no code extracted
+FAIL 08ed6ac7: no code extracted
+FAIL 09629e4f: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0962bcdd: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0a938d79: no code extracted
+FAIL 0ca9ddb6: no code extracted
+FAIL 007bbfb7: no code extracted
+FAIL 0520fde7: no code extracted
+FAIL 0dfd9992: no code extracted
+FAIL 10fcaaa3: no code extracted
+FAIL 137eaa0f: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 11852cab: no code extracted
+FAIL 178fcbfb: no code extracted
+FAIL 1a07d186: no code extracted
+FAIL 045e512c: no code extracted
+FAIL 1b60fb0c: no code extracted
+FAIL 1bfc4729: no code extracted
+FAIL 1b2d62fb: no code extracted
+FAIL 1e32b0e9: no code extracted
+FAIL 1f642eb9: no code extracted
+FAIL 1caeab9d: no code extracted
+FAIL 2204b7a8: no code extracted
+FAIL 23581191: no code extracted
+FAIL 1fad071e: no code extracted
+FAIL 25d8a9c8: no code extracted
+FAIL 150deff5: no code extracted
+FAIL 28e73c20: no code extracted
+FAIL 29623171: no code extracted
+FAIL 29c11459: no code extracted
+FAIL 2bcee788: no code extracted
+FAIL 264363fd: no code extracted
+FAIL 2c608aff: no code extracted
+FAIL 2dd70a9a: no code extracted
+FAIL 31aa019c: no code extracted
+FAIL 3428a4f5: no code extracted
+FAIL 3618c87e: no code extracted
+FAIL 3ac3eb23: no code extracted
+FAIL 3345333e: no code extracted
+FAIL 3bdb4ada: no code extracted
+FAIL 3de23699: no code extracted
+FAIL 3befdf3e: no code extracted
+FAIL 3e980e27: no code extracted
+FAIL 4093f84a: no code extracted
+FAIL 41e4d17e: no code extracted
+FAIL 4258a5f9: no code extracted
+FAIL 444801d8: no code extracted
+FAIL 44f52bb0: no code extracted
+FAIL 469497ad: no code extracted
+FAIL 46f33fce: no code extracted
+FAIL 4c5c2cf0: no code extracted
+FAIL 508bd3b6: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 56dc2b01: no code extracted
+FAIL 0e206a2e: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 239be575: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 3eda0437: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL a79310a0: no code extracted
+FAIL aba27056: no code extracted
+FAIL af902bf9: no code extracted
+FAIL aabf363d: no code extracted
+FAIL b7249182: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL b775ac94: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL d2abd087: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL db93a21d: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL feca6190: no code extracted
+FAIL e509e548: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL b527c5c6: no code extracted
+
+Done - FAIL=131
+[10-01 17:45] barc_rest.json -> barc1, attempt 4, weekly 61%, 131 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 045e512c: no code extracted
+FAIL 05269061: no code extracted
+FAIL 05f2a901: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0520fde7: no code extracted
+FAIL 06df4c85: no code extracted
+FAIL 08ed6ac7: no code extracted
+FAIL 09629e4f: no code extracted
+FAIL 0a938d79: no code extracted
+FAIL 0962bcdd: no code extracted
+FAIL 0ca9ddb6: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 007bbfb7: no code extracted
+FAIL 10fcaaa3: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 11852cab: no code extracted
+FAIL 137eaa0f: no code extracted
+FAIL 017c7c7b: no code extracted
+FAIL 0dfd9992: no code extracted
+FAIL 178fcbfb: no code extracted
+FAIL 1b2d62fb: no code extracted
+FAIL 1b60fb0c: no code extracted
+FAIL 1a07d186: no code extracted
+FAIL 1bfc4729: no code extracted
+FAIL 1e32b0e9: no code extracted
+FAIL 1f642eb9: no code extracted
+FAIL 150deff5: no code extracted
+FAIL 1caeab9d: no code extracted
+FAIL 2204b7a8: no code extracted
+FAIL 23581191: no code extracted
+FAIL 25d8a9c8: no code extracted
+FAIL 1fad071e: no code extracted
+FAIL 264363fd: no code extracted
+FAIL 29623171: no code extracted
+FAIL 28e73c20: no code extracted
+FAIL 29c11459: no code extracted
+FAIL 2c608aff: no code extracted
+FAIL 2dd70a9a: no code extracted
+FAIL 2bcee788: no code extracted
+FAIL 3345333e: no code extracted
+FAIL 3428a4f5: no code extracted
+FAIL 3618c87e: no code extracted
+FAIL 3ac3eb23: no code extracted
+FAIL 3bdb4ada: no code extracted
+FAIL 31aa019c: no code extracted
+FAIL 3de23699: no code extracted
+FAIL 3e980e27: no code extracted
+FAIL 3befdf3e: no code extracted
+FAIL 4093f84a: no code extracted
+FAIL 41e4d17e: no code extracted
+FAIL 4258a5f9: no code extracted
+FAIL 444801d8: no code extracted
+FAIL 0e206a2e: no code extracted
+FAIL 44f52bb0: no code extracted
+FAIL 46f33fce: no code extracted
+FAIL 4c5c2cf0: no code extracted
+FAIL 3eda0437: no code extracted
+FAIL 508bd3b6: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 469497ad: no code extracted
+FAIL 56dc2b01: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 239be575: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL a79310a0: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL aba27056: no code extracted
+FAIL af902bf9: no code extracted
+FAIL b7249182: no code extracted
+FAIL aabf363d: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL b775ac94: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d2abd087: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL db93a21d: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL feca6190: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL b527c5c6: no code extracted
+FAIL e509e548: no code extracted
+
+Done - FAIL=131
+[10-01 17:45] barc_rest.json -> barc1, attempt 5, weekly 61%, 131 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 007bbfb7: no code extracted
+FAIL 05269061: no code extracted
+FAIL 05f2a901: no code extracted
+FAIL 06df4c85: no code extracted
+FAIL 08ed6ac7: no code extracted
+FAIL 09629e4f: no code extracted
+FAIL 0962bcdd: no code extracted
+FAIL 0a938d79: no code extracted
+FAIL 0ca9ddb6: no code extracted
+FAIL 0dfd9992: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 017c7c7b: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 10fcaaa3: no code extracted
+FAIL 045e512c: no code extracted
+FAIL 11852cab: no code extracted
+FAIL 137eaa0f: no code extracted
+FAIL 178fcbfb: no code extracted
+FAIL 1a07d186: no code extracted
+FAIL 1b2d62fb: no code extracted
+FAIL 1b60fb0c: no code extracted
+FAIL 1bfc4729: no code extracted
+FAIL 1caeab9d: no code extracted
+FAIL 1e32b0e9: no code extracted
+FAIL 1f642eb9: no code extracted
+FAIL 150deff5: no code extracted
+FAIL 2204b7a8: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 23581191: no code extracted
+FAIL 0e206a2e: no code extracted
+FAIL 25d8a9c8: no code extracted
+FAIL 0520fde7: no code extracted
+FAIL 28e73c20: no code extracted
+FAIL 264363fd: no code extracted
+FAIL 29c11459: no code extracted
+FAIL 1fad071e: no code extracted
+FAIL 29623171: no code extracted
+FAIL 2bcee788: no code extracted
+FAIL 2dd70a9a: no code extracted
+FAIL 2c608aff: no code extracted
+FAIL 3428a4f5: no code extracted
+FAIL 3618c87e: no code extracted
+FAIL 3ac3eb23: no code extracted
+FAIL 3bdb4ada: no code extracted
+FAIL 3345333e: no code extracted
+FAIL 3de23699: no code extracted
+FAIL 3e980e27: no code extracted
+FAIL 239be575: no code extracted
+FAIL 4093f84a: no code extracted
+FAIL 41e4d17e: no code extracted
+FAIL 4258a5f9: no code extracted
+FAIL 3befdf3e: no code extracted
+FAIL 31aa019c: no code extracted
+FAIL 469497ad: no code extracted
+FAIL 46f33fce: no code extracted
+FAIL 4c5c2cf0: no code extracted
+FAIL 44f52bb0: no code extracted
+FAIL 508bd3b6: no code extracted
+FAIL 444801d8: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 56dc2b01: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 3eda0437: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL 9f236235: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL a79310a0: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL aba27056: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL af902bf9: no code extracted
+FAIL b7249182: no code extracted
+FAIL aabf363d: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL d2abd087: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL b775ac94: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL db93a21d: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL feca6190: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL e509e548: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL b527c5c6: no code extracted
+
+Done - FAIL=131
+[10-01 17:45] barc_rest.json -> barc1, attempt 6, weekly 61%, 131 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0520fde7: no code extracted
+FAIL 05269061: no code extracted
+FAIL 05f2a901: no code extracted
+FAIL 06df4c85: no code extracted
+FAIL 08ed6ac7: no code extracted
+FAIL 09629e4f: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 0962bcdd: no code extracted
+FAIL 0a938d79: no code extracted
+FAIL 0ca9ddb6: no code extracted
+FAIL 017c7c7b: no code extracted
+FAIL 0dfd9992: no code extracted
+FAIL 10fcaaa3: no code extracted
+FAIL 11852cab: no code extracted
+FAIL 137eaa0f: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+    claude failed (exit 1): You've hit your session limit · resets 7pm (Asia/Seoul)
+FAIL 150deff5: no code extracted
+FAIL 007bbfb7: no code extracted
+FAIL 1a07d186: no code extracted
+FAIL 178fcbfb: no code extracted
+FAIL 1b2d62fb: no code extracted
+FAIL 1bfc4729: no code extracted
+FAIL 1b60fb0c: no code extracted
+FAIL 1e32b0e9: no code extracted
+FAIL 1caeab9d: no code extracted
+FAIL 1f642eb9: no code extracted
+FAIL 2204b7a8: no code extracted
+FAIL 23581191: no code extracted
+FAIL 045e512c: no code extracted
+FAIL 1fad071e: no code extracted
+FAIL 0e206a2e: no code extracted
+FAIL 28e73c20: no code extracted
+FAIL 264363fd: no code extracted
+FAIL 29623171: no code extracted
+FAIL 25d8a9c8: no code extracted
+FAIL 2c608aff: no code extracted
+FAIL 29c11459: no code extracted
+FAIL 31aa019c: no code extracted
+FAIL 2dd70a9a: no code extracted
+FAIL 3428a4f5: no code extracted
+FAIL 2bcee788: no code extracted
+FAIL 3ac3eb23: no code extracted
+FAIL 3618c87e: no code extracted
+FAIL 3befdf3e: no code extracted
+FAIL 3de23699: no code extracted
+FAIL 3bdb4ada: no code extracted
+FAIL 3345333e: no code extracted
+FAIL 4093f84a: no code extracted
+FAIL 41e4d17e: no code extracted
+FAIL 4258a5f9: no code extracted
+FAIL 3e980e27: no code extracted
+FAIL 444801d8: no code extracted
+FAIL 469497ad: no code extracted
+FAIL 46f33fce: no code extracted
+FAIL 4c5c2cf0: no code extracted
+FAIL 508bd3b6: no code extracted
+FAIL 5168d44c: no code extracted
+FAIL 54d82841: no code extracted
+FAIL 56dc2b01: no code extracted
+FAIL 44f52bb0: no code extracted
+FAIL 5c2c9af4: no code extracted
+FAIL 623ea044: no code extracted
+FAIL 57aa92db: no code extracted
+FAIL 3eda0437: no code extracted
+FAIL 6855a6e4: no code extracted
+FAIL 681b3aeb: no code extracted
+FAIL 6a1e5592: no code extracted
+FAIL 6b9890af: no code extracted
+FAIL 6cf79266: no code extracted
+FAIL 6d58a25d: no code extracted
+FAIL 6aa20dc0: no code extracted
+FAIL 6d75e8bb: no code extracted
+FAIL 239be575: no code extracted
+FAIL 6e19193c: no code extracted
+FAIL 6f8cd79b: no code extracted
+FAIL 6ecd11f4: no code extracted
+FAIL 746b3537: no code extracted
+FAIL 6e82a1ae: no code extracted
+FAIL 7c008303: no code extracted
+FAIL 7e0986d6: no code extracted
+FAIL 7837ac64: no code extracted
+FAIL 7f4411dc: no code extracted
+FAIL 834ec97d: no code extracted
+FAIL 8403a5d5: no code extracted
+FAIL 8a004b2b: no code extracted
+FAIL 8d5021e8: no code extracted
+FAIL 8d510a79: no code extracted
+FAIL 8e1813be: no code extracted
+FAIL 8e5a5113: no code extracted
+FAIL 90c28cc7: no code extracted
+FAIL 941d9a10: no code extracted
+FAIL 810b9b61: no code extracted
+FAIL 995c5fa3: no code extracted
+FAIL 9af7a82c: no code extracted
+FAIL 9f236235: no code extracted
+FAIL a3df8b1e: no code extracted
+FAIL 97a05b5b: no code extracted
+FAIL a79310a0: no code extracted
+FAIL a9f96cdd: no code extracted
+FAIL 6455b5f5: no code extracted
+FAIL aba27056: no code extracted
+FAIL 72ca375d: no code extracted
+FAIL af902bf9: no code extracted
+FAIL aabf363d: no code extracted
+FAIL b7249182: no code extracted
+FAIL b782dc8a: no code extracted
+FAIL bbc9ae5d: no code extracted
+FAIL bc1d5164: no code extracted
+FAIL bd4472b8: no code extracted
+FAIL caa06a1f: no code extracted
+FAIL d06dbe63: no code extracted
+FAIL b775ac94: no code extracted
+FAIL d4a91cb9: no code extracted
+FAIL d4f3cd78: no code extracted
+FAIL d6ad076f: no code extracted
+FAIL d9f24cd1: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL d2abd087: no code extracted
+FAIL a8c38be5: no code extracted
+FAIL e21d9049: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL db93a21d: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL feca6190: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL e509e548: no code extracted
+FAIL b527c5c6: no code extracted
+
+Done - FAIL=131
+[10-01 17:46] queue end
+[10-01 19:03] queue v2 start
+[10-01 19:03] resample_b.json -> resample1, session/weekly 3 62, 224 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   3aa6fb7a
+OK   50846271
+OK   0e206a2e
+OK   539a4f51
+OK   543a7ed5
+OK   53b68214
+OK   54d9e175
+OK   54d82841
+OK   5582e5ca
+OK   5614dbcf
+OK   5521c0d9
+OK   56dc2b01
+OK   5ad4f10b
+OK   57aa92db
+OK   5c0a986e
+OK   5c2c9af4
+OK   623ea044
+OK   6430c8c4
+OK   5168d44c
+OK   662c240a
+OK   63613498
+OK   673ef223
+OK   6773b310
+OK   67a423a3
+OK   6455b5f5
+OK   68b16354
+OK   694f12f3
+OK   484b58aa
+OK   681b3aeb
+OK   6b9890af
+OK   6c434453
+OK   6cf79266
+OK   6855a6e4
+OK   6aa20dc0
+OK   6d75e8bb
+OK   6e02f1e3
+OK   6d58a25d
+OK   6e19193c
+OK   6d0160f0
+OK   6e82a1ae
+OK   6f8cd79b
+OK   72ca375d
+OK   72322fa7
+OK   7468f01a
+OK   6a1e5592
+OK   74dd1130
+OK   75b8110e
+OK   6ecd11f4
+OK   77fdfe62
+OK   73251a56
+OK   794b24be
+OK   7b6016b9
+OK   760b3cac
+OK   7ddcd7ec
+OK   7c008303
+OK   7837ac64
+OK   7df24a62
+OK   7fe24cdd
+OK   7f4411dc
+OK   7e0986d6
+OK   810b9b61
+OK   80af3007
+OK   83302e8f
+OK   746b3537
+OK   82819916
+OK   8403a5d5
+OK   834ec97d
+OK   85c4e7cd
+OK   855e0971
+OK   868de0fa
+OK   846bdb03
+OK   890034e9
+OK   8731374e
+OK   8be77c9e
+OK   88a10436
+OK   8d5021e8
+OK   8e5a5113
+OK   8a004b2b
+OK   8d510a79
+OK   8e1813be
+OK   913fb3ed
+OK   8f2ea7aa
+WARN 8eb1be9a: example 1: redundant op at index 3: op=28, selection=[9, 10, 1, 3]; deleting it still produces O (candidate not written)
+OK   91714a58
+OK   90c28cc7
+OK   9172f3a0
+OK   928ad970
+OK   941d9a10
+OK   9565186b
+OK   95990924
+OK   97999447
+OK   94f9d214
+OK   995c5fa3
+OK   93b581b8
+OK   99b1bc43
+OK   9af7a82c
+OK   9aec4887
+OK   9dfd6313
+OK   9d9215db
+OK   9edfc990
+WARN 98cf29f8: example 1: redundant op at index 0: op=5, selection={'cells': [[11, 16]]}; deleting it still produces O (candidate not written)
+OK   a2fd1cf0
+OK   9f236235
+OK   9ecd008a
+OK   a3325580
+OK   a416b8f3
+OK   a3df8b1e
+OK   a5f85a15
+OK   a61f2674
+OK   a48eeaf7
+OK   a65b410d
+OK   a64e4611
+OK   a699fb00
+OK   a740d043
+OK   a68b268e
+OK   a79310a0
+OK   a85d4709
+OK   a61ba2ce
+OK   a8d7556c
+OK   a9f96cdd
+OK   aabf363d
+OK   97a05b5b
+OK   ae3edfdc
+OK   af902bf9
+OK   b1948b0a
+OK   aba27056
+OK   b0c4d837
+OK   b27ca6d3
+OK   b2862040
+OK   b527c5c6
+OK   b548a754
+OK   b60334d2
+OK   b7249182
+OK   b6afb2da
+OK   b8825c91
+OK   b8cdaf2b
+OK   b775ac94
+OK   b91ae062
+OK   b94a9452
+OK   a8c38be5
+OK   ba97ae07
+OK   bbc9ae5d
+OK   b782dc8a
+OK   bda2d7a6
+OK   bd4472b8
+OK   bdad9b1f
+OK   be94b721
+OK   c3e719e8
+OK   c0f76784
+OK   c444b776
+WARN bc1d5164: example 1: redundant op at index 2: op=0, selection={'cells': [[1, 1], [1, 3], [2, 0], [3, 3], [3, 5], [3, 7], [4, 1], [4, 3], [4, 6], [5, 2], [6, 1], [6, 2], [6, 5], [7, 0], [7, 2], [7, 4], [9, 2], [9, 4]]}; deleting it still produces O (candidate not written)
+OK   c3f564a4
+OK   c8f0f002
+WARN c59eb873: generate/sample_colors error: cannot import name 'unifint' from 'dsl' (/hdd_data/yunho/solar-traj/re-arc/dsl.py) (candidate not written)
+OK   c9f8e694
+OK   cbded52d
+OK   cce03e0d
+OK   caa06a1f
+OK   ce22a75a
+OK   c8cbb738
+OK   ce4f8723
+OK   d037b0a7
+OK   d06dbe63
+OK   beb8660c
+OK   d0f5fe59
+OK   d13f3404
+OK   d23f8c26
+OK   d22278a0
+OK   d2abd087
+OK   d07ae81c
+OK   d406998b
+OK   d364b489
+OK   d43fd935
+OK   d4a91cb9
+OK   d4f3cd78
+OK   d4469b4b
+OK   d6ad076f
+OK   d5d6de2d
+OK   d90796e8
+OK   d9f24cd1
+WARN d687bc17: example 2: trajectory produced wrong output (8 cells wrong). First mismatches (row,col,got,want): (17,2,5,0), (17,4,5,0), (17,6,5,0), (17,8,5,0), (17,9,5,0), (17,11,5,0). Hint: FlipH/V operates on the ENTIRE region including pre-existing non-bgc cells — if a non-bgc cell (e.g. marker) sits inside a flip selection it gets displaced to the wrong position. Fix: (1) clear target region with bgc before each paste+flip, (2) after all paste+flip ops restore preserved cells (same non-bgc color in I and O) with Color ops (Pattern 7). (candidate not written)
+OK   dae9d2b5
+OK   d8c310e9
+OK   dbc1a6ce
+OK   db3e9e38
+OK   dc1df850
+OK   dc433765
+OK   db93a21d
+OK   dc0a314f
+OK   cdecee7f
+OK   ded97339
+OK   ddf7fa4f
+OK   e26a3af2
+OK   e5062a87
+OK   e179c5f4
+OK   e509e548
+OK   e21d9049
+OK   e8593010
+OK   e76a88a6
+OK   e9614598
+OK   e8dc4411
+OK   e98196ab
+OK   ea786f4a
+OK   eb5a1d5d
+OK   e6721834
+OK   ef135b50
+OK   ecdecbb3
+OK   ec883f72
+OK   f15e1fac
+OK   f1cefba8
+OK   f25fbde4
+OK   f5b8619d
+OK   f76d97a5
+OK   f2829549
+OK   f35d900a
+OK   e40b9e2f
+OK   f8ff0b80
+OK   fafffa47
+OK   f8a8fe49
+OK   ff28f65a
+OK   feca6190
+OK   f9012d9b
+OK   fcb5c309
+OK   ff805c23
+
+Done - OK=219  WARN=5
+  [20:31] session 90% >= 85, waiting 20m
+[10-01 20:32] queue start
+  resample_a.json -> resample1 : done
+[10-01 20:33] session 90% >= 85, waiting for the window
+[10-01 20:43] session 90% >= 85, waiting for the window
+  [20:52] session 90% >= 85, waiting 20m
+[10-01 20:53] session 90% >= 85, waiting for the window
+[10-01 21:03] session 90% >= 85, waiting for the window
+  [21:12] session 90% >= 85, waiting 20m
+[10-01 21:13] session 90% >= 85, waiting for the window
+[10-01 21:23] session 90% >= 85, waiting for the window
+  [21:32] session 90% >= 85, waiting 20m
+[10-01 21:33] session 91% >= 85, waiting for the window
+[10-01 21:43] session 91% >= 85, waiting for the window
+  [21:52] session 91% >= 85, waiting 20m
+[10-01 21:53] session 91% >= 85, waiting for the window
+[10-01 22:03] session 91% >= 85, waiting for the window
+  [22:12] session 92% >= 85, waiting 20m
+[10-01 22:13] session 92% >= 85, waiting for the window
+[10-01 22:23] session 92% >= 85, waiting for the window
+  [22:32] session 92% >= 85, waiting 20m
+[10-01 22:33] session 92% >= 85, waiting for the window
+[10-01 22:43] session 93% >= 85, waiting for the window
+  [22:52] session 93% >= 85, waiting 20m
+[10-01 22:53] session 93% >= 85, waiting for the window
+[10-01 23:03] session 93% >= 85, waiting for the window
+  [23:12] session 93% >= 85, waiting 20m
+[10-01 23:13] session 93% >= 85, waiting for the window
+[10-01 23:23] session 93% >= 85, waiting for the window
+  [23:32] session 93% >= 85, waiting 20m
+[10-01 23:33] session 93% >= 85, waiting for the window
+[10-01 23:44] session 93% >= 85, waiting for the window
+  [23:52] session 93% >= 85, waiting 20m
+[10-01 23:54] session 93% >= 85, waiting for the window
+[10-02 00:04] resample_b.json -> resample1, attempt 1, session 0%, weekly 71%, 5 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   c59eb873
+OK   98cf29f8
+OK   8eb1be9a
+OK   bc1d5164
+OK   d687bc17
+
+Done - OK=5
+  resample_b.json -> resample1 : done
+  barc_pilot.json -> barc1 : done
+[10-02 00:06] barc_rest.json -> barc1, attempt 1, session 3%, weekly 71%, 131 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   007bbfb7
+OK   0520fde7
+OK   05269061
+OK   045e512c
+OK   08ed6ac7
+OK   017c7c7b
+OK   09629e4f
+OK   06df4c85
+OK   0962bcdd
+OK   0ca9ddb6
+OK   0a938d79
+OK   10fcaaa3
+OK   05f2a901
+[10-02 00:12] resample_b.json -> resample1, session/weekly 9 72, 5 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   c59eb873
+OK   8eb1be9a
+OK   11852cab
+OK   150deff5
+OK   178fcbfb
+OK   d687bc17
+OK   98cf29f8
+OK   0dfd9992
+OK   1b2d62fb
+OK   1a07d186
+OK   1b60fb0c
+OK   1bfc4729
+OK   1caeab9d
+OK   1e32b0e9
+OK   137eaa0f
+OK   1f642eb9
+OK   2204b7a8
+OK   1fad071e
+OK   25d8a9c8
+OK   239be575
+OK   23581191
+OK   29623171
+OK   29c11459
+OK   28e73c20
+OK   264363fd
+OK   bc1d5164
+
+Done - OK=5
+  resample_b.json -> resample1 : done
+[10-02 00:25] barc_rest.json -> barc1, session/weekly 27 74, 97 left
+WARN 2c608aff: generate/sample_colors error: cannot import name 'unifint' from 'dsl' (/hdd_data/yunho/solar-traj/re-arc/dsl.py) (candidate not written)
+OK   2bcee788
+OK   31aa019c
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   2c608aff
+OK   3428a4f5
+OK   31aa019c
+OK   2bcee788
+OK   3618c87e
+OK   2dd70a9a
+OK   3345333e
+OK   3345333e
+OK   3428a4f5
+OK   2dd70a9a
+OK   3ac3eb23
+OK   3ac3eb23
+OK   3bdb4ada
+OK   3618c87e
+OK   3befdf3e
+OK   3de23699
+OK   3befdf3e
+OK   3de23699
+OK   3eda0437
+OK   3eda0437
+OK   3bdb4ada
+OK   41e4d17e
+OK   41e4d17e
+OK   4258a5f9
+OK   4258a5f9
+OK   444801d8
+OK   44f52bb0
+OK   444801d8
+OK   3e980e27
+OK   44f52bb0
+WARN 0e206a2e: example 1: redundant op at index 5: op=29, selection={'cells': [[5, 11], [5, 12], [6, 10], [6, 11], [6, 12], [7, 11], [7, 12], [8, 11], [8, 12]]}; deleting it still produces O (candidate not written)
+OK   3e980e27
+OK   4093f84a
+OK   469497ad
+OK   4c5c2cf0
+OK   469497ad
+OK   4c5c2cf0
+OK   508bd3b6
+OK   508bd3b6
+OK   54d82841
+OK   54d82841
+OK   5168d44c
+OK   56dc2b01
+OK   56dc2b01
+OK   5c2c9af4
+OK   5168d44c
+OK   623ea044
+OK   5c2c9af4
+OK   46f33fce
+OK   57aa92db
+OK   623ea044
+OK   57aa92db
+OK   46f33fce
+OK   0e206a2e
+OK   6455b5f5
+OK   6455b5f5
+OK   4093f84a
+OK   6855a6e4
+WARN 681b3aeb: example 2: trajectory produced wrong output (25 cells wrong). First mismatches (row,col,got,want): (0,0,3,4), (0,1,3,4), (0,2,3,4), (0,3,3,8), (0,4,3,8), (1,0,3,4). Hint: FlipH/V operates on the ENTIRE region including pre-existing non-bgc cells — if a non-bgc cell (e.g. marker) sits inside a flip selection it gets displaced to the wrong position. Fix: (1) clear target region with bgc before each paste+flip, (2) after all paste+flip ops restore preserved cells (same non-bgc color in I and O) with Color ops (Pattern 7). (candidate not written)
+OK   6b9890af
+OK   6cf79266
+OK   6aa20dc0
+OK   6d58a25d
+OK   6b9890af
+OK   6d75e8bb
+OK   6cf79266
+OK   6a1e5592
+OK   6855a6e4
+OK   6d75e8bb
+OK   6e19193c
+OK   6e82a1ae
+OK   6e82a1ae
+OK   6d58a25d
+OK   6f8cd79b
+OK   6f8cd79b
+OK   6aa20dc0
+OK   6ecd11f4
+OK   72ca375d
+OK   6ecd11f4
+OK   746b3537
+OK   72ca375d
+OK   6e19193c
+OK   746b3537
+OK   7c008303
+OK   7c008303
+OK   7e0986d6
+OK   7f4411dc
+OK   810b9b61
+OK   810b9b61
+OK   834ec97d
+WARN 681b3aeb: simulation error: index 3 is out of bounds for axis 0 with size 3 (candidate not written)
+OK   834ec97d
+OK   8403a5d5
+OK   8403a5d5
+OK   7f4411dc
+OK   8d5021e8
+OK   8a004b2b
+OK   8a004b2b
+OK   7e0986d6
+OK   8d5021e8
+OK   8d510a79
+OK   8d510a79
+OK   8e5a5113
+OK   8e1813be
+OK   8e1813be
+OK   8e5a5113
+OK   941d9a10
+OK   941d9a10
+OK   7837ac64
+OK   995c5fa3
+OK   90c28cc7
+OK   90c28cc7
+OK   9af7a82c
+OK   995c5fa3
+OK   a79310a0
+WARN 7837ac64: example 1: redundant op at index 0: op=33, selection=[2, 1, 20, 20]; deleting it still produces O (candidate not written)
+OK   9af7a82c
+OK   9f236235
+OK   a3df8b1e
+OK   9f236235
+OK   6a1e5592
+OK   a9f96cdd
+OK   aabf363d
+OK   a79310a0
+OK   a9f96cdd
+OK   a3df8b1e
+OK   97a05b5b
+OK   aabf363d
+WARN af902bf9: example 2: trajectory produced wrong output (3 cells wrong). First mismatches (row,col,got,want): (6,1,2,7), (7,1,2,7), (8,1,2,7). Hint: FlipH/V operates on the ENTIRE region including pre-existing non-bgc cells — if a non-bgc cell (e.g. marker) sits inside a flip selection it gets displaced to the wrong position. Fix: (1) clear target region with bgc before each paste+flip, (2) after all paste+flip ops restore preserved cells (same non-bgc color in I and O) with Color ops (Pattern 7). (candidate not written)
+OK   aba27056
+WARN af902bf9: example 2: trajectory produced wrong output (6 cells wrong). First mismatches (row,col,got,want): (15,6,2,6), (15,7,2,6), (16,6,2,6), (16,7,2,6), (17,6,2,6), (17,7,2,6). Hint: FlipH/V operates on the ENTIRE region including pre-existing non-bgc cells — if a non-bgc cell (e.g. marker) sits inside a flip selection it gets displaced to the wrong position. Fix: (1) clear target region with bgc before each paste+flip, (2) after all paste+flip ops restore preserved cells (same non-bgc color in I and O) with Color ops (Pattern 7). (candidate not written)
+OK   b7249182
+OK   b7249182
+OK   b527c5c6
+OK   aba27056
+OK   b775ac94
+OK   bbc9ae5d
+OK   b527c5c6
+OK   b782dc8a
+OK   bbc9ae5d
+OK   a8c38be5
+OK   bd4472b8
+OK   b775ac94
+OK   b782dc8a
+OK   bc1d5164
+OK   d2abd087
+OK   bd4472b8
+OK   d4a91cb9
+OK   a8c38be5
+OK   d2abd087
+OK   d4a91cb9
+OK   d06dbe63
+OK   d4f3cd78
+OK   d4f3cd78
+OK   d6ad076f
+OK   d9f24cd1
+OK   d6ad076f
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 5am (Asia/Seoul)
+FAIL db93a21d: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 5am (Asia/Seoul)
+FAIL bc1d5164: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL feca6190: no code extracted
+FAIL e509e548: no code extracted
+FAIL ff28f65a: no code extracted
+    Claude session limit reached; skipping remaining calls until next cycle.
+    claude failed (exit 1): You've hit your session limit · resets 5am (Asia/Seoul)
+FAIL d9f24cd1: no code extracted
+FAIL db3e9e38: no code extracted
+FAIL db93a21d: no code extracted
+FAIL e179c5f4: no code extracted
+FAIL e21d9049: no code extracted
+FAIL e509e548: no code extracted
+FAIL e8dc4411: no code extracted
+FAIL e9614598: no code extracted
+FAIL ea786f4a: no code extracted
+FAIL eb5a1d5d: no code extracted
+FAIL f15e1fac: no code extracted
+FAIL f8a8fe49: no code extracted
+FAIL f9012d9b: no code extracted
+FAIL feca6190: no code extracted
+FAIL ff28f65a: no code extracted
+FAIL caa06a1f: no code extracted
+    claude failed (exit 1): You've hit your session limit · resets 5am (Asia/Seoul)
+FAIL 97a05b5b: no code extracted
+OK   db3e9e38
+
+Done - OK=79  WARN=3  FAIL=15
+    claude failed (exit 1): You've hit your session limit · resets 5am (Asia/Seoul)
+FAIL caa06a1f: no code extracted
+  [01:02] session 100% >= 85, waiting 20m
+    claude failed (exit 1): You've hit your session limit · resets 5am (Asia/Seoul)
+FAIL d06dbe63: no code extracted
+
+Done - OK=109  WARN=4  FAIL=18
+[10-02 01:03] session 100% >= 85, waiting for the window
+[10-02 01:13] session 100% >= 85, waiting for the window
+  [01:22] session 100% >= 85, waiting 20m
+[10-02 01:23] session 100% >= 85, waiting for the window
+[10-02 01:33] session 100% >= 85, waiting for the window
+  [01:42] session 100% >= 85, waiting 20m
+[10-02 01:43] session 100% >= 85, waiting for the window
+[10-02 01:53] session 100% >= 85, waiting for the window
+  [02:02] session 100% >= 85, waiting 20m
+[10-02 02:03] session 100% >= 85, waiting for the window
+[10-02 02:13] session 100% >= 85, waiting for the window
+  [02:22] session 100% >= 85, waiting 20m
+[10-02 02:23] session 100% >= 85, waiting for the window
+[10-02 02:34] session 100% >= 85, waiting for the window
+  [02:43] session 100% >= 85, waiting 20m
+[10-02 02:44] session 100% >= 85, waiting for the window
+[10-02 02:54] session 100% >= 85, waiting for the window
+  [03:03] session 100% >= 85, waiting 20m
+[10-02 03:04] session 100% >= 85, waiting for the window
+[10-02 03:14] session 100% >= 85, waiting for the window
+  [03:23] session 100% >= 85, waiting 20m
+[10-02 03:24] session 100% >= 85, waiting for the window
+[10-02 03:34] session 100% >= 85, waiting for the window
+  [03:43] session 100% >= 85, waiting 20m
+[10-02 03:44] session 100% >= 85, waiting for the window
+[10-02 03:54] session 100% >= 85, waiting for the window
+  [04:03] session 100% >= 85, waiting 20m
+[10-02 04:04] session 100% >= 85, waiting for the window
+[10-02 04:14] session 100% >= 85, waiting for the window
+  [04:23] session 100% >= 85, waiting 20m
+[10-02 04:24] session 100% >= 85, waiting for the window
+[10-02 04:34] session 100% >= 85, waiting for the window
+  [04:43] session 100% >= 85, waiting 20m
+[10-02 04:44] session 100% >= 85, waiting for the window
+[10-02 04:55] session 100% >= 85, waiting for the window
+[10-02 05:03] barc_rest.json -> barc1, session/weekly 0 81, 16 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   af902bf9
+OK   db93a21d
+OK   e179c5f4
+[10-02 05:05] barc_rest.json -> barc1, attempt 2, session 3%, weekly 82%, 16 left
+OK   681b3aeb
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   af902bf9
+OK   e509e548
+OK   681b3aeb
+OK   e9614598
+OK   ea786f4a
+OK   e8dc4411
+OK   e179c5f4
+OK   eb5a1d5d
+OK   f15e1fac
+OK   e509e548
+OK   e21d9049
+OK   e21d9049
+OK   f9012d9b
+OK   feca6190
+OK   e9614598
+OK   ff28f65a
+OK   caa06a1f
+OK   ea786f4a
+OK   db93a21d
+OK   e8dc4411
+OK   eb5a1d5d
+OK   caa06a1f
+OK   f15e1fac
+OK   feca6190
+OK   f9012d9b
+OK   ff28f65a
+OK   f8a8fe49
+
+Done - OK=16
+  barc_rest.json -> barc1 : done
+[10-02 05:12] queue v2 end
+OK   f8a8fe49
+
+Done - OK=16
+  barc_rest.json -> barc1 : done
+[10-02 05:13] queue end
+[10-02 09:04] queue v3 start (group41)
+[10-02 09:04] solo41.json -> group1, session/weekly 17 83, 41 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   1cf80156
+OK   1c786137
+OK   0d3d703e
+OK   23b5c85d
+OK   25ff71a9
+OK   1f85a75f
+OK   39a8645d
+OK   2dee498d
+OK   2dc579da
+OK   3af2c5a8
+OK   3f7978a0
+OK   4347f46a
+OK   56ff96f3
+OK   44d8ac46
+OK   5bd6f4ac
+OK   60b61512
+OK   67a3c6ac
+OK   6d0aefbc
+OK   5daaa586
+OK   67e8384a
+OK   5117e062
+OK   6fa7a44f
+OK   88a62173
+OK   8efcae92
+OK   7b7f7511
+OK   ac0a08a4
+OK   a87f7484
+OK   a1570a43
+OK   b9b7f026
+OK   90f3ed37
+OK   c909285e
+OK   c9e6f938
+OK   ae4f1146
+WARN d10ecb37: example 1: redundant op at index 0: op=33, selection=[0, 0, 1, 20]; deleting it still produces O (candidate not written)
+OK   d631b094
+OK   ce602527
+OK   e50d258f
+OK   ed36ccf7
+OK   d9fac9be
+OK   f25ffba3
+OK   de1cd16c
+
+Done - OK=40  WARN=1
+[10-02 09:14] solo41.json -> group1, session/weekly 29 85, 1 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   d10ecb37
+
+Done - OK=1
+  solo41.json -> group1 : done
+[10-02 09:15] queue v3 end
+[10-02 09:21] queue v4 start (group41 -> group105)
+  solo41.json -> group1 : done
+[10-02 09:21] two105.json -> group2, session/weekly 30 85, 105 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   00d62c1b
+OK   045e512c
+OK   0ca9ddb6
+OK   0b148d64
+OK   1190e5a7
+OK   1f876c06
+OK   1e32b0e9
+OK   22eb0ac0
+OK   25d487eb
+OK   28bf18c6
+OK   31aa019c
+OK   32597951
+OK   05f2a901
+OK   36fdfd69
+OK   3bd67248
+OK   3c9b0459
+OK   1caeab9d
+OK   3eda0437
+OK   42a50994
+OK   3bdb4ada
+OK   46442a0e
+OK   40853293
+OK   50cb2852
+OK   4be741c5
+OK   54d82841
+OK   48d8fb45
+OK   5582e5ca
+OK   54d9e175
+OK   6150a2bd
+OK   4c5c2cf0
+OK   56dc2b01
+OK   62c24649
+OK   67385a82
+OK   662c240a
+OK   6455b5f5
+OK   67a423a3
+OK   694f12f3
+OK   6c434453
+OK   6430c8c4
+OK   6d75e8bb
+OK   6e02f1e3
+OK   7468f01a
+OK   75b8110e
+OK   6d0160f0
+OK   77fdfe62
+OK   794b24be
+OK   7ddcd7ec
+OK   7c008303
+OK   776ffc46
+OK   7fe24cdd
+OK   80af3007
+OK   810b9b61
+OK   868de0fa
+OK   855e0971
+OK   890034e9
+OK   8be77c9e
+OK   913fb3ed
+OK   928ad970
+OK   95990924
+WARN 91413438: example 1: redundant op at index 5: op=29, selection=[0, 0, 2, 3]; deleting it still produces O (candidate not written)
+OK   a2fd1cf0
+OK   93b581b8
+OK   72ca375d
+OK   a3325580
+OK   a416b8f3
+OK   a5313dff
+OK   a740d043
+OK   aabf363d
+OK   aedd82e4
+OK   a79310a0
+OK   b190f7f5
+OK   b1948b0a
+OK   b230c067
+OK   b2862040
+OK   a78176bb
+OK   ba26e723
+OK   ba97ae07
+OK   bb43febb
+OK   b8825c91
+OK   c0f76784
+OK   c1d99e64
+OK   b527c5c6
+OK   c8f0f002
+OK   d037b0a7
+OK   ce9e57f2
+OK   cf98881b
+OK   a8c38be5
+OK   d2abd087
+OK   d511f180
+OK   d4a91cb9
+OK   d5d6de2d
+OK   d6ad076f
+OK   d13f3404
+OK   dc433765
+OK   e48d4e1a
+OK   e8dc4411
+OK   e9614598
+OK   e9afcf9a
+OK   ea32f347
+OK   e98196ab
+OK   ec883f72
+OK   fcc82909
+OK   f8b3ba0a
+OK   e73095fd
+OK   ff28f65a
+
+Done - OK=104  WARN=1
+[10-02 09:46] two105.json -> group2, session/weekly 62 88, 1 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   91413438
+
+Done - OK=1
+  two105.json -> group2 : done
+[10-02 09:47] queue v4 end
+[10-02 10:22] queue v5 start (retry10 -> group3), stops at 11:58
+[10-02 10:22] retry10.json -> retry1, session/weekly 0 88, 10 left
+Found 400 RE-ARC tasks.
+Found 400 RE-ARC verifiers.
+OK   4347f46a
+OK   6455b5f5
+OK   60b61512
+OK   6d0160f0

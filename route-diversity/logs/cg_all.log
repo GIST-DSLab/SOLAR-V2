@@ -1,0 +1,362 @@
+[10-06 15:32] cg_all start
+[10-06 15:32] cg_cgi  46/23  400 left
+[10-06 15:34] cg_all start
+[10-06 15:34] cg_cgi  52/23  397 left, chunk 15
+[10-06 15:52] cg_cgi  60/24  383 left, chunk 15
+[10-06 16:00] cg_cgi  68/25  369 left, chunk 15
+[10-06 16:07] cg_cgi  73/25  354 left, chunk 15
+[10-06 16:16] cg_cgi  79/26  339 left, chunk 15
+[10-06 16:19] cg_cgi  84/26  324 left, chunk 15
+  [10-06 16:23] session 89% >= 85, waiting 20m
+  [10-06 16:43] session 90% >= 85, waiting 20m
+  [10-06 17:03] session 90% >= 85, waiting 20m
+  [10-06 17:23] session 90% >= 85, waiting 20m
+  [10-06 17:43] session 90% >= 85, waiting 20m
+  [10-06 18:03] session 92% >= 85, waiting 20m
+[10-06 18:23] cg_cgi  0/27  309 left, chunk 15
+[10-06 18:30] cg_cgi  8/28  294 left, chunk 15
+[10-06 18:50] cg_cgi  17/29  279 left, chunk 15
+[10-06 19:22] cg_cgi  27/30  264 left, chunk 15
+[10-06 19:26] cg_cgi  31/31  251 left, chunk 15
+[10-06 19:32] cg_cgi  37/31  236 left, chunk 15
+[10-06 19:43] cg_cgi  43/32  221 left, chunk 15
+[10-06 19:49] cg_cgi  48/32  206 left, chunk 15
+[10-06 19:54] cg_cgi  54/33  191 left, chunk 15
+[10-06 19:57] cg_cgi  59/33  176 left, chunk 15
+[10-06 20:01] cg_cgi  65/34  161 left, chunk 15
+[10-06 20:05] cg_cgi  70/35  147 left, chunk 15
+[10-06 20:12] cg_cgi  77/35  132 left, chunk 15
+[10-06 20:15] cg_cgi  82/36  118 left, chunk 15
+  [10-06 20:18] session 87% >= 85, waiting 20m
+  [10-06 20:38] session 87% >= 85, waiting 20m
+  [10-06 20:58] session 87% >= 85, waiting 20m
+  [10-06 21:18] session 87% >= 85, waiting 20m
+  [10-06 21:38] session 87% >= 85, waiting 20m
+  [10-06 21:58] session 87% >= 85, waiting 20m
+  [10-06 22:18] session 87% >= 85, waiting 20m
+  [10-06 22:38] session 87% >= 85, waiting 20m
+  [10-06 22:58] session 87% >= 85, waiting 20m
+  [10-06 23:18] session 87% >= 85, waiting 20m
+[10-06 23:38] cg_cgi  0/36  103 left, chunk 15
+[10-06 23:42] cg_cgi  6/37  88 left, chunk 15
+[10-06 23:46] cg_cgi  11/37  73 left, chunk 15
+[10-06 23:48] cg_cgi  15/38  58 left, chunk 15
+[10-06 23:53] cg_cgi  20/38  43 left, chunk 15
+[10-07 00:02] cg_cgi  28/39  28 left, chunk 15
+[10-07 00:05] cg_cgi  34/40  13 left, chunk 13
+  cgi: done
+[10-07 00:08] cg_oxjam  38/40  398 left, chunk 15
+[10-07 00:11] cg_oxjam  43/41  383 left, chunk 15
+[10-07 00:21] cg_oxjam  52/42  368 left, chunk 15
+[10-07 00:28] cg_oxjam  58/42  353 left, chunk 15
+[10-07 00:33] cg_oxjam  65/43  338 left, chunk 15
+[10-07 00:36] cg_oxjam  69/43  323 left, chunk 15
+[10-07 00:38] cg_oxjam  74/44  308 left, chunk 15
+[10-07 00:48] cg_oxjam  80/45  293 left, chunk 15
+  [10-07 00:54] session 88% >= 85, waiting 20m
+  [10-07 01:14] session 88% >= 85, waiting 20m
+  [10-07 01:34] session 88% >= 85, waiting 20m
+  [10-07 01:54] session 88% >= 85, waiting 20m
+  [10-07 02:14] session 88% >= 85, waiting 20m
+  [10-07 02:34] session 88% >= 85, waiting 20m
+  [10-07 02:54] session 88% >= 85, waiting 20m
+  [10-07 03:14] session 88% >= 85, waiting 20m
+  [10-07 03:34] session 88% >= 85, waiting 20m
+  [10-07 03:54] session 88% >= 85, waiting 20m
+  [10-07 04:14] session 88% >= 85, waiting 20m
+[10-07 04:34] cg_oxjam  0/45  279 left, chunk 15
+[10-07 04:50] cg_oxjam  11/46  264 left, chunk 15
+[10-07 04:54] cg_oxjam  16/47  250 left, chunk 15
+[10-07 05:11] cg_oxjam  26/48  235 left, chunk 15
+[10-07 05:17] cg_oxjam  32/49  220 left, chunk 15
+[10-07 05:22] cg_oxjam  38/49  206 left, chunk 15
+[10-07 05:40] cg_oxjam  45/50  193 left, chunk 15
+[10-07 05:50] cg_oxjam  53/51  178 left, chunk 15
+[10-07 05:55] cg_oxjam  59/51  165 left, chunk 15
+[10-07 05:58] cg_oxjam  63/52  152 left, chunk 15
+[10-07 06:06] cg_oxjam  70/53  137 left, chunk 15
+[10-07 06:08] cg_oxjam  75/53  122 left, chunk 15
+[10-07 06:14] cg_oxjam  80/54  108 left, chunk 15
+  [10-07 06:18] session 86% >= 85, waiting 20m
+  [10-07 06:38] session 87% >= 85, waiting 20m
+  [10-07 06:58] session 87% >= 85, waiting 20m
+  [10-07 07:18] session 87% >= 85, waiting 20m
+  [10-07 07:39] session 87% >= 85, waiting 20m
+  [10-07 07:59] session 87% >= 85, waiting 20m
+  [10-07 08:19] session 87% >= 85, waiting 20m
+  [10-07 08:39] session 87% >= 85, waiting 20m
+  [10-07 08:59] session 87% >= 85, waiting 20m
+  [10-07 09:19] session 91% >= 85, waiting 20m
+[10-07 09:39] cg_oxjam  0/55  93 left, chunk 15
+[10-07 09:46] cg_oxjam  9/56  79 left, chunk 15
+[10-07 09:49] cg_oxjam  13/56  64 left, chunk 15
+[10-07 09:53] cg_oxjam  19/57  49 left, chunk 15
+[10-07 09:59] cg_oxjam  26/58  34 left, chunk 15
+[10-07 10:10] cg_oxjam  32/58  19 left, chunk 15
+[10-07 10:15] cg_oxjam  37/59  4 left, chunk 4
+[10-07 10:23] cg_oxjam  39/59  1 left, chunk 1
+  oxjam: done
+[10-07 10:26] cg_camjam  40/59  396 left, chunk 15
+[10-07 10:28] cg_camjam  45/60  381 left, chunk 15
+[10-07 10:35] cg_camjam  52/60  366 left, chunk 15
+[10-07 10:39] cg_camjam  57/61  351 left, chunk 15
+[10-07 15:35] watchdog: restarting, 1475 left
+[10-07 15:35] cg_all start
+  cgi: done
+  oxjam: done
+[10-07 15:35] cg_camjam  3/63  339 left, chunk 15
+[10-07 15:39] cg_camjam  12/64  324 left, chunk 15
+[10-07 15:44] cg_camjam  18/64  309 left, chunk 15
+[10-07 15:58] cg_camjam  24/65  294 left, chunk 15
+[10-07 16:07] cg_camjam  31/65  279 left, chunk 15
+[10-07 16:15] cg_camjam  37/66  264 left, chunk 15
+[10-07 16:32] cg_camjam  44/67  251 left, chunk 15
+[10-07 16:41] cg_camjam  50/67  237 left, chunk 15
+[10-07 16:44] cg_camjam  55/68  222 left, chunk 15
+[10-07 16:51] cg_camjam  62/69  207 left, chunk 15
+[10-07 16:55] cg_camjam  68/69  192 left, chunk 15
+[10-07 17:01] cg_camjam  74/70  177 left, chunk 15
+[10-07 17:06] cg_camjam  80/71  163 left, chunk 15
+[10-07 21:20] watchdog: restarting, 1285 left
+[10-07 21:20] cg_all start
+  cgi: done
+  oxjam: done
+[10-07 21:20] cg_camjam  /  149 left, chunk 15
+  no progress in 0s -- throttled, waiting 20m
+[10-08 09:14] watchdog: restarting, 1285 left
+[10-08 09:14] cg_all start
+  cgi: done
+  oxjam: done
+[10-08 09:14] cg_camjam  10/73  149 left, chunk 10
+[10-08 09:22] cg_camjam  16/74  139 left, chunk 10
+[10-08 09:28] cg_camjam  21/75  129 left, chunk 10
+[10-08 09:35] cg_camjam  25/75  119 left, chunk 10
+[10-08 09:40] cg_camjam  28/75  109 left, chunk 10
+[10-08 09:45] cg_camjam  31/76  99 left, chunk 10
+[10-08 10:07] cg_camjam  35/76  89 left, chunk 10
+[10-08 10:10] cg_camjam  38/76  79 left, chunk 10
+[10-08 10:13] cg_camjam  40/77  69 left, chunk 10
+[10-08 10:21] cg_camjam  43/77  59 left, chunk 10
+[10-08 10:28] cg_camjam  47/77  49 left, chunk 10
+[10-08 10:34] cg_camjam  51/78  39 left, chunk 10
+[10-08 10:42] cg_camjam  57/78  30 left, chunk 10
+[10-08 10:47] cg_camjam  61/79  21 left, chunk 10
+[10-08 10:55] cg_camjam  65/79  11 left, chunk 10
+[10-08 11:00] cg_camjam  68/79  1 left, chunk 1
+  camjam: done
+[10-08 11:02] cg_aggregate  69/80  399 left, chunk 10
+[10-08 11:06] cg_aggregate  72/80  389 left, chunk 10
+[10-08 11:15] cg_aggregate  77/80  379 left, chunk 10
+[10-08 11:18] cg_aggregate  81/81  369 left, chunk 10
+[10-08 11:22] cg_aggregate  84/81  359 left, chunk 10
+  [10-08 11:30] session 88% >= 85, waiting 20m
+  [10-08 11:50] session 88% >= 85, waiting 20m
+  [10-08 12:10] session 88% >= 85, waiting 20m
+[10-08 12:30] cg_aggregate  0/82  349 left, chunk 10
+[10-08 12:38] cg_aggregate  5/82  339 left, chunk 10
+[10-08 12:43] cg_aggregate  9/82  329 left, chunk 10
+[10-08 12:48] cg_aggregate  12/83  319 left, chunk 10
+[10-08 12:54] cg_aggregate  16/83  309 left, chunk 10
+[10-08 13:02] cg_aggregate  22/84  299 left, chunk 10
+[10-08 13:07] cg_aggregate  26/84  289 left, chunk 10
+[10-08 13:14] cg_aggregate  30/85  279 left, chunk 10
+[10-08 13:21] cg_aggregate  35/85  269 left, chunk 10
+[10-08 13:26] cg_aggregate  39/85  259 left, chunk 10
+[10-08 13:29] cg_aggregate  41/86  249 left, chunk 10
+[10-08 13:54] cg_aggregate  53/87  239 left, chunk 10
+  [10-08 13:58] weekly 88% >= 88, waiting 30m
+  [10-08 14:28] weekly 88% >= 88, waiting 30m
+  [10-08 14:58] weekly 88% >= 88, waiting 30m
+  [10-08 15:28] weekly 88% >= 88, waiting 30m
+  [10-08 15:58] weekly 89% >= 88, waiting 30m
+  [10-08 16:28] weekly 89% >= 88, waiting 30m
+  [10-08 16:58] weekly 89% >= 88, waiting 30m
+  [10-08 17:28] weekly 89% >= 88, waiting 30m
+  [10-08 17:58] weekly 89% >= 88, waiting 30m
+  [10-08 18:28] weekly 89% >= 88, waiting 30m
+  [10-08 18:58] weekly 89% >= 88, waiting 30m
+  [10-08 19:28] weekly 89% >= 88, waiting 30m
+  [10-08 19:58] weekly 89% >= 88, waiting 30m
+  [10-08 20:29] weekly 89% >= 88, waiting 30m
+  [10-08 20:59] weekly 89% >= 88, waiting 30m
+  [10-08 21:29] weekly 89% >= 88, waiting 30m
+  [10-08 21:59] weekly 89% >= 88, waiting 30m
+  [10-08 22:29] weekly 89% >= 88, waiting 30m
+  [10-08 22:59] weekly 89% >= 88, waiting 30m
+  [10-08 23:29] weekly 89% >= 88, waiting 30m
+  [10-08 23:59] weekly 89% >= 88, waiting 30m
+  [10-09 00:29] weekly 89% >= 88, waiting 30m
+  [10-09 00:59] weekly 89% >= 88, waiting 30m
+  [10-09 01:29] weekly 89% >= 88, waiting 30m
+  [10-09 01:59] weekly 89% >= 88, waiting 30m
+  [10-09 02:29] weekly 89% >= 88, waiting 30m
+  [10-09 02:59] weekly 89% >= 88, waiting 30m
+  [10-09 03:29] weekly 89% >= 88, waiting 30m
+  [10-09 03:59] weekly 89% >= 88, waiting 30m
+  [10-09 04:30] weekly 89% >= 88, waiting 30m
+  [10-09 05:00] weekly 89% >= 88, waiting 30m
+  [10-09 05:30] weekly 89% >= 88, waiting 30m
+  [10-09 06:00] weekly 89% >= 88, waiting 30m
+  [10-09 06:30] weekly 89% >= 88, waiting 30m
+  [10-09 07:00] weekly 89% >= 88, waiting 30m
+  [10-09 07:30] weekly 89% >= 88, waiting 30m
+  [10-09 08:00] weekly 89% >= 88, waiting 30m
+[10-09 08:07] watchdog: restarting, 966 left
+[10-09 08:07] cg_all start
+  cgi: done
+  oxjam: done
+  camjam: done
+[10-09 08:07] cg_aggregate  6/90  229 left, chunk 10
+[10-09 08:17] cg_aggregate  11/90  219 left, chunk 10
+[10-09 08:24] cg_aggregate  15/91  210 left, chunk 10
+[10-09 08:56] cg_aggregate  19/91  200 left, chunk 10
+[10-09 09:12] cg_aggregate  24/92  192 left, chunk 10
+[10-09 09:16] cg_aggregate  28/92  183 left, chunk 10
+[10-09 09:21] cg_aggregate  31/92  174 left, chunk 10
+[10-09 09:31] cg_aggregate  37/93  164 left, chunk 10
+[10-09 09:37] cg_aggregate  41/93  154 left, chunk 10
+[10-09 09:44] cg_aggregate  45/94  144 left, chunk 10
+[10-09 09:57] cg_aggregate  50/94  134 left, chunk 10
+[10-09 10:01] cg_aggregate  53/95  124 left, chunk 10
+[10-09 10:05] cg_aggregate  56/95  114 left, chunk 10
+[10-09 10:15] cg_aggregate  61/96  104 left, chunk 10
+[10-09 10:19] cg_aggregate  64/96  94 left, chunk 10
+[10-09 10:33] cg_aggregate  70/97  84 left, chunk 10
+[10-09 10:37] cg_aggregate  73/97  74 left, chunk 10
+[10-09 10:39] cg_aggregate  75/97  64 left, chunk 10
+  [10-09 10:43] weekly 98% >= 98, waiting 30m
+  [10-09 11:13] weekly 98% >= 98, waiting 30m
+  [10-09 11:43] weekly 98% >= 98, waiting 30m
+  [10-09 12:14] session 80% >= 80, waiting 20m
+  [10-09 12:34] session 81% >= 80, waiting 20m
+  [10-09 12:54] session 81% >= 80, waiting 20m
+[10-09 13:14] cg_aggregate  0/0  54 left, chunk 10
+[10-09 13:17] cg_aggregate  4/1  44 left, chunk 10
+[10-09 13:24] cg_aggregate  8/1  34 left, chunk 10
+[10-09 13:27] cg_aggregate  11/2  25 left, chunk 10
+[10-09 13:32] cg_aggregate  15/2  16 left, chunk 10
+[10-09 13:49] cg_aggregate  19/3  6 left, chunk 6
+  aggregate: done
+[10-09 13:52] cg_itertools  21/3  369 left, chunk 10
+[10-09 13:55] cg_itertools  24/3  360 left, chunk 10
+[10-09 14:04] cg_itertools  29/4  351 left, chunk 10
+[10-09 14:14] cg_itertools  35/4  341 left, chunk 10
+[10-09 14:17] cg_itertools  38/4  331 left, chunk 10
+[10-09 14:25] cg_itertools  44/5  321 left, chunk 10
+[10-09 14:33] cg_itertools  49/6  312 left, chunk 10
+[10-09 14:51] cg_itertools  55/6  303 left, chunk 10
+[10-09 15:09] cg_itertools  60/7  294 left, chunk 10
+[10-09 15:14] cg_itertools  64/7  284 left, chunk 10
+[10-09 15:20] cg_itertools  68/8  274 left, chunk 10
+[10-09 15:25] cg_itertools  72/8  264 left, chunk 10
+[10-09 15:31] cg_itertools  77/9  254 left, chunk 10
+  [10-09 15:35] session 80% >= 80, waiting 20m
+  [10-09 15:55] session 80% >= 80, waiting 20m
+  [10-09 16:15] session 81% >= 80, waiting 20m
+  [10-09 16:35] session 81% >= 80, waiting 20m
+  [10-09 16:55] session 81% >= 80, waiting 20m
+  [10-09 17:15] session 81% >= 80, waiting 20m
+  [10-09 17:36] session 81% >= 80, waiting 20m
+  [10-09 17:56] session 81% >= 80, waiting 20m
+[10-09 18:16] cg_itertools  0/9  245 left, chunk 10
+[10-09 18:23] cg_itertools  6/10  235 left, chunk 10
+[10-09 18:40] cg_itertools  13/11  225 left, chunk 10
+[10-09 18:43] cg_itertools  15/11  215 left, chunk 10
+[10-09 18:50] cg_itertools  20/11  205 left, chunk 10
+[10-09 18:56] cg_itertools  23/12  195 left, chunk 10
+[10-09 19:00] cg_itertools  26/12  185 left, chunk 10
+[10-09 19:06] cg_itertools  30/12  175 left, chunk 10
+[10-09 19:17] cg_itertools  37/13  165 left, chunk 10
+[10-09 19:29] cg_itertools  42/14  156 left, chunk 10
+[10-09 19:34] cg_itertools  45/14  146 left, chunk 10
+[10-09 19:42] cg_itertools  49/15  136 left, chunk 10
+[10-09 19:56] cg_itertools  54/15  127 left, chunk 10
+[10-09 20:02] cg_itertools  58/15  117 left, chunk 10
+[10-09 20:05] cg_itertools  61/16  107 left, chunk 10
+[10-09 20:09] cg_itertools  64/16  97 left, chunk 10
+[10-09 20:21] cg_itertools  68/16  87 left, chunk 10
+[10-09 20:27] cg_itertools  72/17  77 left, chunk 10
+[10-09 20:32] cg_itertools  76/17  67 left, chunk 10
+[10-09 20:35] cg_itertools  79/18  57 left, chunk 10
+  [10-09 20:40] session 83% >= 80, waiting 20m
+  [10-09 21:00] session 83% >= 80, waiting 20m
+  [10-09 21:20] session 83% >= 80, waiting 20m
+  [10-09 21:40] session 83% >= 80, waiting 20m
+  [10-09 22:00] session 83% >= 80, waiting 20m
+  [10-09 22:20] session 83% >= 80, waiting 20m
+  [10-09 22:40] session 83% >= 80, waiting 20m
+  [10-09 23:00] session 83% >= 80, waiting 20m
+[10-09 23:20] cg_itertools  0/18  47 left, chunk 10
+[10-09 23:26] cg_itertools  5/18  37 left, chunk 10
+[10-09 23:30] cg_itertools  8/19  27 left, chunk 10
+[10-09 23:35] cg_itertools  12/19  17 left, chunk 10
+[10-09 23:43] cg_itertools  16/20  7 left, chunk 7
+[10-09 23:48] cg_itertools  19/20  1 left, chunk 1
+  itertools: done
+[10-09 23:48] cg_lv1dev  19/20  368 left, chunk 10
+[10-09 23:52] cg_lv1dev  22/20  359 left, chunk 10
+[10-10 00:19] cg_lv1dev  28/21  349 left, chunk 10
+[10-10 00:30] cg_lv1dev  33/21  339 left, chunk 10
+[10-10 00:43] cg_lv1dev  36/22  329 left, chunk 10
+[10-10 00:48] cg_lv1dev  39/22  319 left, chunk 10
+[10-10 00:57] cg_lv1dev  43/22  309 left, chunk 10
+[10-10 01:00] cg_lv1dev  46/23  299 left, chunk 10
+[10-10 01:03] cg_lv1dev  48/23  297 left, chunk 10
+[10-10 01:07] cg_lv1dev  51/23  287 left, chunk 10
+[10-10 01:11] cg_lv1dev  55/24  278 left, chunk 10
+[10-10 01:16] cg_lv1dev  58/24  268 left, chunk 10
+[10-10 01:27] cg_lv1dev  65/25  258 left, chunk 10
+  [10-10 01:30] PAUSE 걸림, 5분 대기
+  [10-10 01:35] PAUSE 걸림, 5분 대기
+  [10-10 01:40] PAUSE 걸림, 5분 대기
+[10-10 01:45] cg_lv1dev  68/25  252 left, chunk 10
+  [10-10 01:46] PAUSE 걸림, 5분 대기
+  [10-10 01:51] PAUSE 걸림, 5분 대기
+  [10-10 01:56] PAUSE 걸림, 5분 대기
+  [10-10 02:01] PAUSE 걸림, 5분 대기
+  [10-10 02:06] PAUSE 걸림, 5분 대기
+  [10-10 02:11] PAUSE 걸림, 5분 대기
+  [10-10 02:16] PAUSE 걸림, 5분 대기
+  [10-10 02:21] PAUSE 걸림, 5분 대기
+  [10-10 02:26] PAUSE 걸림, 5분 대기
+  [10-10 02:31] PAUSE 걸림, 5분 대기
+[10-10 02:36] cg_lv1dev  70/25  251 left, chunk 10
+[10-10 02:50] cg_lv1dev  73/26  242 left, chunk 10
+[10-10 02:55] cg_lv1dev  76/26  233 left, chunk 10
+  [10-10 03:06] session 83% >= 80, waiting 20m
+  [10-10 03:26] session 83% >= 80, waiting 20m
+  [10-10 03:46] session 83% >= 80, waiting 20m
+  [10-10 04:06] session 84% >= 80, waiting 20m
+[10-10 04:26] cg_lv1dev  0/27  223 left, chunk 10
+[10-10 04:29] cg_lv1dev  4/27  213 left, chunk 10
+[10-10 04:38] cg_lv1dev  9/28  203 left, chunk 10
+[10-10 04:57] cg_lv1dev  13/28  193 left, chunk 10
+[10-10 05:02] cg_lv1dev  17/28  183 left, chunk 10
+[10-10 05:05] cg_lv1dev  20/29  173 left, chunk 10
+[10-10 05:10] cg_lv1dev  23/29  163 left, chunk 10
+[10-10 05:20] cg_lv1dev  28/30  155 left, chunk 10
+[10-10 05:27] cg_lv1dev  32/30  145 left, chunk 10
+[10-10 05:29] cg_lv1dev  35/30  135 left, chunk 10
+[10-10 05:37] cg_lv1dev  38/31  125 left, chunk 10
+[10-10 05:42] cg_lv1dev  42/31  115 left, chunk 10
+[10-10 05:45] cg_lv1dev  45/31  105 left, chunk 10
+[10-10 05:51] cg_lv1dev  49/32  95 left, chunk 10
+[10-10 06:04] cg_lv1dev  54/32  85 left, chunk 10
+[10-10 06:12] cg_lv1dev  58/33  76 left, chunk 10
+[10-10 06:25] cg_lv1dev  63/33  66 left, chunk 10
+[10-10 06:30] cg_lv1dev  67/34  57 left, chunk 10
+[10-10 06:34] cg_lv1dev  70/34  48 left, chunk 10
+[10-10 06:37] cg_lv1dev  73/34  38 left, chunk 10
+[10-10 06:43] cg_lv1dev  77/35  28 left, chunk 10
+  [10-10 06:46] session 81% >= 80, waiting 20m
+  [10-10 07:06] session 81% >= 80, waiting 20m
+  [10-10 07:26] session 81% >= 80, waiting 20m
+  [10-10 07:47] session 81% >= 80, waiting 20m
+  [10-10 08:07] session 81% >= 80, waiting 20m
+  [10-10 08:27] session 81% >= 80, waiting 20m
+  [10-10 08:47] session 81% >= 80, waiting 20m
+  [10-10 09:07] session 81% >= 80, waiting 20m
+[10-10 09:27] cg_lv1dev  0/35  18 left, chunk 10
+[10-10 09:45] cg_lv1dev  5/36  9 left, chunk 9
+  lv1dev: done
+[10-10 09:51] cg_all end

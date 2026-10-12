@@ -1,0 +1,17 @@
+Task-specific quality requirement: this task's maker already solves it. Its derive_operations is:
+
+```python
+{EXISTING_DERIVE_OPERATIONS}
+```
+
+Here is an independent solution to the same task, written by someone else against a different library:
+
+```python
+{REFERENCE_SOLUTION}
+```
+
+That is one person's reading of this task, written in their own vocabulary rather than ARCLE's. Where it carves the problem differently from the maker above -- different objects, a different order, a different thing held fixed -- follow the reading in the reference, not the one already here. Where the two agree, there is nothing to change and you should say so.
+The point is not a shorter route or a more accurate one. It is a different decomposition of the same rule, so write the operations that reading implies even when they are more numerous.
+Two limits hold regardless.
+Every selection must be something you can name from the input before you know the answer -- a rectangle, a connected object, all cells of one colour, a row, a column, the cells a copy lands on. A selection assembled by looking at the answer is the answer written into the selection, and the route then teaches nothing.
+And the operations must be derivable from the input grid and the worked examples alone: handed a different answer grid, this function must return the same operations.

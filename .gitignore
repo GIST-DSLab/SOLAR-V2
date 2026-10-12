@@ -18,3 +18,7 @@ FUTURE_WORK.md
 
 # Versions --apply overwrote, with the ledger that says why
 maker/.promoted/
+
+# 경로 다양성 실험의 공개 묶음 — 프롬프트·측정 결과가 모두 JSON이라
+# 위의 *.json 규칙에 통째로 걸린다. 공개가 목적이므로 되살린다.
+!route-diversity/**/*.json
