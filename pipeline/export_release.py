@@ -149,6 +149,40 @@ SUBSETS = {
                 "--num_samples 15 --rand_seed 0 --max_grid_dim 30 30 "
                 "--rearc_generate --verify_filter --data_folder <out>",
     ),
+    "arc_agi1_1k": dict(
+        # arc_agi1's tasks and makers at a thousand episodes each instead of
+        # ten. A separate config rather than a larger arc_agi1 because the row
+        # count goes from 4,000 to 400,000: a consumer pinned to the small one
+        # should keep receiving the small one, and the two are the same data
+        # distribution drawn to different depths, not a correction of it.
+        #
+        # 376 tasks filled a thousand from a thousand draws. The other 24 were
+        # drawn 1300 deep and the thousand lowest-numbered episodes kept --
+        # a prefix, not a selection, so nothing tilts toward the instances a
+        # maker happens to find easy. 484b58aa and 0dfd9992 are short for a
+        # reason no maker can fix: their RE-ARC generators run out of distinct
+        # test pairs, and neither logged a single replay failure.
+        #
+        # 1b60fb0c and 746b3537 were repaired before this draw rather than
+        # topped up around their failures: at 83.7% and 95.0% per draw the
+        # surplus needed to reach a thousand was large enough that the kept
+        # prefix would have been a biased sample of what their old makers could
+        # do. The replacements stand at 99.0% and 100%.
+        root=DATA_ROOT / "ARC_rearc_draw1000" / "whole",
+        makers="maker/arc-agi-1",
+        episodes=1000,
+        gate="strict",
+        label="arc-agi-1",
+        manifest=DATA_ROOT / "best_manifest.json",
+        note="400 ARC-AGI-1 training tasks, one maker per task, "
+             "1000 episodes each",
+        # 1300 for the 24 tasks named above; the kept prefix is the same either
+        # way, since a task that fills a thousand from a thousand draws has
+        # nothing to discard from the first thousand.
+        rollout="python gen_rearc_trajectories_v2.py --subfolder arc-agi-1 "
+                "--num_samples 1000 --rand_seed 0 --max_grid_dim 30 30 "
+                "--rearc_generate --verify_filter --data_folder <out>",
+    ),
     "handcraft": dict(
         # A control, not new coverage: all 9 base task ids are already in
         # arc_agi1, so hand-written and LLM-written makers meet on the same tasks.

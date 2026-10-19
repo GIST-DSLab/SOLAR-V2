@@ -37,89 +37,72 @@ import random
 import numpy as np
 from maker.sel_helpers import sel_of
 
-VARIANTS = [{"transposed": False}, {"transposed": True}]
-
-
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    lb = a + int((b - a) * diff_lb)
-    ub = a + int((b - a) * diff_ub)
-    lb = max(a, min(lb, b))
-    ub = max(lb, min(ub, b))
-    return random.randint(lb, ub)
-
 
 def sample_colors(num_examples=None) -> dict:
-    # stripe colours: rule is colour-independent, but 0 is reserved (ARCLE treats 0 as
-    # "nothing" for Move/Crop), so stripes never use it.
-    palette = list(range(1, 10))
+    # Stripe colours are all random and the rule ignores colour, so no colour is fixed.
+    # Orientation (rows vs columns) is a discrete case: plan it so the examples show both.
     n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
+    variants = [{"mirrored": False}, {"mirrored": True}]
+    if n_ex >= 2:
+        examples = [dict(v) for v in variants]
+        examples += [dict(random.choice(variants)) for _ in range(n_ex - 2)]
         random.shuffle(examples)
     else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
+        examples = [dict(random.choice(variants)) for _ in range(n_ex)]
     plan = examples + [dict(random.choice(examples))]
-    return {"palette": palette, "instance_plan": plan}
+    return {"instance_plan": plan}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, palette=None, transposed=None) -> dict:
-    if palette is None:
-        palette = list(range(1, 10))
-    if transposed is None:
-        transposed = random.choice([True, False])
+def generate(diff_lb, diff_ub, max_h=30, max_w=30, mirrored=None, **kwargs) -> dict:
+    def unifint(lb, ub, rng):
+        a, b = rng
+        if b < a:
+            b = a
+        lo = a + (b - a) * lb
+        hi_ = a + (b - a) * ub
+        return max(a, min(b, int(round(random.uniform(lo, hi_)))))
 
-    # limA = axis carrying the stripe sequence, limB = axis the stripes are extruded along
-    if transposed:
-        limA, limB = max_w, max_h
-    else:
-        limA, limB = max_h, max_w
-
-    h = _unifint(diff_lb, diff_ub, (2, max(2, min(15, limA - 1))))
-    w = _unifint(diff_lb, diff_ub, (1, max(1, limB)))
-
+    if mirrored is None:
+        mirrored = random.choice((True, False))
+    # stripe axis length bound / cross-axis width bound
+    lmax = max_w if mirrored else max_h
+    wmax = max_h if mirrored else max_w
+    lmax = min(lmax, 30)
+    wmax = min(wmax, 30)
+    if lmax < 3:
+        lmax = 3
+    fullcols = list(range(10))
+    h = unifint(diff_lb, diff_ub, (2, min(15, lmax - 1)))
+    w = unifint(diff_lb, diff_ub, (1, wmax))
     cols = []
     lastc = -1
     for _ in range(h):
-        c = random.choice([x for x in palette if x != lastc])
+        c = random.choice([x for x in fullcols if x != lastc])
         cols.append(c)
         lastc = c
-
-    go = tuple((c,) for c in cols)
-    gi = tuple(tuple([c] * w) for c in cols)
-
-    maxins = limA - h
-    if maxins >= 1:
-        numinserts = _unifint(diff_lb, diff_ub, (1, maxins))
-        for _ in range(numinserts):
-            loc = random.randint(0, len(gi) - 1)
-            gi = gi[:loc + 1] + gi[loc:]
-
-    if transposed:
-        gi = tuple(zip(*gi))
-        go = tuple(zip(*go))
-        gi = tuple(tuple(int(v) for v in row) for row in gi)
-        go = tuple(tuple(int(v) for v in row) for row in go)
-
+    go = [[c] for c in cols]
+    gi = [[c] * w for c in cols]
+    numinserts = unifint(diff_lb, diff_ub, (1, lmax - h))
+    for _ in range(numinserts):
+        loc = random.randint(0, len(gi) - 1)
+        gi = gi[:loc + 1] + gi[loc:]
+    gi = [list(r) for r in gi]
+    if mirrored:
+        gi = [list(r) for r in zip(*gi)]
+        go = [list(r) for r in zip(*go)]
     return {"input": gi, "output": go}
 
 
-def derive_operations(I, O):
+def derive_operations(I, O, examples=None):
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-
     ops, sels = [], []
 
-    # --- measure the rule from I ---------------------------------------------
     # Stripes run along whole rows (first row uniform) or whole columns.
     row_mode = len(set(I[0].tolist())) == 1
     seq = [int(v) for v in (I[:, 0] if row_mode else I[0, :])]
 
-    runs = []  # [colour, length] of consecutive identical stripes
+    runs = []
     for v in seq:
         if runs and runs[-1][0] == v:
             runs[-1][1] += 1
@@ -127,55 +110,80 @@ def derive_operations(I, O):
             runs.append([v, 1])
     n = len(runs)
 
-    # --- optional 0-stripe protection (Move/Crop ignore 0 cells) -------------
+    def cell(i):
+        return (i, 0) if row_mode else (0, i)
+
+    # A 0-stripe only needs protecting if it will actually be slid by a Move
+    # (Move treats 0 as empty): i.e. some earlier run has duplicates to collapse.
     present = set(int(v) for v in np.unique(I))
-    zero_fix_cells = None
-    if 0 in present:
+    need_fix = False
+    seen_dup = False
+    for v, L in runs:
+        if v == 0 and seen_dup:
+            need_fix = True
+            break
+        if L > 1:
+            seen_dup = True
+    spare = None
+    line = list(seq)                    # live values along the stripe axis
+    if need_fix:
         spare = next((c for c in range(1, 10) if c not in present), None)
         if spare is not None:
             zcells = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == 0]
             ops.append(spare)
             sels.append(sel_of(zcells))
-            zero_fix_cells = [(i, 0) if row_mode else (0, i)
-                              for i, (v, _l) in enumerate(runs) if v == 0]
+            line = [spare if v == 0 else v for v in line]
 
-    # --- collapse each duplicated stripe run by sliding the rest of the grid --
-    # every selection below is exactly the full rectangle of live content that
-    # must slide, background included -> bbox form is the intended cell set.
-    clen = hi if row_mode else wi          # live extent along the stripe axis
-    cur = 0                                # row/col where the current run now sits
+    # Collapse each duplicated run by sliding the whole remaining block (full
+    # rectangle of live stripes, all cells intended) toward it one step at a time.
+    # Without a spare colour, black lines in the block are not carried: where
+    # they should land the duplicate's colour still shows; that is repaired below.
+    clen = hi if row_mode else wi
+    cur = 0
     for (v, L) in runs:
         excess = L - 1
         if excess > 0:
-            s = cur + L                    # start of the block below this run
+            s = cur + L
             for _ in range(excess):
                 if s > clen - 1:
                     break
-                if row_mode:
-                    ops.append(20)                       # MoveU
-                    sels.append([s, 0, clen - 1 - s, wi - 1])
-                else:
-                    ops.append(23)                       # MoveL
-                    sels.append([0, s, hi - 1, clen - 1 - s])
+                if any(line[j] != 0 for j in range(s, clen)):
+                    new = list(line)
+                    for j in range(s, clen):
+                        new[j] = 0
+                    for j in range(s, clen):
+                        if line[j] != 0:
+                            new[j - 1] = line[j]
+                    if new != line:
+                        if row_mode:
+                            ops.append(20)
+                            sels.append([s, 0, clen - 1 - s, wi - 1])
+                        else:
+                            ops.append(23)
+                            sels.append([0, s, hi - 1, clen - 1 - s])
+                        line = new
+                # (a block of pure black has nothing to carry: no Move, the
+                #  grid stays as it is and the black is repaired below)
                 s -= 1
                 clen -= 1
-            if s > clen - 1:               # trailing run: its copies are just dropped
+            if s > clen - 1:
                 clen = cur + 1
         cur += 1
 
-    # --- keep one cell per distinct stripe ------------------------------------
+    # Keep one cell per distinct stripe.
     if row_mode:
-        ops.append(33)
-        sels.append([0, 0, n - 1, 0])
         final = [0, 0, n - 1, 0]
     else:
-        ops.append(33)
-        sels.append([0, 0, 0, n - 1])
         final = [0, 0, 0, n - 1]
+    ops.append(33)
+    sels.append(final)
 
-    if zero_fix_cells:
+    # Put black back on the kept stripes that are black in I but do not show it.
+    vals = [v for v, _ in runs]
+    zfix = [cell(i) for i in range(n) if vals[i] == 0 and line[i] != 0]
+    if zfix:
         ops.append(0)
-        sels.append(sel_of(zero_fix_cells))
+        sels.append(sel_of(zfix))
 
     ops.append(34)
     sels.append(final)
@@ -222,7 +230,7 @@ class GridMaker(BaseGridMaker):
 
                 # Plans are consumed by INDEX, not mutated: retries for instance j
                 # must receive the same variant. category_plan is retained as a
-                # backwards-compatible single-key form; v3 uses kwargs dict entries.
+                # backwards-compatible single-key form; new makers use kwargs dict entries.
                 category_plan = colors.pop("category_plan", None) if isinstance(colors, dict) else None
                 instance_plan = colors.pop("instance_plan", None) if isinstance(colors, dict) else None
                 if category_plan is not None and instance_plan is not None:

@@ -45,86 +45,95 @@ def sample_colors(num_examples=None) -> dict:
     return {"bgc": bgc, "objc": objc}
 
 
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, objc) -> dict:
-    def unifint(lb, ub, rng):
-        a, b = rng
-        if b < a:
-            b = a
-        lo = a + int(round(lb * (b - a)))
-        hi = a + int(round(ub * (b - a)))
-        if hi < lo:
-            hi = lo
-        return random.randint(lo, hi)
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    if b < a:
+        b = a
+    lo = a + (b - a) * diff_lb
+    hi = a + (b - a) * diff_ub
+    lo_i, hi_i = int(round(lo)), int(round(hi))
+    if hi_i < lo_i:
+        hi_i = lo_i
+    return random.randint(max(a, lo_i), min(b, hi_i))
 
-    def rot90(g):
-        return [list(r) for r in zip(*g[::-1])]
 
-    def ofcolor(g, c):
-        return {(i, j) for i, row in enumerate(g) for j, v in enumerate(row) if v == c}
-
-    def shift(p, d):
-        return {(i + d[0], j + d[1]) for i, j in p}
-
-    h = unifint(diff_lb, diff_ub, (10, max(10, max_h)))
-    w = unifint(diff_lb, diff_ub, (10, max(10, max_w)))
-    h = min(h, max_h)
-    w = min(w, max_w)
-    odh = unifint(diff_lb, diff_ub, (2, max(2, min(h, w) // 2)))
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, objc=None, **kwargs) -> dict:
+    if bgc is None or objc is None:
+        cols = [c for c in range(10) if c != 2]
+        bgc, objc = random.sample(cols, 2)
+    h = _unifint(diff_lb, diff_ub, (10, max(10, max_h)))
+    w = _unifint(diff_lb, diff_ub, (10, max(10, max_w)))
+    odh = _unifint(diff_lb, diff_ub, (2, max(2, min(h, w) // 2)))
     loci = random.randint(0, h - 2 * odh)
     locj = random.randint(0, w - 2 * odh)
-    quad = [[bgc] * odh for _ in range(odh)]
-    ncellsd = unifint(diff_lb, diff_ub, (0, odh ** 2 // 2))
+    ncellsd = _unifint(diff_lb, diff_ub, (0, odh ** 2 // 2))
     ncells = random.choice((ncellsd, odh ** 2 - ncellsd))
     ncells = min(max(1, ncells), odh ** 2 - 1)
     allc = [(i, j) for i in range(odh) for j in range(odh)]
-    cells = random.sample(allc, ncells)
-    g1 = [row[:] for row in quad]
-    for i, j in cells:
-        g1[i][j] = objc
-    g2 = rot90(g1)
-    g3 = rot90(g2)
-    g4 = rot90(g3)
-    c1 = shift(ofcolor(g1, objc), (0, 0))
-    c2 = shift(ofcolor(g2, objc), (0, odh))
-    c3 = shift(ofcolor(g3, objc), (odh, odh))
-    c4 = shift(ofcolor(g4, objc), (odh, 0))
+    cells = set(random.sample(allc, ncells))
+
+    def rot(cs):  # clockwise quarter turn inside odh x odh
+        return {(c, odh - 1 - r) for r, c in cs}
+
+    g1 = set(cells)
+    g2 = rot(g1)
+    g3 = rot(g2)
+    g4 = rot(g3)
+    sh = lambda cs, dr, dc: frozenset((r + dr, c + dc) for r, c in cs)
+    c1 = sh(g1, 0, 0)
+    c2 = sh(g2, 0, odh)
+    c3 = sh(g3, odh, odh)
+    c4 = sh(g4, odh, 0)
     s = random.randint(0, odh)
-    c1 = shift(c1, (0, s))
-    c2 = shift(c2, (s, 0))
-    c3 = shift(c3, (0, -s))
-    c4 = shift(c4, (-s, 0))
+    c1 = sh(c1, 0, s)
+    c2 = sh(c2, s, 0)
+    c3 = sh(c3, 0, -s)
+    c4 = sh(c4, -s, 0)
     cs = [c1, c2, c3, c4]
-    ri = random.randrange(4)
-    rempart = cs[ri]
-    inobj = set()
-    for k in range(4):
-        if k != ri:
-            inobj |= cs[k]
+    rempart = random.choice(cs)
+    inparts = [c for c in cs if c != rempart]
+    inobj = frozenset().union(*inparts)
     rempart = rempart - inobj
-    inobj = shift(inobj, (loci, locj))
-    rempart = shift(rempart, (loci, locj))
+    inobj = sh(inobj, loci, locj)
+    rempart = sh(rempart, loci, locj)
     gi = [[bgc] * w for _ in range(h)]
-    for i, j in inobj:
-        if 0 <= i < h and 0 <= j < w:
-            gi[i][j] = objc
+    for r, c in inobj:
+        if 0 <= r < h and 0 <= c < w:
+            gi[r][c] = objc
     go = [row[:] for row in gi]
-    for i, j in rempart:
-        if 0 <= i < h and 0 <= j < w:
-            go[i][j] = 2
+    for r, c in rempart:
+        if 0 <= r < h and 0 <= c < w:
+            go[r][c] = 2
     return {"input": gi, "output": go}
 
 
-def derive_operations(I, O, examples=None):
-    """The pattern has four-fold rotational symmetry with one quarter missing.
-    Mark the visible pattern, give it a quarter turn clockwise about the
-    pattern's centre, then put the original pattern back in its own colour:
-    what is still marked is exactly the quarter that was missing."""
-    I = np.asarray(I, dtype=int)
-    hi, wi = I.shape
-    ops, sels = [], []
+def _find_completion(S, hi, wi):
+    """Best clockwise quarter turn (r, c) -> (a + c, b - r) about a half-integer
+    centre under which S united with its turned copy is four-fold symmetric.
+    Ranked by overlap with S (the verifier's criterion), then by fewest new cells."""
+    if not S:
+        return None
+    rows = [r for r, _ in S]
+    cols = [c for _, c in S]
+    rmin, rmax, cmin, cmax = min(rows), max(rows), min(cols), max(cols)
+    best = None
+    for a in range(-cmin, hi - cmax):
+        for b in range(rmax, wi + rmin):
+            if (a + b) % 2 == 0:
+                continue
+            T = frozenset((a + c, b - r) for r, c in S)
+            F = S | T
+            if frozenset((a + cc, b - rr) for rr, cc in F) != F:
+                continue
+            key = (len(S & T), -len(T - S))
+            if best is None or key > best[0]:
+                best = (key, a, b, T)
+    return best
 
-    # --- background colour: read from the demonstrations, never from O ---
-    bgc = None
+
+def _bgc_candidates(I, examples):
+    present = set(I.flatten().tolist())
+    order = []
     if examples:
         votes = Counter()
         for ex in examples:
@@ -139,47 +148,48 @@ def derive_operations(I, O, examples=None):
             m = eo == 2
             if m.any():
                 votes.update(ei[m].tolist())
-            else:
-                votes.update([Counter(ei.flatten().tolist()).most_common(1)[0][0]])
-        present = set(I.flatten().tolist())
         for col, _ in votes.most_common():
-            if col in present:
-                bgc = int(col)
-                break
-    if bgc is None:
-        bgc = Counter(I.flatten().tolist()).most_common(1)[0][0]
+            if col in present and col not in order:
+                order.append(int(col))
+    for col, _ in Counter(I.flatten().tolist()).most_common():
+        if int(col) not in order:
+            order.append(int(col))
+    return order
 
-    S = frozenset((r, c) for r in range(hi) for c in range(wi) if I[r, c] != bgc)
-    if not S:
+
+def derive_operations(I, O, examples=None):
+    """The pattern has four-fold rotational symmetry with one quarter missing.
+    Mark the visible pattern in 2, turn it a quarter clockwise about the
+    pattern's centre, then put the original pattern back in its own colour;
+    what is still marked is exactly the missing quarter."""
+    I = np.asarray(I, dtype=int)
+    hi, wi = I.shape
+    ops, sels = [], []
+
+    # Background: the colour the demonstrations fill with 2 (the missing quarter
+    # always sits on background). Without demonstrations, prefer the most common
+    # colour but fall back to the other one if it admits no symmetric completion
+    # (dense patterns can outnumber the background).
+    found = None
+    for bgc in _bgc_candidates(I, examples):
+        S = frozenset((r, c) for r in range(hi) for c in range(wi) if I[r, c] != bgc)
+        if not S or len(set(int(I[r, c]) for r, c in S)) != 1:
+            continue
+        best = _find_completion(S, hi, wi)
+        if best is not None:
+            found = (bgc, S, best)
+            break
+
+    if found is None:
         ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
         return ops, sels
+    bgc, S, (_, a, b, T) = found
     objc = int(I[next(iter(S))])
 
-    rows = [r for r, _ in S]
-    cols = [c for _, c in S]
-    rmin, rmax, cmin, cmax = min(rows), max(rows), min(cols), max(cols)
-
-    # --- find the quarter turn that carries the pattern onto itself ----
-    # a clockwise quarter turn about some centre is  (r, c) -> (a + c, b - r)
-    best = None
-    for a in range(-cmin, hi - cmax):
-        for b in range(rmax, wi + rmin):
-            if (a + b) % 2 == 0:
-                continue
-            T = frozenset((a + c, b - r) for r, c in S)
-            if not (T - S):
-                continue
-            F = S | T
-            if frozenset((a + cc, b - rr) for rr, cc in F) != F:
-                continue
-            score = len(S & T)
-            if best is None or score > best[0]:
-                best = (score, a, b, T)
-
-    if best is None:                  # nothing is missing: the grid stays as it is
+    if not (T - S):
+        # the pattern is already complete: nothing is missing
         ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
         return ops, sels
-    _, a, b, T = best
 
     F = S | T
     cr2, cc2 = a + b, b - a
@@ -191,7 +201,7 @@ def derive_operations(I, O, examples=None):
     # 1. mark the whole visible pattern with the answer colour
     ops.append(2); sels.append(sel_of(Scells))
     # 2. quarter turn clockwise about the pattern's centre.
-    #    bbox selection is intended: the WHOLE square region turns, background included
+    #    bbox selection intended: the WHOLE square region turns, background included
     ops.append(25); sels.append([r0, c0, L - 1, L - 1])
     # 3. restore the original pattern in its own colour
     ops.append(objc); sels.append(sel_of(Scells))
