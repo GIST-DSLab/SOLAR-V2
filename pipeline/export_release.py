@@ -159,9 +159,12 @@ SUBSETS = {
         # 376 tasks filled a thousand from a thousand draws. The other 24 were
         # drawn 1300 deep and the thousand lowest-numbered episodes kept --
         # a prefix, not a selection, so nothing tilts toward the instances a
-        # maker happens to find easy. 484b58aa and 0dfd9992 are short for a
-        # reason no maker can fix: their RE-ARC generators run out of distinct
-        # test pairs, and neither logged a single replay failure.
+        # maker happens to find easy. Of the 484 draws that produced nothing,
+        # 169 are logged replay failures and the remaining 315 are generators
+        # that could not produce another distinct test pair -- 231 of them
+        # 484b58aa and 83 0dfd9992, which is why those two are the shortest.
+        # Both also failed to replay a few times (5 and 1): short for a reason
+        # no maker can fix is true of most of their shortfall, not all of it.
         #
         # 1b60fb0c and 746b3537 were repaired before this draw rather than
         # topped up around their failures: at 83.7% and 95.0% per draw the

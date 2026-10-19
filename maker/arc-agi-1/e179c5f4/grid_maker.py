@@ -33,269 +33,162 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
-import math
 import random
-
 import numpy as np
-
 from maker.sel_helpers import sel_of
-
-# Discrete structural variants: grid orientation (tall = ray steps row-by-row,
-# wide = ray steps column-by-column) x number of emitting corners (1..4).
-VARIANTS = [
-    {"transpose": False, "numlins": 1},
-    {"transpose": True,  "numlins": 2},
-    {"transpose": False, "numlins": 4},
-    {"transpose": True,  "numlins": 3},
-]
 
 
 def sample_colors(num_examples=None) -> dict:
-    # 8 is reserved as the output background marker; the ray colour must be
-    # non-zero so it survives ARCLE's object ops (0 counts as "nothing there").
-    linc = random.choice([c for c in range(1, 10) if c != 8])
-    bgc = random.choice([c for c in range(10) if c != 8 and c != linc])
-    n_ex = num_examples if num_examples else 3
-    if n_ex >= len(VARIANTS):
-        examples = [dict(v) for v in VARIANTS]
-        examples += [dict(random.choice(VARIANTS)) for _ in range(n_ex - len(VARIANTS))]
-        random.shuffle(examples)
-    else:
-        examples = [dict(v) for v in random.sample(VARIANTS, n_ex)]
-        if n_ex >= 2 and len({e["transpose"] for e in examples}) == 1:
-            alt = [v for v in VARIANTS if v["transpose"] != examples[0]["transpose"]]
-            examples[-1] = dict(random.choice(alt))
-    plan = examples + [dict(random.choice(examples))]   # test case is one of the shown cases
-    return {"bgc": bgc, "linc": linc, "instance_plan": plan}
+    cols = [c for c in range(10) if c != 8]
+    bgc, linc = random.sample(cols, 2)
+    return {"bgc": bgc, "linc": linc}
 
 
-def _unifint(diff_lb, diff_ub, bounds):
-    a, b = bounds
-    if b < a:
-        b = a
-    lo = int(math.ceil(a + (b - a) * diff_lb))
-    hi = int(math.ceil(a + (b - a) * diff_ub))
-    lo = max(a, min(lo, b))
-    hi = max(a, min(hi, b))
-    if hi < lo:
-        lo, hi = hi, lo
-    return random.randint(lo, hi)
-
-
-def _canonical_path(L, S):
-    """Bouncing ray from bottom-left (L-1, 0) going up-right, reflecting off side walls."""
-    r, c = L - 1, 0
-    dc = 1
-    path = [(r, c)]
+def generate(diff_lb, diff_ub, max_h, max_w, bgc=None, linc=None) -> dict:
+    from dsl import (canvas, fill, add, identity, dmirror, cmirror, vmirror,
+                     hmirror, rot90, rot180, rot270, ofcolor, replace)
+    from utils import unifint
+    cols = [c for c in range(10) if c != 8]
+    if bgc is None or linc is None:
+        bgc, linc = random.sample(cols, 2)
+    lim = min(30, max_h, max_w)
+    w = unifint(diff_lb, diff_ub, (2, min(10, lim - 1)))
+    h = unifint(diff_lb, diff_ub, (w + 1, lim))
+    c = canvas(bgc, (h, w))
+    sp = (h - 1, 0)
+    gi = fill(c, linc, {sp})
+    go = tuple(e for e in gi)
+    direc = 1
     while True:
-        r -= 1
-        c += dc
-        if not (0 <= r < L and 0 <= c < S):
+        sp = add(sp, (-1, direc))
+        if sp[1] == w - 1 or sp[1] == 0:
+            direc *= -1
+        go2 = fill(go, linc, {sp})
+        if go2 == go:
             break
-        path.append((r, c))
-        if c == 0 or c == S - 1:
-            dc = -dc
-    return path
-
-
-def generate(diff_lb, diff_ub, max_h, max_w, bgc, linc, transpose=None, numlins=None) -> dict:
-    if transpose is None or numlins is None:
-        v = random.choice(VARIANTS)
-        if transpose is None:
-            transpose = v["transpose"]
-        if numlins is None:
-            numlins = v["numlins"]
-
-    # L = long axis (the axis the ray steps along), S = short axis (the axis it bounces on)
-    maxL = min(30, max_w if transpose else max_h)
-    maxS = min(30, max_h if transpose else max_w)
-    s_ub = max(2, min(10, maxS, maxL - 1))
-    S = _unifint(diff_lb, diff_ub, (2, s_ub))
-    S = max(2, min(S, maxS, maxL - 1))
-    L = _unifint(diff_lb, diff_ub, (S + 1, max(S + 1, maxL)))
-
-    gi = np.full((L, S), bgc, dtype=int)
-    go = gi.copy()
-    path = _canonical_path(L, S)
-    gi[L - 1, 0] = linc
-    for (r, c) in path:
-        go[r, c] = linc
-
-    if transpose:
-        gi = np.ascontiguousarray(gi.T)
-        go = np.ascontiguousarray(go.T)
-    if random.random() < 0.5:
-        gi = np.ascontiguousarray(np.fliplr(gi))
-        go = np.ascontiguousarray(np.fliplr(go))
-    if random.random() < 0.5:
-        gi = np.ascontiguousarray(np.flipud(gi))
-        go = np.ascontiguousarray(np.flipud(go))
-
-    gix, gox = gi.copy(), go.copy()
+        go = go2
+    mfs = (identity, dmirror, cmirror, vmirror, hmirror, rot90, rot180, rot270)
+    nmfs = random.choice((1, 2))
+    for fn in random.sample(mfs, nmfs):
+        gi = fn(gi)
+        go = fn(go)
+    gix = tuple(e for e in gi)
+    gox = tuple(e for e in go)
+    numlins = unifint(diff_lb, diff_ub, (1, 4))
     if numlins > 1:
-        gi[np.flipud(gix) == linc] = linc
-        go[np.flipud(gox) == linc] = linc
+        gi = fill(gi, linc, ofcolor(hmirror(gix), linc))
+        go = fill(go, linc, ofcolor(hmirror(gox), linc))
     if numlins > 2:
-        gi[np.fliplr(gix) == linc] = linc
-        go[np.fliplr(gox) == linc] = linc
+        gi = fill(gi, linc, ofcolor(vmirror(gix), linc))
+        go = fill(go, linc, ofcolor(vmirror(gox), linc))
     if numlins > 3:
-        gi[np.flipud(np.fliplr(gix)) == linc] = linc
-        go[np.flipud(np.fliplr(gox)) == linc] = linc
-
-    go[go == bgc] = 8
-    return {"input": gi.tolist(), "output": go.tolist()}
-
-
-def _trace_ray(H, W, seed):
-    """Bouncing ray emitted from a corner marker. It steps along the longer grid
-    axis and reflects off the two walls of the shorter axis."""
-    r, c = seed
-    path = [(r, c)]
-    dr = 1 if r == 0 else -1
-    dc = 1 if c == 0 else -1
-    tall = H > W
-    while True:
-        r += dr
-        c += dc
-        if not (0 <= r < H and 0 <= c < W):
-            break
-        path.append((r, c))
-        if tall:
-            if c == 0 or c == W - 1:
-                dc = -dc
-        else:
-            if r == 0 or r == H - 1:
-                dr = -dr
-    return path
+        gi = fill(gi, linc, ofcolor(hmirror(vmirror(gix)), linc))
+        go = fill(go, linc, ofcolor(hmirror(vmirror(gox)), linc))
+    go = replace(go, bgc, 8)
+    return {'input': gi, 'output': go}
 
 
-def _segments(path):
-    """Split a bouncing ray into its straight diagonal strokes."""
-    segs, cur, prev = [], [path[0]], None
-    for i in range(1, len(path)):
-        d = (path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1])
-        if prev is None or d == prev:
-            cur.append(path[i])
-            prev = d
-        else:
-            segs.append(cur)
-            cur = [path[i]]
-            prev = d
-    segs.append(cur)
-    return segs
-
-
-def _flip_object(grid, cells, axis):
-    """ARCLE object-mode Flip: grab `cells`, blank them, mirror them inside their
-    bounding box, composite back (zeros are transparent)."""
-    rs = [r for r, _ in cells]
-    cs = [c for _, c in cells]
-    r0, r1, c0, c1 = min(rs), max(rs), min(cs), max(cs)
-    obj = [((r, c), int(grid[r, c])) for (r, c) in cells if grid[r, c] != 0]
-    out = grid.copy()
-    for (r, c) in cells:
-        out[r, c] = 0
-    for (r, c), v in obj:
-        nr, nc = (r, c0 + c1 - c) if axis == "H" else (r0 + r1 - r, c)
-        out[nr, nc] = v
-    return out
-
-
-def derive_operations(I, O):
+def derive_operations(I, O, examples=None):
+    from collections import Counter
     I = np.asarray(I, dtype=int)
-    O = np.asarray(O, dtype=int)
-    H, W = I.shape
-
-    # background = colour of a cell that can never hold a corner marker
-    bseed = (1, 0) if H >= 3 else (0, 1)
-    bgc = int(I[bseed])
-    fg = [int(v) for v in np.unique(I) if int(v) != bgc]
-    if fg:
-        linc = fg[0]
-    else:
-        linc = int([v for v in np.unique(O) if int(v) != 8][0])
-
-    seeds = sorted({(r, c) for r in (0, H - 1) for c in (0, W - 1) if I[r, c] == linc})
-    rays = {s: _trace_ray(H, W, s) for s in seeds}
-
+    h, w = I.shape
+    corners = [(0, 0), (0, w - 1), (h - 1, 0), (h - 1, w - 1)]
+    cset = set(corners)
+    noncorner = [(r, c) for r in range(h) for c in range(w) if (r, c) not in cset]
+    bgc = Counter(int(I[r, c]) for r, c in noncorner).most_common(1)[0][0]
+    pal = set(int(v) for v in I.flatten().tolist()) - {bgc}
+    linc = pal.pop() if pal else None
+    grid = I.copy()
     ops, sels = [], []
-    cur = I.copy()
 
-    # 1) the background becomes 8 — one connected bgc region, one FloodFill8 seed
-    if bgc != 8:
-        ops.append(18)
-        sels.append(sel_of([bseed]))
-        cur[cur == bgc] = 8
+    # 1. background -> 8 (one connected region)
+    seed = noncorner[0]
+    ops.append(18); sels.append(sel_of([seed]))
+    grid[grid == bgc] = 8
 
-    # 2) shoot the ray of the first marker, one straight stroke per bounce
-    primary = seeds[0]
-    for seg in _segments(rays[primary]):
-        cells = [p for p in seg if cur[p] != linc]
-        if not cells:
-            continue
-        ops.append(int(linc))
-        sels.append(sel_of(cells))
-        for p in cells:
-            cur[p] = linc
-    drawn = [primary]
-    todo = [s for s in seeds if s != primary]
+    if linc is None:
+        ops.append(34); sels.append(sel_of([(r, c) for r in range(h) for c in range(w)]))
+        return ops, sels
 
-    # 3) every other marker's ray is the mirror image of a ray already on the
-    #    grid — reflect that ray onto it, then redraw the ray it came from
-    while todo:
-        progressed = False
-        for tgt in list(todo):
-            src = None
-            for d in drawn:
-                if (d[0] == tgt[0]) != (d[1] == tgt[1]):   # differs on exactly one axis
-                    src = d
+    portrait = h > w
+
+    def trace(r0, c0):
+        # bouncing line from a marked corner along the long axis; list of runs
+        # (first run = the start corner alone, then one run per diagonal segment)
+        if portrait:
+            L, S, a, b = h, w, r0, c0
+        else:
+            L, S, a, b = w, h, c0, r0
+        da = -1 if a == L - 1 else 1
+        db = 1 if b == 0 else -1
+        runs = [[(a, b)]]
+        cur = []
+        while True:
+            a += da; b += db
+            if a < 0 or a >= L:
+                break
+            cur.append((a, b))
+            if b == 0 or b == S - 1:
+                db = -db
+                runs.append(cur); cur = []
+        if cur:
+            runs.append(cur)
+        if not portrait:
+            runs = [[(y, x) for (x, y) in run] for run in runs]
+        return runs
+
+    marked = [p for p in corners if I[p] == linc]
+    lines = []
+    for p in marked:
+        runs = trace(*p)
+        cells = frozenset(x for run in runs for x in run)
+        if cells not in [l[1] for l in lines]:   # identical lines drawn once only
+            lines.append((runs, cells))
+
+    def paint_runs(runs):
+        for run in runs:
+            todo = [p for p in run if grid[p] != linc]
+            if todo:
+                ops.append(linc); sels.append(sel_of(todo))
+                for p in todo:
+                    grid[p] = linc
+
+    # 2. draw the first line segment by segment
+    base_runs, base_cells = lines[0]
+    paint_runs(base_runs)
+    drawn = [base_cells]
+
+    def mirror(cells, op):
+        if op == 26:
+            return frozenset((r, w - 1 - c) for r, c in cells)
+        return frozenset((h - 1 - r, c) for r, c in cells)
+
+    # 3. every other distinct line = mirror of an already drawn line
+    for runs, cells in lines[1:]:
+        done = False
+        if linc != 0:
+            for src in drawn:
+                for fop in (27, 26):
+                    if mirror(src, fop) == cells:
+                        # flip the drawn line onto its mirror, then restore the source line
+                        ops.append(fop); sels.append(sel_of(sorted(src)))
+                        for p in src:
+                            grid[p] = 0
+                        for p in cells:
+                            grid[p] = linc
+                        hole = sorted(p for p in src if grid[p] != linc)
+                        ops.append(linc); sels.append(sel_of(hole))
+                        for p in hole:
+                            grid[p] = linc
+                        done = True
+                        break
+                if done:
                     break
-            if src is None:
-                continue
-            todo.remove(tgt)
-            drawn.append(tgt)
-            progressed = True
-            srccells = rays[src]
-            tgtcells = rays[tgt]
-            if set(tgtcells) == set(srccells):
-                continue                                   # mirror-symmetric ray: already drawn
-            axis = "V" if src[0] != tgt[0] else "H"        # rows differ -> flip up/down
-            nxt = _flip_object(cur, srccells, axis)
-            want = cur.copy()
-            for p in srccells:
-                want[p] = 0
-            for p in tgtcells:
-                want[p] = linc
-            if np.array_equal(nxt, want):
-                ops.append(27 if axis == "V" else 26)      # FlipV / FlipH of that ray
-                sels.append(sel_of(srccells))
-                cur = nxt
-                hole = [p for p in srccells if cur[p] != linc]   # footprint the ray left behind
-                if hole:
-                    ops.append(int(linc))
-                    sels.append(sel_of(hole))
-                    for p in hole:
-                        cur[p] = linc
-            else:
-                cells = [p for p in tgtcells if cur[p] != linc]
-                if cells:
-                    ops.append(int(linc))
-                    sels.append(sel_of(cells))
-                    for p in cells:
-                        cur[p] = linc
-        if not progressed:
-            for tgt in list(todo):
-                todo.remove(tgt)
-                drawn.append(tgt)
-                cells = [p for p in rays[tgt] if cur[p] != linc]
-                if cells:
-                    ops.append(int(linc))
-                    sels.append(sel_of(cells))
-                    for p in cells:
-                        cur[p] = linc
+        if not done:
+            paint_runs(runs)
+        drawn.append(cells)
 
-    ops.append(34)
-    sels.append([0, 0, H - 1, W - 1])                      # full-grid bbox for Submit
+    ops.append(34); sels.append(sel_of([(r, c) for r in range(h) for c in range(w)]))
     return ops, sels
 
 

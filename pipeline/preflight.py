@@ -228,8 +228,15 @@ def sweep(episodes_root: Path, makers_dir: Path, label: str,
     if not tasks:
         raise SystemExit(f"no makers under {makers_dir}")
     report.parent.mkdir(parents=True, exist_ok=True)
+    # --ablate decides the release on the spare axis, and its default of three
+    # instances is too few to decide anything: 746b3537 read 0.67 on three and
+    # 0.35 on forty, 234bbc79 read 0.67 on three and 0.175 on forty. Both are
+    # rejections at the bar of 0.5 that the wider measurement reverses, and the
+    # bar is unchanged -- this buys precision, not leniency. It costs: thirty
+    # ablated instances instead of three is roughly ten times the replay work
+    # in the sweep.
     cmd = [python, str(SOLAR_ROOT / "pipeline" / "choose_maker.py"),
-           "--candidates", label, "--tasks", *tasks,
+           "--candidates", label, "--tasks", *tasks, "--ablate", "30",
            "--episodes_root", str(episodes_root), "--out", str(report)]
     proc = subprocess.run(cmd, cwd=SOLAR_ROOT)
     if proc.returncode != 0:
