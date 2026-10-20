@@ -318,10 +318,25 @@ def _reads(pairs, n_ex, seen=(0, 0)) -> bool:
     shows what makes the answer differ -- and copying a demonstration is
     always right, which is why the solve probe scored it as readable.
     27a28665 demonstrates the labels 3, 3 and 6 and then asks for 1.
+
+    The first of those was read off d9fac9be, whose answers are one cell, and
+    the size it was found at went into the test as a condition. It does not
+    belong there. eb5a1d5d demonstrates the same 13x13 ring three times and
+    then asks for a 15x15: nothing in the episode says the size follows the
+    input, and the grid being large is no help to the reader. Across a draw of
+    a thousand episodes a task, the size condition let 28 such episodes through
+    in four tasks, every one of which the release bar rejects -- preflight has
+    never had the condition. Ten episodes a task hid the disagreement for as
+    long as the draw was ten deep.
+
+    `_why` keeps the size condition, and deliberately. It decides whether the
+    redraw lets the palette go, and that repair is only right where the hold is
+    what pinned the answer; here the demonstrations coincided on their own, so
+    dropping the hold would cost the colour convention and fix nothing.
     """
     outs = [tuple(map(tuple, np.asarray(o).tolist())) for _, o in pairs]
     demos, test = outs[:n_ex], outs[n_ex]
-    if max(_cells(o) for _, o in pairs) <= 9 and len(set(demos)) == 1:
+    if len(set(demos)) == 1:
         return False
     if _label_like(pairs, seen) and test not in set(demos):
         return False
