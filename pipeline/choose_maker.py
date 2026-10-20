@@ -930,6 +930,10 @@ def main() -> None:
     ap.add_argument("--episodes_root", default=None,
                     help="a rollout directory whose episodes supply each test's "
                          "demonstrations; needed to judge a maker that reads them")
+    ap.add_argument("--episodes_limit", type=int, default=10,
+                    help="how many of a task's episodes to score. Every axis "
+                         "measured with --episodes_root is measured on these, "
+                         "so --ablate above this buys nothing")
     ap.add_argument("--out", default="choose_maker.json")
     ap.add_argument("--findings", default=None,
                     help="write the tasks with no acceptable candidate as "
@@ -973,7 +977,8 @@ def main() -> None:
             # Episodes are drawn per candidate: the palette a maker asks for is
             # its own, and its demonstrations have to be the ones it would be
             # shown rather than another maker's.
-            eps = (episodes_from_draw(args.episodes_root, t)
+            eps = (episodes_from_draw(args.episodes_root, t,
+                                      args.episodes_limit)
                    if args.episodes_root else None)
             if args.episodes_root and eps is None:
                 raise SystemExit(

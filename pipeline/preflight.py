@@ -232,11 +232,18 @@ def sweep(episodes_root: Path, makers_dir: Path, label: str,
     # instances is too few to decide anything: 746b3537 read 0.67 on three and
     # 0.35 on forty, 234bbc79 read 0.67 on three and 0.175 on forty. Both are
     # rejections at the bar of 0.5 that the wider measurement reverses, and the
-    # bar is unchanged -- this buys precision, not leniency. It costs: thirty
-    # ablated instances instead of three is roughly ten times the replay work
-    # in the sweep.
+    # bar is unchanged -- this buys precision, not leniency.
+    #
+    # --episodes_limit has to rise with it. Every axis taken with an episodes
+    # root is taken on the episodes that root hands over, and that was ten a
+    # task, so asking for thirty ablations of ten episodes returned ten: the
+    # first run with --ablate 30 reported exactly the numbers the default had,
+    # 0.50 on seven instances and 0.57 on ten. Thirty costs three times the
+    # replay work in the sweep and resolves the 0.5 bar to about a tenth
+    # instead of about a sixth.
     cmd = [python, str(SOLAR_ROOT / "pipeline" / "choose_maker.py"),
-           "--candidates", label, "--tasks", *tasks, "--ablate", "30",
+           "--candidates", label, "--tasks", *tasks,
+           "--ablate", "30", "--episodes_limit", "30",
            "--episodes_root", str(episodes_root), "--out", str(report)]
     proc = subprocess.run(cmd, cwd=SOLAR_ROOT)
     if proc.returncode != 0:
