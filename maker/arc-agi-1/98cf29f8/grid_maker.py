@@ -33,43 +33,23 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
 import numpy as np
 from collections import Counter
-from itertools import permutations
-
 from maker.sel_helpers import sel_of
-
-DIRECTIONS = ["up", "down", "left", "right"]
 
 
 def sample_colors(num_examples=None) -> dict:
-    # otherc is the colour of the block that gets MOVED -> it must be non-zero,
-    # otherwise ARCLE's object buffer (non-zero cells only) cannot carry it.
-    otherc = random.choice([c for c in range(1, 10)])
-    rest = [c for c in range(10) if c != otherc]
-    bgc, objc = random.sample(rest, 2)
-
-    n_ex = num_examples if num_examples else 3
-    if n_ex >= len(DIRECTIONS):
-        ex = [d for d in DIRECTIONS]
-        ex += [random.choice(DIRECTIONS) for _ in range(n_ex - len(DIRECTIONS))]
-        random.shuffle(ex)
-    else:
-        ex = random.sample(DIRECTIONS, n_ex)
-    plan = [{"direction": d} for d in ex]
-    plan.append({"direction": random.choice(ex)})
-    return {"bgc": bgc, "objc": objc, "otherc": otherc, "instance_plan": plan}
+    bgc = random.choice(range(10))
+    objc = random.choice([c for c in range(10) if c != bgc])
+    # the moving rectangle must be non-zero so ARCLE Move can carry it
+    otherc = random.choice([c for c in range(1, 10) if c not in (bgc, objc)])
+    return {"bgc": bgc, "objc": objc, "otherc": otherc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc: int, objc: int, otherc: int, direction=None) -> dict:
-    if direction is None:
-        direction = choice(DIRECTIONS)
-    lim = min(max_h, max_w)
-    if lim < 10:
-        lim = 10
-    h = unifint(diff_lb, diff_ub, (10, lim))
-    w = unifint(diff_lb, diff_ub, (10, lim))
+def generate(diff_lb, diff_ub, max_h=30, max_w=30, bgc=0, objc=1, otherc=2) -> dict:
+    h = unifint(diff_lb, diff_ub, (10, max(10, max_h)))
+    w = unifint(diff_lb, diff_ub, (10, max(10, max_w)))
     objh = unifint(diff_lb, diff_ub, (2, h - 5))
     objw = unifint(diff_lb, diff_ub, (2, w - 5))
     loci = randint(0, h - objh)
@@ -77,11 +57,7 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     obj = backdrop(frozenset({(loci, locj), (loci + objh - 1, locj + objw - 1)}))
     gi = canvas(bgc, (h, w))
     gi = fill(gi, objc, obj)
-    bmarg = h - (loci + objh)
-    rmarg = w - (locj + objw)
-    tmarg = loci
-    lmarg = locj
-    margs = (bmarg, rmarg, tmarg, lmarg)
+    margs = (h - (loci + objh), w - (locj + objw), loci, locj)
     options = [idx for idx, marg in enumerate(margs) if marg > 2]
     pos = choice(options)
     for k in range(pos):
@@ -101,185 +77,92 @@ def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
     gi = fill(gi, otherc, otherobj)
     gi = fill(gi, otherc, ln)
     go = fill(gib, otherc, shift(otherobj, (-len(ln), 0)))
-    # canonical movement direction is "up"; a planned dihedral transform sets the
-    # actual direction so every direction shows up across the episode
-    dirmap = {
-        "up": (identity, vmirror),
-        "down": (hmirror, rot180),
-        "left": (dmirror, rot270),
-        "right": (rot90, cmirror),
-    }
-    fn = choice(dirmap[direction])
-    gi = fn(gi)
-    go = fn(go)
-    return {'input': gi, 'output': go}
+    mfs = (identity, dmirror, cmirror, vmirror, hmirror, rot90, rot180, rot270)
+    nmfs = choice((1, 2))
+    for fn in sample(mfs, nmfs):
+        gi = fn(gi)
+        go = fn(go)
+    return {"input": gi, "output": go}
 
 
-def _bbox(cells):
+def _split_rect_line(cells):
+    rc = Counter(r for r, _ in cells)
+    cc = Counter(c for _, c in cells)
+    rect = {(r, c) for r, c in cells if rc[r] >= 2 and cc[c] >= 2}
+    line = set(cells) - rect
+    return rect, line
+
+
+def _is_full_rect(cells):
+    if not cells:
+        return False
     rs = [r for r, _ in cells]
     cs = [c for _, c in cells]
-    return min(rs), max(rs), min(cs), max(cs)
+    return len(cells) == (max(rs) - min(rs) + 1) * (max(cs) - min(cs) + 1)
 
 
-def _analyze(I, ca, cb, strict=True):
-    """Try to read the task's structure out of I only.
-
-    ca = candidate colour of the big anchor rectangle,
-    cb = candidate colour of the block + its 1-cell-wide connector stem.
-    """
-    hi, wi = I.shape
-    A = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == ca]
-    B = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == cb]
-    if not A or not B:
-        return None
-    ar0, ar1, ac0, ac1 = _bbox(A)
-    if strict:
-        if len(A) != (ar1 - ar0 + 1) * (ac1 - ac0 + 1):
-            return None
-        if ar1 - ar0 + 1 < 2 or ac1 - ac0 + 1 < 2:
-            return None
-
-    rowcnt = Counter(r for r, _ in B)
-    colcnt = Counter(c for _, c in B)
-    thin_rows = set(r for r, n in rowcnt.items() if n == 1)
-    thin_cols = set(c for c, n in colcnt.items() if n == 1)
-    if bool(thin_rows) == bool(thin_cols):
-        return None                      # need exactly one thin orientation
-    vertical = bool(thin_rows)
-    if vertical:
-        stem = [(r, c) for (r, c) in B if r in thin_rows]
-    else:
-        stem = [(r, c) for (r, c) in B if c in thin_cols]
-    stem_set = set(stem)
-    rect = [p for p in B if p not in stem_set]
-    if not rect:
-        return None
-    rr0, rr1, rc0, rc1 = _bbox(rect)
-    if len(rect) != (rr1 - rr0 + 1) * (rc1 - rc0 + 1):
-        return None
-    if rr1 - rr0 + 1 < 2 or rc1 - rc0 + 1 < 2:
-        return None
-
-    if vertical:
-        cols = set(c for _, c in stem)
-        if len(cols) != 1:
-            return None
-        jc = next(iter(cols))
-        rows = sorted(r for r, _ in stem)
-        if rows != list(range(rows[0], rows[-1] + 1)):
-            return None
-        if not (rc0 <= jc <= rc1):
-            return None
-        if strict and not (ac0 <= jc <= ac1):
-            return None
-        if rows[-1] == rr0 - 1:
-            step = (-1, 0)
-            if strict and rows[0] - 1 != ar1:
-                return None
-        elif rows[0] == rr1 + 1:
-            step = (1, 0)
-            if strict and rows[-1] + 1 != ar0:
-                return None
-        else:
-            return None
-        nsteps = len(rows)
-    else:
-        rows = set(r for r, _ in stem)
-        if len(rows) != 1:
-            return None
-        ir = next(iter(rows))
-        cols = sorted(c for _, c in stem)
-        if cols != list(range(cols[0], cols[-1] + 1)):
-            return None
-        if not (rr0 <= ir <= rr1):
-            return None
-        if strict and not (ar0 <= ir <= ar1):
-            return None
-        if cols[-1] == rc0 - 1:
-            step = (0, -1)
-            if strict and cols[0] - 1 != ac1:
-                return None
-        elif cols[0] == rc1 + 1:
-            step = (0, 1)
-            if strict and cols[-1] + 1 != ac0:
-                return None
-        else:
-            return None
-        nsteps = len(cols)
-
-    return {"anchor": ca, "block": cb, "rect": rect, "stem": stem,
-            "step": step, "nsteps": nsteps}
-
-
-def derive_operations(I, O):
+def derive_operations(I, O=None, examples=None):
     I = np.asarray(I, dtype=int)
     hi, wi = I.shape
-    ops, sels = [], []
-    submit_sel = [0, 0, hi - 1, wi - 1]
-
     colors = sorted(set(I.flatten().tolist()))
-    counts = Counter(I.flatten().tolist())
+    cellmap = {c: {(int(r), int(q)) for r, q in zip(*np.where(I == c))} for c in colors}
+    border = [I[0, :], I[-1, :], I[:, 0], I[:, -1]]
+    bc = Counter(np.concatenate(border).tolist())
 
-    found = None
-    for strict in (True, False):
-        cands = []
-        for ca, cb in permutations(colors, 2):
-            res = _analyze(I, ca, cb, strict=strict)
-            if res is None:
-                continue
-            others = [c for c in colors if c != ca and c != cb]
-            if not others:
-                continue
-            bg = max(others, key=lambda c: counts[c])
-            res["bg"] = bg
-            cands.append(res)
-        if cands:
-            # background is the colour that fills the canvas -> most cells
-            found = max(cands, key=lambda d: counts[d["bg"]])
-            break
+    # mover = colour made of a full rectangle plus a straight 1-wide connector line
+    mover, best = None, None
+    for c in colors:
+        if _is_full_rect(cellmap[c]):
+            continue
+        rect, line = _split_rect_line(cellmap[c])
+        if not line or not _is_full_rect(rect):
+            continue
+        lr = {r for r, _ in line}
+        lc = {q for _, q in line}
+        if len(lr) != 1 and len(lc) != 1:
+            continue
+        score = -bc.get(c, 0)
+        if best is None or score > best:
+            best, mover = score, (c, rect, line)
+    c, rect, line = mover
+    rest = [x for x in colors if x != c]
+    anchors = [x for x in rest if _is_full_rect(cellmap[x])]
+    bgc = max([x for x in rest if x not in anchors] or rest, key=lambda x: bc.get(x, 0))
 
-    if found is None:
-        ops.append(34)
-        sels.append(submit_sel)
-        return ops, sels
-
-    bg = found["bg"]
-    blockc = found["block"]
-    rect = sorted(found["rect"])
-    stem = sorted(found["stem"])
-    dr, dc = found["step"]
-    nsteps = found["nsteps"]
-
-    # 1. the connector stem is scaffolding: erase it back to background
-    ops.append(int(bg))
-    sels.append(sel_of(stem))
-
-    dst = [(r + dr * nsteps, c + dc * nsteps) for r, c in rect]
-
-    if blockc != 0:
-        # 2. slide the block along the stem until it touches the anchor rectangle
-        move_op = {(-1, 0): 20, (1, 0): 21, (0, 1): 22, (0, -1): 23}[(dr, dc)]
-        ops.append(move_op)
-        sels.append(sel_of(rect))          # first Move grabs the block
-        for _ in range(nsteps - 1):
-            ops.append(move_op)
-            sels.append(sel_of([]))        # empty -> keep the same object grabbed
-        # 3. the block's original footprint is left at 0; restore background there
-        hole = sorted(set(rect) - set(dst))
-        if bg != 0 and hole:
-            ops.append(int(bg))
-            sels.append(sel_of(hole))
+    rr = [r for r, _ in rect]
+    rcs = [q for _, q in rect]
+    lr = [r for r, _ in line]
+    lcs = [q for _, q in line]
+    L = len(line)
+    # the rectangle travels along its connector toward the anchor, by the connector length
+    if max(lr) < min(rr):
+        op, d = 20, (-1, 0)
+    elif min(lr) > max(rr):
+        op, d = 21, (1, 0)
+    elif min(lcs) > max(rcs):
+        op, d = 22, (0, 1)
     else:
-        # colour-0 blocks cannot be carried by ARCLE's object buffer: paint instead
-        vacated = sorted(set(rect) - set(dst))
-        if vacated:
-            ops.append(int(bg))
-            sels.append(sel_of(vacated))
-        ops.append(0)
-        sels.append(sel_of(dst))
+        op, d = 23, (0, -1)
 
-    ops.append(34)
-    sels.append(submit_sel)
+    ops, sels = [], []
+    dst = {(r + d[0] * L, q + d[1] * L) for r, q in rect}
+    if c != 0:
+        # grab the rectangle once, then slide it with empty selections until it docks
+        ops.append(op); sels.append(sel_of(rect))
+        for _ in range(L - 1):
+            ops.append(op); sels.append(sel_of([]))
+        # cleanup after the slide: vacated footprint (reads 0) + connector cells still visible
+        hole = (rect - dst) if bgc != 0 else set()
+        residue = line - dst
+        clean = hole | residue
+        if clean:
+            ops.append(bgc); sels.append(sel_of(clean))
+    else:
+        # colour 0 cannot be carried by Move (transparent) -> erase and repaint
+        ops.append(bgc); sels.append(sel_of((rect | line) - dst))
+        ops.append(c); sels.append(sel_of(dst - rect))
+
+    ops.append(34); sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 

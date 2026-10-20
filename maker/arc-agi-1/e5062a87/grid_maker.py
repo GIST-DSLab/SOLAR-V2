@@ -33,128 +33,102 @@ from utils import *  # noqa: F401,F403  (unifint, choice, sample, etc.)
 from dsl import *    # noqa: F401,F403
 
 # ── LLM-generated: sample_colors / generate / derive_operations ───────────────
+import random
 import numpy as np
 from collections import Counter
 from maker.sel_helpers import sel_of
 
 
+def _unifint(diff_lb, diff_ub, bounds):
+    a, b = bounds
+    d = random.uniform(diff_lb, diff_ub)
+    return min(max(a, int(round(a + (b - a) * d))), b)
+
+
+def _neighbors(cell):
+    r, c = cell
+    return {(r + dr, c + dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)}
+
+
 def sample_colors(num_examples=None) -> dict:
-    # eligcol (background) and objc (the marker / fill colour) are sampled from 1..9
-    # by the generator; both are fixed for the whole episode so the rule ("fill every
-    # hidden copy of the marked shape with THIS colour") is learnable from the examples.
     cols = list(range(1, 10))
-    bgc = random.choice(cols)
-    objc = random.choice([c for c in cols if c != bgc])
-    return {"bgc": bgc, "objc": objc}
+    eligcol, objc = random.sample(cols, 2)
+    return {"eligcol": eligcol, "objc": objc}
 
 
-def generate(diff_lb: float, diff_ub: float, max_h: int, max_w: int,
-             bgc=None, objc=None) -> dict:
-    cols = interval(1, 10, 1)
-    if bgc is None or objc is None:
-        a, b = sample(cols, 2)
-        if bgc is None:
-            bgc = a
-        if objc is None or objc == bgc:
-            objc = b if b != bgc else a
-    eligcol = bgc
-
-    mh = max(10, min(30, int(max_h)))
-    mw = max(10, min(30, int(max_w)))
-    h = unifint(diff_lb, diff_ub, (10, mh))
-    w = unifint(diff_lb, diff_ub, (10, mw))
-
-    gi = canvas(eligcol, (h, w))
-    inds = asindices(gi)
-    sp = choice(totuple(inds))
+def generate(diff_lb, diff_ub, max_h, max_w, eligcol=None, objc=None, **kwargs) -> dict:
+    cols = list(range(1, 10))
+    if eligcol is None or objc is None:
+        eligcol, objc = random.sample(cols, 2)
+    h = _unifint(diff_lb, diff_ub, (10, max(10, max_h)))
+    w = _unifint(diff_lb, diff_ub, (10, max(10, max_w)))
+    gi = [[eligcol] * w for _ in range(h)]
+    inds = {(i, j) for i in range(h) for j in range(w)}
+    sp = random.choice(sorted(inds))
     obj = {sp}
-    ncells = unifint(diff_lb, diff_ub, (3, 9))
-    for k in range(ncells - 1):
-        obj.add(choice(totuple((inds - obj) & mapply(neighbors, obj))))
-    obj = normalize(obj)
-    nnoise = unifint(diff_lb, diff_ub, (int(0.2 * h * w), int(0.5 * h * w)))
-    locs = sample(totuple(inds), nnoise)
-    gi = fill(gi, 0, locs)
-    noccs = unifint(diff_lb, diff_ub, (2, max(2, (h * w) // (len(obj) * 3))))
-    oh, ow = shape(obj)
+    ncells = _unifint(diff_lb, diff_ub, (3, 9))
+    for _ in range(ncells - 1):
+        cand = set()
+        for x in obj:
+            cand |= _neighbors(x)
+        cand = (cand & inds) - obj
+        obj.add(random.choice(sorted(cand)))
+    mr = min(r for r, _ in obj)
+    mc = min(c for _, c in obj)
+    obj = {(r - mr, c - mc) for r, c in obj}
+    nnoise = _unifint(diff_lb, diff_ub, (int(0.2 * h * w), int(0.5 * h * w)))
+    for (r, c) in random.sample(sorted(inds), nnoise):
+        gi[r][c] = 0
+    noccs = _unifint(diff_lb, diff_ub, (2, max(2, (h * w) // (len(obj) * 3))))
+    oh = max(r for r, _ in obj) + 1
+    ow = max(c for _, c in obj) + 1
     for k in range(noccs):
-        loci = randint(0, h - oh)
-        locj = randint(0, w - ow)
-        loc = (loci, locj)
-        gi = fill(gi, objc if k == noccs - 1 else 0, shift(obj, loc))
-    occs = occurrences(gi, recolor(0, obj))
-    res = mapply(lbind(shift, obj), occs)
-    go = fill(gi, objc, res)
-    return {'input': gi, 'output': go}
+        li = random.randint(0, h - oh)
+        lj = random.randint(0, w - ow)
+        col = objc if k == noccs - 1 else 0
+        for r, c in obj:
+            gi[r + li][c + lj] = col
+    go = [row[:] for row in gi]
+    for i in range(h - oh + 1):
+        for j in range(w - ow + 1):
+            if all(gi[i + r][j + c] == 0 for r, c in obj):
+                for r, c in obj:
+                    go[i + r][j + c] = objc
+    return {"input": gi, "output": go}
 
 
 def derive_operations(I, O, examples=None):
-    """
-    Rule (read from I + the demonstrations, never from O):
-      * one small shape in I is drawn in the marker colour;
-      * every place in I where that same shape appears as a hole of colour 0
-        is repainted in the marker colour.
-    The marker colour is the episode-fixed fill colour: it is the rarest colour
-    of the input, and it is the colour every demonstration paints with.
-    """
     I = np.asarray(I, dtype=int)
     O = np.asarray(O, dtype=int)
     hi, wi = I.shape
-    ho, wo = O.shape
-
-    # ---- marker / fill colour, measured from I (rarest colour: the single marked shape)
-    cnt = Counter(I.flatten().tolist())
-    objc = min(cnt.items(), key=lambda kv: (kv[1], kv[0]))[0]
-
-    # ---- corroborate with the demonstrations (the colour the rule always fills with)
-    if examples:
-        seen = set()
-        for pair in examples:
-            try:
-                ei, eo = pair[0], pair[1]
-            except Exception:
-                continue
-            ei = np.asarray(ei, dtype=int)
-            eo = np.asarray(eo, dtype=int)
-            if ei.shape != eo.shape:
-                continue
-            added = set(eo[ei != eo].tolist())
-            if len(added) == 1:
-                seen.add(added.pop())
-        if len(seen) == 1:
-            objc = seen.pop()
-
     ops, sels = [], []
 
-    marker = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == objc]
-    if marker:
-        r0 = min(r for r, _ in marker)
-        c0 = min(c for _, c in marker)
-        norm = sorted((r - r0, c - c0) for r, c in marker)
-        oh = max(dr for dr, _ in norm) + 1
-        ow = max(dc for _, dc in norm) + 1
+    # template colour = least frequent colour in I (the single objc-coloured shape)
+    cnt = Counter(I.flatten().tolist())
+    objc = min(cnt, key=lambda k: (cnt[k], k))
+    tcells = [(r, c) for r in range(hi) for c in range(wi) if I[r, c] == objc]
+    mr = min(r for r, _ in tcells)
+    mc = min(c for _, c in tcells)
+    shape = [(r - mr, c - mc) for r, c in tcells]
+    oh = max(r for r, _ in shape) + 1
+    ow = max(c for _, c in shape) + 1
 
-        # every placement where the shape sits in I as a hole of colour 0
-        occs = []
-        for i in range(hi - oh + 1):
-            for j in range(wi - ow + 1):
-                if all(I[i + dr, j + dc] == 0 for dr, dc in norm):
-                    occs.append((i, j))
-
-        # paint outward from the marked shape: nearest hidden copy first
-        occs.sort(key=lambda p: (abs(p[0] - r0) + abs(p[1] - c0), p[0], p[1]))
-
-        painted = set()
-        for (i, j) in occs:
-            cells = [(i + dr, j + dc) for dr, dc in norm]
-            if all(cell in painted for cell in cells):
-                continue  # already entirely objc -> would be a no-op
-            ops.append(int(objc))
-            sels.append(sel_of(cells))
-            painted.update(cells)
+    # every place in I where the template's shape is made entirely of 0s gets
+    # stamped in objc; overlapping stamps only paint the cells not yet objc
+    cur = I.copy()
+    for i in range(hi - oh + 1):
+        for j in range(wi - ow + 1):
+            if all(I[i + r, j + c] == 0 for r, c in shape):
+                cells = [(i + r, j + c) for r, c in shape if cur[i + r, j + c] != objc]
+                if not cells:
+                    continue
+                ops.append(int(objc))
+                sels.append(sel_of(cells))
+                for (r, c) in cells:
+                    cur[r, c] = objc
 
     ops.append(34)
-    sels.append([0, 0, ho - 1, wo - 1])
+    sels.append([0, 0, hi - 1, wi - 1])
     return ops, sels
 
 
