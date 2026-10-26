@@ -601,7 +601,7 @@ function decodeEpisode(row){
     ex.push({in: planeAt(exIn, i, exInD[i*2], exInD[i*2+1], eiP),
              out: planeAt(exOut, i, exOutD[i*2], exOutD[i*2+1], eoP)});
   // role/example_index only exist on the demo subset; undefined elsewhere.
-  return {id: row.id, ops, states, sel, after, ex,
+  return {id: row.episode, ops, states, sel, after, ex,
           role: row.role, example_index: row.example_index};
 }
 /* A family's episodes are not independent draws: they are its problem(s) and its
